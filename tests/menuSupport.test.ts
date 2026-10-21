@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { newDrill, newRace, raceInfo } from '../src/app/race';
 import type { AppCtx } from '../src/app/context';
+import { DEFAULT_SPEC } from '../src/builder/derive';
 import { diffConfigLines } from '../src/ui/bfPanel';
 import { bugReportUrl, commitUrl, versionLabel } from '../src/ui/menu/about';
 import { DEFAULT_VIEW, glassToGlass } from '../src/ui/settingsPanel';
@@ -54,11 +55,22 @@ describe('Betaflight backup replay', () => {
 });
 
 describe('race panel', () => {
-  const ctx = (gates: number, connected: boolean) => ({
+  const ctx = (gates: number, connected: boolean, lb: Partial<AppCtx['lb']> = { pb: () => undefined, record: () => undefined }) => ({
     race: { ...newRace(), lapCount: 2, bestLap: 31.5, lastLap: 33 }, drill: newDrill(),
-    map: { gates: Array.from({ length: gates }, (_, i) => ({ id: i })) },
+    map: { id: 'field', gates: Array.from({ length: gates }, (_, i) => ({ id: i })) }, spec: DEFAULT_SPEC, lb,
     mp: { connected, room: connected ? 'ABCD' : null, peers: new Map([[2, { info: { name: 'Bob', color: '#00ff00' }, lap: { lap: 3, best: 29.9 } }]]) },
   }) as unknown as AppCtx;
+
+  it('shows the personal best and the leaderboard record for this track and drone class', () => {
+    const asked: string[] = [];
+    const lb = {
+      pb: (m: string, c: string, cls: string) => { asked.push(`${m}|${c}|${cls}`); return { lapMs: 30_250, splitsMs: [], at: 1, summary: '', submitted: { id: 9, at: 2 } }; },
+      record: () => ({ id: 9, initials: 'ACE', lapMs: 30_250, cls: 'freestyle5', summary: '', at: 2 }),
+    };
+    const r = raceInfo(ctx(8, false, lb))!;
+    expect(asked).toEqual(['field||freestyle5']);
+    expect(r).toMatchObject({ pb: 30.25, record: { initials: 'ACE', lap: 30.25, mine: true } });
+  });
 
   it('has no panel solo on a map without gates', () => {
     expect(raceInfo(ctx(0, false))).toBeNull();

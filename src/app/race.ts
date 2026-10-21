@@ -1,27 +1,67 @@
 // Lap timing through the map's gates (mirrors the worker's gate counter), the hover-box drill, and
 // the HUD summaries of both.
+import { droneClass, droneSummary } from '../builder/droneClass';
 import { spawnGroundZ } from '../maps/world';
 import type { DrillInfo, RaceInfo } from '../ui/hud/hud';
 import { loadPilot, PilotPrefs } from '../ui/multiplayerPanel';
 import { R } from '../worker/shared';
 import type { AppCtx } from './context';
+import { courseOf } from './leaderboard';
 
-export interface RaceState { lapStart: number; bestLap: number; lastLap: number; lapCount: number; nextGate: number }
-export const newRace = (): RaceState => ({ lapStart: -1, bestLap: Infinity, lastLap: 0, lapCount: 0, nextGate: 0 });
+/**
+ * lapStart: sim time (s) gate 0 was passed, -1 between laps. splits: sim time since lapStart at each
+ * later gate, in order. lapWall: performance.now() at the start, to tell a lap flown in real time
+ * from one with a pause or a slow simulation in it. lapScale: the time scale (one other than 1, if
+ * seen at any gate). lapCls: the drone class it was started with.
+ */
+export interface RaceState { lapStart: number; bestLap: number; lastLap: number; lapCount: number; nextGate: number; splits: number[]; lapWall: number; lapScale: number; lapCls: string }
+export const newRace = (): RaceState => ({ lapStart: -1, bestLap: Infinity, lastLap: 0, lapCount: 0, nextGate: 0, splits: [], lapWall: 0, lapScale: 1, lapCls: '' });
+
+/** Real time may run this much (fraction + seconds) beyond the sim's own lap time (message timing). */
+const REALTIME_SLACK = 0.02, REALTIME_SLACK_S = 0.25;
+
+/** Why a lap doesn't count for personal bests and the leaderboard, or null. */
+export function lapInvalid(o: { timeScale: number; simLap: number; wallLap: number; clsAtStart: string; cls: string }): string | null {
+  if (o.timeScale !== 1) return `Slow motion is on (time scale ${o.timeScale.toFixed(2)}×): personal bests need time scale 1.`;
+  if (o.cls !== o.clsAtStart) return 'The drone was changed during the lap.';
+  if (o.wallLap > o.simLap * (1 + REALTIME_SLACK) + REALTIME_SLACK_S) return 'The simulation was paused or ran slower than real time during the lap.';
+  return null;
+}
 
 /** Hover-box drill: stay inside a 1.5 m sphere centred 3 m above the pad; score = time inside / elapsed. */
 export interface DrillState { on: boolean; t0: number; inside: number; last: number; best: number }
 export const newDrill = (): DrillState => ({ on: false, t0: 0, inside: 0, last: 0, best: 0 });
 
-/** The worker saw the quad pass a gate (sim time t). */
-export function onGate(ctx: AppCtx, gate: number, t: number) {
+/**
+ * The worker saw the quad pass a gate (sim time t). The worker only ever checks the next gate in
+ * order, but a message sent before a respawn or map change can still arrive after it: a lap counts
+ * only once every gate was passed in order since gate 0.
+ */
+export function onGate(ctx: AppCtx, gate: number, t: number, wall = performance.now()) {
   const r = ctx.race, gates = ctx.map.gates;
   const i = gates.findIndex((g) => g.id === gate);
+  if (i < 0) return; // not a gate of this map (sent before a map change)
+  const inOrder = i === r.nextGate;
   r.nextGate = (i + 1) % gates.length;
-  if (i === 0) {
-    if (r.lapStart >= 0) { r.lastLap = t - r.lapStart; r.lapCount++; r.bestLap = Math.min(r.bestLap, r.lastLap); ctx.mp.sendLap(r.lapCount, r.lastLap, r.bestLap); }
-    r.lapStart = t;
+  const scale = ctx.sim.timeScale;
+  if (i !== 0) {
+    if (r.lapStart < 0) return;
+    if (inOrder) { r.splits.push(t - r.lapStart); if (scale !== 1) r.lapScale = scale; }
+    else r.lapStart = -1; // a gate was skipped: this lap can't complete
+    return;
   }
+  if (r.lapStart >= 0 && inOrder && r.splits.length === gates.length - 1) {
+    r.lastLap = t - r.lapStart; r.lapCount++; r.bestLap = Math.min(r.bestLap, r.lastLap);
+    ctx.mp.sendLap(r.lapCount, r.lastLap, r.bestLap);
+    const cls = droneClass(ctx.spec);
+    ctx.lb.onLap({
+      map: ctx.map.id, course: courseOf(ctx.map), cls, summary: droneSummary(ctx.build),
+      lapMs: r.lastLap * 1000, splitsMs: [...r.splits, r.lastLap].map((s) => s * 1000),
+      invalid: lapInvalid({ timeScale: scale !== 1 ? scale : r.lapScale, simLap: r.lastLap, wallLap: (wall - r.lapWall) / 1000, clsAtStart: r.lapCls, cls }),
+    });
+  }
+  // gate 0 also starts the next lap
+  r.lapStart = t; r.splits = []; r.lapWall = wall; r.lapScale = scale; r.lapCls = droneClass(ctx.spec);
 }
 
 /** The worker respawned the quad (reset key / map change): its gate counter restarts at gate 0. */
@@ -67,5 +107,13 @@ export function raceInfo(ctx: AppCtx): RaceInfo | null {
     board = [{ name: me.name, color: me.color, lap: r.lapCount, best: r.bestLap, me: true }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, color: p.info.color, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity, me: false }))];
     if (gates) board.sort((a, b) => a.best - b.best);
   }
-  return { lap: r.lapCount, last: r.lastLap, best: r.bestLap, gate: r.nextGate + 1, gates, room: mp.connected ? mp.room ?? undefined : undefined, board };
+  // personal best and the global board's record for this track and drone class
+  let pb: number | undefined, record: RaceInfo['record'];
+  if (gates) {
+    const map = ctx.map.id, course = courseOf(ctx.map), cls = droneClass(ctx.spec);
+    const mine = ctx.lb.pb(map, course, cls), top = ctx.lb.record(map, course, cls);
+    pb = mine ? mine.lapMs / 1000 : undefined;
+    if (top) record = { initials: top.initials, lap: top.lapMs / 1000, mine: top.id === mine?.submitted?.id };
+  }
+  return { lap: r.lapCount, last: r.lastLap, best: r.bestLap, gate: r.nextGate + 1, gates, room: mp.connected ? mp.room ?? undefined : undefined, board, pb, record };
 }

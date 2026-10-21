@@ -9,11 +9,13 @@ import { AppCtx, makeLog } from './app/context';
 import { initDvr } from './app/dvr';
 import { startFrameLoop } from './app/frameLoop';
 import { HudController } from './app/hudController';
+import { courseOf, LapBoard } from './app/leaderboard';
 import { SpectrumView, SticksView } from './app/instruments';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { simHardwareCli } from './bf/defaults';
 import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
+import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
 import { hasMap, MAPS, preloadMap } from './maps/maps';
@@ -92,7 +94,7 @@ const ctx: AppCtx = {
   input: new InputManager(), mp: new MultiplayerClient(), remotes: new RemoteQuads(), blackbox: new Blackbox(),
   tel: null, fwStatus: 'Loading Betaflight firmware…', menuOpen: false,
   rec: new Float64Array(REC), pilot: { x: 0, y: 0, z: 1.6 },
-  race: newRace(), drill: newDrill(), logLines, log: makeLog(logLines),
+  race: newRace(), drill: newDrill(), lb: new LapBoard(), logLines, log: makeLog(logLines),
 };
 ctx.scene.scene.add(ctx.drone.root);
 ctx.fpv.setVideo(ctx.build.info.components.video, ctx.view.renderScale);
@@ -226,7 +228,8 @@ window.addEventListener('keydown', (e) => {
   if (ctx.menuOpen) return; // the menu handles its own keys
   if (e.code === 'Escape') gameMenu.toggle();
   if (e.code === 'KeyR') sendReset();
-  const a = ({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum' } as Record<string, SimAction>)[e.code];
+  if (e.code === 'KeyL' && !Atomics.load(ctx.sh.ctrl, 5)) gameMenu.openInitials(); // post a new personal best (disarmed)
+  const a =({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum' } as Record<string, SimAction>)[e.code];
   if (a) simAction(a);
 });
 // Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the
@@ -260,6 +263,7 @@ function joinRoom(code: string, room?: { name: string; public: boolean }) {
 // HUD + menu (title screen, new game, server browser, settings, Betaflight guide, pause)
 const hudCtl = new HudController(ctx, sticks, spectrum);
 hudCtl.hud.onMenuTap = () => gameMenu.toggle(); // the Esc key hint is a button on touch screens
+hudCtl.onPostLap = () => gameMenu.openInitials();
 appEl.append(hudCtl.hud.root);
 
 function blackboxPanel(): HTMLElement {
@@ -319,6 +323,8 @@ const gameMenu = new GameMenu({
     input.suspended = open; // menu buttons must not arm / switch modes / respawn
     ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: open } });
   },
+  board: ctx.lb,
+  track: () => ({ map: ctx.map.id, course: courseOf(ctx.map), cls: droneClass(ctx.spec) }),
 });
 appEl.append(gameMenu.root);
 

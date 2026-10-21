@@ -2,10 +2,12 @@
 // Betaflight quick start guide and the in-flight pause menu. Designed with the UI UX Pro Max design
 // system (see theme.css); fully usable with a controller, keyboard or mouse (nav.ts).
 import './theme.css';
+import type { LapBoard } from '../../app/leaderboard';
 import { KEYS, load, parseSpec, save, validNewGame } from '../../app/persist';
 import { DroneBuild, DroneSpec, PRESETS } from '../../builder/derive';
 import type { InputManager } from '../../input/gamepad';
 import { MAP_LIST, MAPS, preloadMap } from '../../maps/maps';
+import { formatLap } from '../../net/leaderboard';
 import { fetchRooms, RoomListing } from '../../net/lobby';
 import { MultiplayerClient, randomRoomCode } from '../../net/multiplayer';
 import type { SimSettings } from '../../worker/shared';
@@ -15,10 +17,11 @@ import { APP_COMMIT, APP_VERSION, bugReportUrl, commitUrl, gpuRenderer, REPO_URL
 import { cachedStats, DroneStats, droneStats } from './droneStats';
 import { CHAPTERS, GuideAction, guideDone, markDone } from './guide';
 import { icon, IconName, logo } from './icons';
+import { boardChanged, boardScreen, InitialsScreen, initialsScreen, showBoard, trackLabelOf } from './leaderboard';
 import { focusEl, focusables, MenuNav } from './nav';
 
 export type GameMode = 'free' | 'race' | 'drill';
-type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about';
+type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about' | 'leaderboard' | 'initials';
 type JoinFrom = 'host' | 'code' | 'browser';
 
 export interface SettingsTab { id: string; label: string; icon: IconName; render: () => HTMLElement }
@@ -37,6 +40,10 @@ export interface MenuHost {
   startFlight(mode: GameMode): void;
   joinRoom(code: string, room?: { name: string; public: boolean }): void;
   onOpenChange(open: boolean): void;
+  /** personal bests + the global leaderboard */
+  board: LapBoard;
+  /** the track and drone class flown now (the leaderboard opens on it) */
+  track(): { map: string; course: string; cls: string };
 }
 
 const MODES: { id: GameMode; title: string; sub: string; icon: IconName }[] = [
@@ -73,7 +80,7 @@ const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s) || sameSpe
 function loadMine(): DroneSpec | null { return load(MINE_KEY, parseSpec); }
 function keepMine(s: DroneSpec) { if (!isPreset(s)) save(MINE_KEY, s); }
 
-const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About' };
+const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About', leaderboard: 'Leaderboard', initials: 'Post your lap' };
 
 /**
  * Does a map have race gates? Known for the built-in maps; map packages (community, from disk) are
@@ -189,6 +196,7 @@ export class GameMenu {
 
   back() {
     if (cancelTopModal()) return; // Esc / B answers an open dialog with "Cancel"
+    if (this.stack[this.stack.length - 1] === 'initials' && this.ini) { this.ini.skip(); return; }
     if (this.stack.length > 1) { this.leave(() => { this.stack.pop(); this.render(); }); return; }
     if (this.stack[0] === 'pause') this.close();
   }
@@ -214,7 +222,8 @@ export class GameMenu {
     const keep = soft ? (document.activeElement as HTMLElement | null)?.dataset?.key : undefined;
     const scrollY = soft ? this.screenEl?.scrollTop ?? 0 : 0;
     const scr = el('section', { class: soft ? 'gm-screen gm-static' : 'gm-screen enter', 'aria-label': SCREEN_NAMES[s] });
-    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about() }[s];
+    this.ini = null;
+    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about(), leaderboard: () => this.leaderboard(), initials: () => this.initials() }[s];
     scr.append(build());
     runUnmounts(this.screenEl); // panels on the old screen drop their listeners (CLI output …)
     this.main.replaceChildren(scr);
@@ -323,7 +332,9 @@ export class GameMenu {
     const items: HTMLElement[] = paused
       ? [
         this.item({ icon: 'play', title: 'Resume', sub: 'Back to the quad', primary: true, autofocus: true, onClick: () => this.close() }),
+        ...(this.host.board.pending ? [this.item({ icon: 'trophy', title: 'Post your lap', sub: `New personal best ${formatLap(this.host.board.pending.lapMs)}: add your initials to the leaderboard`, onClick: () => this.openInitials() })] : []),
         this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.activeMode); this.close(); } }),
+        this.item({ icon: 'trophy', title: 'Leaderboard', sub: 'Fastest laps worldwide, by track and drone', onClick: () => this.go('leaderboard') }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: 'Arming, modes, rates, PIDs, OSD', onClick: () => this.go('guide') }),
         ...(mp.room && mp.status !== 'idle' ? [this.item({ icon: 'logout', title: 'Leave room', sub: mp.connected ? `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)` : `Room ${mp.room}: ${{ error: 'disconnected', reconnecting: 'reconnecting…', connecting: 'joining…' }[mp.status as string] ?? ''}`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
@@ -333,6 +344,7 @@ export class GameMenu {
         this.item({ icon: 'play', title: this.inFlight ? 'Continue' : 'Quick fly', sub: this.inFlight ? 'Back to the quad' : `Tiny whoop, the easiest quad to fly · ${MAP_LIST[this.host.sim().mapId]?.name.split(' — ')[0] ?? 'Map'}`, primary: true, autofocus: true, onClick: () => (this.inFlight ? this.close() : this.quickFly()) }),
         this.item({ icon: 'plus', title: 'New game', sub: 'Local flight or multiplayer: map, drone and mode', onClick: () => this.go('new') }),
         this.item({ icon: 'server', title: 'Server browser', sub: 'Join a public room and fly with others', onClick: () => this.go('browser') }),
+        this.item({ icon: 'trophy', title: 'Leaderboard', sub: 'Fastest laps worldwide, by track and drone', onClick: () => this.go('leaderboard') }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: `${guideDone().size}/${CHAPTERS.length} chapters done`, onClick: () => this.go('guide') }),
       ];
@@ -691,6 +703,49 @@ export class GameMenu {
         el('thead', {}, el('tr', {}, el('th', {}, 'Room'), el('th', {}, 'Map'), el('th', {}, 'Pilots'), el('th', {}, 'Code'), el('th', {}, ''))),
         tbody),
       empty);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Leaderboard + posting a personal best (screens in leaderboard.ts)
+  private ini: InitialsScreen | null = null;
+  /** where the initials entry goes when done: back to the screen below it, or into flight */
+  private iniReturn: 'back' | 'close' = 'back';
+
+  /** Post the pending personal best: only ever on the pilot's request (HUD card, L key, pause menu). */
+  openInitials() {
+    if (!this.host.board.pending) return;
+    if (!this.openState) { this.iniReturn = 'close'; this.inFlight = true; this.open('initials'); }
+    else if (this.stack[this.stack.length - 1] !== 'initials') { this.iniReturn = 'back'; this.go('initials'); }
+  }
+
+  private leaderboard(): HTMLElement {
+    return boardScreen({
+      board: this.host.board,
+      current: () => this.host.track(),
+      backBar: () => this.backBar(),
+      setTabs: (t) => { this.tabs = t; },
+      post: (map, course, cls) => { if (this.host.board.offer(map, course, cls)) { this.iniReturn = 'back'; this.go('initials'); } },
+    });
+  }
+
+  private initials(): HTMLElement {
+    const p = this.host.board.pending;
+    if (!p) { queueMicrotask(() => this.back()); return el('div'); } // posted or dismissed meanwhile
+    this.ini = initialsScreen({
+      board: this.host.board, pending: p,
+      trackLabel: trackLabelOf(p.map, p.course),
+      callsign: loadPilot().name,
+      usingPad: () => this.nav.usingPad,
+      open: (o) => this.nav.open(o),
+      done: (board) => {
+        this.ini = null;
+        boardChanged(p.map, p.course);
+        if (board) { showBoard(p.map, p.course, p.cls); this.stack[this.stack.length - 1] = 'leaderboard'; this.render(); return; }
+        if (this.iniReturn === 'close') this.close();
+        else { this.stack.pop(); this.render(); }
+      },
+    });
+    return el('div', {}, this.backBar(), this.ini.el);
   }
 
   // -------------------------------------------------------------------------------------------

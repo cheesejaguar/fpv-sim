@@ -15,6 +15,12 @@ export const KEYS = {
   /** the pilot's own (non-preset) build, kept while a preset is flown */
   specMine: 'fpv-spec-mine',
   newGame: 'fpv-newgame',
+  /** personal best lap per track + drone class */
+  pbs: 'fpv-pbs',
+  /** the last initials entered for the leaderboard */
+  initials: 'fpv-initials',
+  /** random token that keeps one leaderboard entry per board for this browser */
+  lbClient: 'fpv-lb-client',
 } as const;
 
 /** Format of the { v, data } envelope. Bump it (and migrate in readStored) when a stored shape changes. */
@@ -192,3 +198,40 @@ export function validNewGame<M extends string>(raw: unknown, modes: readonly M[]
   const preset = Number.isInteger(r.preset) && (r.preset as number) >= -2 && (r.preset as number) < presets ? (r.preset as number) : -1;
   return { mode, preset };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Personal bests + leaderboard (fpv-pbs, fpv-initials, fpv-lb-client)
+
+/** A personal best lap. submitted: its leaderboard entry once posted (id: to mark the pilot's rows). */
+export interface PbRecord { lapMs: number; splitsMs: number[]; at: number; summary: string; submitted?: { id: number; at: number } }
+/** Keyed by `${track}|${class}` (track: the map id, or `map:course`). */
+export type PbTable = Record<string, PbRecord>;
+
+export const PB_KEY_RE = /^[a-z0-9_-]{1,48}(?::[a-z0-9_-]{1,24})?\|[a-z0-9_-]{1,24}$/;
+const MAX_PBS = 300;
+const lapMs = (x: unknown): x is number => Number.isInteger(x) && (x as number) > 0 && (x as number) <= 3_600_000;
+
+function validPb(x: unknown): PbRecord | null {
+  if (!isObj(x) || !lapMs(x.lapMs) || !finite(x.at)) return null;
+  const splits = Array.isArray(x.splitsMs) && x.splitsMs.length <= 64 && x.splitsMs.every(lapMs) ? (x.splitsMs as number[]).slice() : [];
+  const sub = x.submitted;
+  const submitted = isObj(sub) && Number.isInteger(sub.id) && (sub.id as number) > 0 && finite(sub.at) ? { id: sub.id as number, at: sub.at } : undefined;
+  return { lapMs: x.lapMs, splitsMs: splits, at: x.at, summary: typeof x.summary === 'string' ? x.summary.slice(0, 60) : '', ...(submitted ? { submitted } : {}) };
+}
+
+/** Entries with a malformed key or record are dropped (no prototype: keys come from map ids). */
+export function validPbs(raw: unknown): PbTable {
+  const out: PbTable = Object.create(null);
+  if (!isObj(raw)) return out;
+  for (const [k, v] of Object.entries(raw).slice(0, MAX_PBS)) {
+    const pb = PB_KEY_RE.test(k) ? validPb(v) : null;
+    if (pb) out[k] = pb;
+  }
+  return out;
+}
+
+/** Three letters A-Z, or '' (none entered yet). */
+export const validInitials = (raw: unknown): string => (typeof raw === 'string' && /^[A-Z]{3}$/.test(raw) ? raw : '');
+
+/** 32 hex digits, or '' (none yet). */
+export const validClientId = (raw: unknown): string => (typeof raw === 'string' && /^[0-9a-f]{32}$/.test(raw) ? raw : '');

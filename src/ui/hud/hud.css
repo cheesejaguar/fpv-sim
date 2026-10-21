@@ -37,6 +37,8 @@
 .ghud .race dt { color: var(--h-mut); font-size: max(13px, 0.82em); letter-spacing: 0.08em; text-transform: uppercase; align-self: center; }
 .ghud .race dd { margin: 0; text-align: right; font-weight: 600; }
 .ghud .race dd.best { color: var(--h-ok); }
+.ghud .race dd.rec .ini { font-family: var(--h-display); font-weight: 400; letter-spacing: 0.12em; color: var(--h-violet); margin-right: 0.5em; }
+.ghud .race dd.rec.mine .ini { color: var(--h-ok); }
 .ghud .race .gate { margin-top: 0.5em; font-size: max(13px, 0.82em); color: var(--h-mut); letter-spacing: 0.06em; }
 .ghud .race .bar { height: 0.32em; border-radius: 99px; background: rgba(148, 163, 184, 0.25); margin-top: 0.25em; overflow: hidden; }
 .ghud .race .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--h-violet), var(--h-rose)); border-radius: 99px; transition: width 200ms ease; }
@@ -79,6 +81,8 @@
 .ghud .notice { max-width: 26em; font-size: max(13px, 0.9em); pointer-events: auto; }
 .ghud .notice b { display: block; font-family: var(--h-display); font-weight: 400; letter-spacing: 0.05em; color: var(--h-violet); margin-bottom: 0.2em; }
 .ghud .notice.warn b { color: var(--h-warn); }
+.ghud .notice.pb b { color: var(--h-ok); }
+.ghud .notice button.ghost { margin-left: 0.5em; background: transparent; border: 1px solid var(--h-border); color: var(--h-fg); }
 .ghud .notice p { margin: 0.2em 0; color: #cbd5e1; }
 .ghud .notice button { pointer-events: auto; margin-top: 0.45em; min-height: 2.4em; padding: 0 1em; border-radius: 9px; border: 0; background: var(--h-primary); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 .ghud .notice .sub { color: var(--h-mut); font-size: max(13px, 0.86em); }
