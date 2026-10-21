@@ -6,6 +6,12 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Sound
+- Betaflight's beeper and the ESCs' DShot beacon are much quieter (about 15 dB at the default),
+  with a new **Beeper volume** slider under Settings → Audio.
+- Saved sound settings (on/off, volume) apply as soon as the page loads, not only after the next
+  settings change.
+
 ### Lap replays
 - **Replay permalinks**: `/?replay=<entry id>` opens a leaderboard lap's replay straight from a link,
   and `&t=<seconds>` starts it at that moment. The address bar shows the link while a board replay

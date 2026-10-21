@@ -178,6 +178,8 @@ export class MotorAudio {
   private muted = false;
   enabled = true;
   volume = 0.5;
+  /** the FC's beeper and the ESCs' DShot beacon, relative to the rest (Settings: Beeper volume) */
+  beeperLevel = 1;
 
   /**
    * Browsers only let audio start after a mouse / touch / keyboard gesture on the page; gamepad and
@@ -285,7 +287,7 @@ export class MotorAudio {
       if (this.beaconT0 >= 0) {
         // ESC beacon: the windings driven at an audio tone, each motor a touch apart
         v.osc.frequency.setTargetAtTime(BEACON_HZ * (1 + k * 0.004), t, 0.002);
-        v.g.gain.setTargetAtTime(beacon ? 0.05 : 0, t, 0.004);
+        v.g.gain.setTargetAtTime(beacon ? 0.018 * this.beeperLevel : 0, t, 0.004);
         v.wg.gain.setTargetAtTime(0, t, 0.01); v.ng.gain.setTargetAtTime(0, t, 0.01);
         continue;
       }
@@ -311,7 +313,8 @@ export class MotorAudio {
       on ||= beepOn(this.pattern.kind, pt);
       if (!BEEP_PATTERNS[this.pattern.kind].repeat && pt > 2) this.pattern = null;
     }
-    this.beepGain.gain.setTargetAtTime(on ? 0.12 : 0, t, 0.003);
+    // a 3.1 kHz piezo sits where hearing is most sensitive: well under the motors at full level
+    this.beepGain.gain.setTargetAtTime(on ? 0.035 * this.beeperLevel : 0, t, 0.003);
   }
 
   /** Crash / prop strike from the quad: a low thud plus a plastic-and-carbon clatter, strength 0..1. */

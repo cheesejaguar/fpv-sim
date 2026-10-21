@@ -186,6 +186,7 @@ export function validView(raw: unknown): ViewSettings {
     highlightGate: bool,
     timeOfDay: oneOf('map', 'morning', 'noon', 'golden', 'dusk', 'night'),
     goggleOverlay: bool,
+    beeperVolume: num(0, 1),
   });
 }
 

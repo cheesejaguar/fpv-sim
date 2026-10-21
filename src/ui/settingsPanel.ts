@@ -21,6 +21,7 @@ export interface ViewSettings {
   highlightGate: boolean;  // make the next race gate glow
   timeOfDay: TimeOfDay;    // 'map' = lit as the map was authored
   goggleOverlay: boolean;  // the goggles' own signal / bitrate / DVR readout
+  beeperVolume: number;    // Betaflight's beeper and the DShot beacon, relative to the motors
 }
 
 export const TIMES_OF_DAY: { value: TimeOfDay; label: string }[] = [
@@ -29,7 +30,7 @@ export const TIMES_OF_DAY: { value: TimeOfDay; label: string }[] = [
 ];
 
 // the training telemetry overlay is opt-in (H / D-pad down): new pilots see the OSD, not a wall of numbers
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map', goggleOverlay: true };
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map', goggleOverlay: true, beeperVolume: 0.6 };
 
 /** What the latency readout needs from the running app (no readout without it). */
 export interface LatencySource {
@@ -124,6 +125,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
         section('Audio / HUD',
           checkbox('Motor sound', v.audio, (x) => { v.audio = x; pushV(); }),
           slider({ label: 'Volume', min: 0, max: 1, step: 0.01, value: v.volume, onInput: (x) => { v.volume = x; pushV(); } }).row,
+          slider({ label: 'Beeper volume', min: 0, max: 1, step: 0.05, value: v.beeperVolume, hint: 'Betaflight’s buzzer (arming, low battery, lost model) and the ESCs’ beacon', onInput: (x) => { v.beeperVolume = x; pushV(); } }).row,
           checkbox('Training telemetry overlay', v.telemetry, (x) => { v.telemetry = x; pushV(); }),
           checkbox('Highlight next gate', v.highlightGate, (x) => { v.highlightGate = x; pushV(); }),
           select('View', [{ value: 'fpv', label: 'FPV goggles' }, { value: 'chase', label: 'Chase camera' }, { value: 'los', label: 'Line of sight (pilot)' }], v.view, (x) => { v.view = x; pushV(); }),

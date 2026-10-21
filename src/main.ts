@@ -105,6 +105,8 @@ const ctx: AppCtx = {
 };
 ctx.scene.scene.add(ctx.drone.root);
 ctx.fpv.setVideo(ctx.build.info.components.video, ctx.view.renderScale);
+// the saved sound settings (applyView only runs on a change)
+ctx.audio.enabled = view0.audio; ctx.audio.volume = view0.volume; ctx.audio.beeperLevel = view0.beeperVolume;
 void ctx.osd.setFont(ctx.view.osdFont);
 
 const sticks = new SticksView(), spectrum = new SpectrumView();
@@ -214,7 +216,7 @@ function applyView(v: ViewSettings) {
   if (todChanged) rebuildScene();
   if (fontChanged) void ctx.osd.setFont(v.osdFont);
   if (scaleChanged) ctx.fpv.setVideo(ctx.build.info.components.video, v.renderScale);
-  ctx.audio.enabled = v.audio; ctx.audio.volume = v.volume;
+  ctx.audio.enabled = v.audio; ctx.audio.volume = v.volume; ctx.audio.beeperLevel = v.beeperVolume;
 }
 
 // ---------------------------------------------------------------------------------------------
