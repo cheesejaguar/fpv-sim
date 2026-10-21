@@ -40,6 +40,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
         section('Physics',
           select('Physics / PID loop rate', [{ value: '8000', label: '8 kHz (gyro 8k / PID 8k)' }, { value: '4000', label: '4 kHz' }, { value: '2000', label: '2 kHz (low-end CPU)' }], String(s.physicsHz), (x) => { s.physicsHz = +x; pushS(); }),
           select('RC link rate (ELRS)', [{ value: '500', label: '500 Hz' }, { value: '250', label: '250 Hz' }, { value: '150', label: '150 Hz' }, { value: '50', label: '50 Hz' }], String(s.rcLinkHz), (x) => { s.rcLinkHz = +x; pushS(); }),
+          select('RC transmitter power', [{ value: '10', label: '10 mW' }, { value: '25', label: '25 mW' }, { value: '100', label: '100 mW' }, { value: '250', label: '250 mW' }, { value: '500', label: '500 mW' }, { value: '1000', label: '1 W' }], String(s.rcTxPowerMw ?? 250), (x) => { s.rcTxPowerMw = +x; pushS(); }),
           slider({ label: 'Prop wash intensity ×', min: 0, max: 3, step: 0.05, value: s.propwash, onInput: (x) => { s.propwash = x; pushS(); } }).row,
           slider({ label: 'Time scale', min: 0.1, max: 1, step: 0.05, value: s.timeScale, onInput: (x) => { s.timeScale = x; pushS(); } }).row,
           checkbox('Prop / crash damage', s.damage, (x) => { s.damage = x; pushS(); }),

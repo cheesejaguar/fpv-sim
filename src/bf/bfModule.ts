@@ -86,6 +86,10 @@ export class Betaflight {
     for (let i = 0; i < 16; i++) h[base + i] = Math.round(ch[i] ?? 1500);
     this.f('bf_set_rc')(this.pRc);
   }
+  /** RC link statistics (CRSF-style): LQ %, uplink RSSI dBm, RF mode index. No-op on older builds. */
+  setLinkStats(lqPercent: number, rssiDbm: number, rfMode: number): void {
+    if (this.has('bf_set_link_stats')) this.f('bf_set_link_stats')(lqPercent, rssiDbm, rfMode);
+  }
   setBattery(volts: number, amps: number, mahDrawn: number): void { this.f('bf_set_battery')(volts, amps, mahDrawn); }
   setErpm(erpm: ArrayLike<number>): void {
     const h = this.m.HEAPF32, base = this.pErpm >> 2;

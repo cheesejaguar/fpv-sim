@@ -9,7 +9,8 @@ import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { defaultCli, osdGrid, osdLayout } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
 import { MAPS, preloadMap } from '../maps/maps';
-import { GateDef, MapDef, PrimitiveWorld, spawnGroundZ } from '../maps/world';
+import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from '../maps/world';
+import { RcLink } from '../sim/rcLink';
 import { isa } from '../sim/atmosphere';
 import { Spectrum } from '../sim/fft';
 import { QuadEnv, QuadSim } from '../sim/quad';
@@ -35,6 +36,10 @@ let fwState = 0;
 
 let simT = 0;
 let wallStart = 0, simAtWallStart = 0;
+// 2.4 GHz RC control link: decides which RC packets arrive and feeds LQ / RSSI to Betaflight
+const rcLink = new RcLink();
+const pilotTmp = { x: 0, y: 0, z: 0 };
+let linkAcc = 0;
 let rcAcc = 0, battAcc = 0, baroAcc = 0, ringAcc = 0, osdAcc = 0, telAcc = 0, cliAcc = 0;
 let lastOsdFrame = -1;
 const motorCmd = new Uint16Array(4);
@@ -103,7 +108,7 @@ function buildQuad(keepBattery = false) {
   quad = new QuadSim(build.params, settings.physicsHz, spec.batterySoc, settings.ambientC);
   if (keepBattery && prev) quad.battery.s = { ...prev.battery.s };
   for (const a of quad.aero) a.propwashScale = settings.propwash;
-  if (spec.overrides.propImbalance != null) for (const a of quad.aero) a.damage.imbalance = spec.overrides.propImbalance;
+  // (prop imbalance, including the builder override, now comes from the rotor config)
   respawn();
   post({ type: 'built', info: serializeInfo(build) });
 }
@@ -216,10 +221,22 @@ function physicsStep(dt: number) {
   const dtUs = Math.round(dt * 1e6);
   // RC link packets
   rcAcc += dt;
+  linkAcc += dt;
+  if (linkAcc >= 0.05) {
+    // slowly varying uplink budget: range, walls, fading (pilot stands at the map's pilot spot)
+    rcLink.txPowerMw = settings.rcTxPowerMw ?? 250;
+    rcLink.rateHz = settings.rcLinkHz;
+    rcLink.updateBudget(world, pilotPos(map, pilotTmp), quad.s.pos, linkAcc);
+    linkAcc = 0;
+  }
   if (rcAcc >= 1 / settings.rcLinkHz) {
     rcAcc -= 1 / settings.rcLinkHz;
-    for (let i = 0; i < 16; i++) rcBuf[i] = sh.rc[i] || 1500;
-    bf?.setRc(rcBuf);
+    // a lost packet is really lost: Betaflight sees no new frame (and fails safe if it persists)
+    if (rcLink.packet()) {
+      for (let i = 0; i < 16; i++) rcBuf[i] = sh.rc[i] || 1500;
+      bf?.setRc(rcBuf);
+    }
+    bf?.setLinkStats(rcLink.lq, Math.round(rcLink.rssiDbm), rcLink.rfMode);
   }
   // sensors -> FC
   if (bf) {

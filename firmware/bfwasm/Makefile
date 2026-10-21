@@ -99,7 +99,7 @@ CFLAGS := $(OPT) $(ABI) -std=gnu17 \
             $(DEFINES) $(INCLUDES)
 
 EXPORTED_FUNCTIONS := \
-            _bf_init,_bf_step,_bf_set_gyro_acc,_bf_set_rc,_bf_set_battery, \
+            _bf_init,_bf_step,_bf_set_gyro_acc,_bf_set_rc,_bf_set_link_stats,_bf_set_battery, \
             _bf_set_erpm,_bf_set_baro,_bf_get_motors,_bf_get_motor_reversed, \
             _bf_serial_write,_bf_serial_read, \
             _bf_osd_chars,_bf_osd_attrs,_bf_osd_cols,_bf_osd_rows,_bf_osd_frame, \

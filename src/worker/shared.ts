@@ -79,6 +79,7 @@ export interface SimSettings {
   wind: { speed: number; direction: number; turbulence: number; gusts: number };
   propwash: number;
   rcLinkHz: number;     // ELRS packet rate
+  rcTxPowerMw?: number; // RC transmitter power (ELRS: 10..1000 mW)
   ambientC: number;
   paused: boolean;
 }
@@ -86,7 +87,7 @@ export interface SimSettings {
 export const DEFAULT_SETTINGS: SimSettings = {
   mapId: 'field', physicsHz: 8000, timeScale: 1, damage: true,
   wind: { speed: 2.5, direction: 240, turbulence: 1, gusts: 2 },
-  propwash: 1, rcLinkHz: 250, ambientC: 20, paused: false,
+  propwash: 1, rcLinkHz: 250, rcTxPowerMw: 250, ambientC: 20, paused: false,
 };
 
 export type ToWorker =

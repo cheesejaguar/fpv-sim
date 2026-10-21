@@ -49,6 +49,8 @@
 #include "fc/runtime_config.h"
 #include "fc/tasks.h"
 
+#include "rx/rx.h"
+
 #include "flight/imu.h"
 
 #include "scheduler/scheduler.h"
@@ -294,6 +296,29 @@ EMSCRIPTEN_KEEPALIVE void bf_set_rc(const uint16_t *ch16)
     if (initialised) {
         bfwasmRxNewFrame();
     }
+}
+
+/*
+ * RC link statistics, reported the way a CRSF (ExpressLRS / Crossfire) receiver does it:
+ * link quality 0-100 % (share of packets received), uplink RSSI in dBm and the RF mode
+ * index shown on the OSD as "LQ <mode>:<lq>". Betaflight's own CRSF path then drives the
+ * OSD link-quality / RSSI elements and their warnings. Call once per RC packet slot;
+ * values are re-applied every call, so they survive a firmware reboot.
+ */
+EMSCRIPTEN_KEEPALIVE void bf_set_link_stats(int lq_percent, int rssi_dbm, int rf_mode)
+{
+    if (lq_percent < 0) lq_percent = 0;
+    if (lq_percent > 100) lq_percent = 100;
+    linkQualitySource = LQ_SOURCE_RX_PROTOCOL_CRSF;
+    rssiSource = RSSI_SOURCE_RX_PROTOCOL_CRSF; // the setters below only accept the active source
+    setLinkQualityDirect((uint16_t)lq_percent);
+    rxSetRfMode((uint8_t)rf_mode);
+    // CRSF maps uplink RSSI dBm onto Betaflight's 0-1023 RSSI (-130 dBm .. 0 dBm)
+#ifdef USE_RX_RSSI_DBM
+    setRssiDbmDirect((int16_t)rssi_dbm, RSSI_SOURCE_RX_PROTOCOL_CRSF);
+#endif
+    const int rssi = scaleRange(constrain(rssi_dbm, -130, 0), -130, 0, 0, RSSI_MAX_VALUE);
+    setRssiDirect((uint16_t)rssi, RSSI_SOURCE_RX_PROTOCOL_CRSF);
 }
 
 EMSCRIPTEN_KEEPALIVE void bf_set_battery(float volts, float amps, float mah_drawn)
