@@ -9,14 +9,26 @@ import type { QuakeLevel } from './quakeMap';
 
 export type Material = keyof typeof MATERIALS;
 
-export interface BoxPrim { kind: 'box'; c: V3; half: V3; yaw: number; pitch?: number; mat: Material; color?: number; tag?: string; visual?: 'concrete' | 'brick' | 'metal' | 'wood' | 'gate' | 'pad' | 'glass' | 'plain' }
+export interface BoxPrim { kind: 'box'; c: V3; half: V3; yaw: number; pitch?: number; mat: Material; color?: number; tag?: string; visual?: 'concrete' | 'brick' | 'metal' | 'wood' | 'gate' | 'pad' | 'glass' | 'plain' | BoxDecor; text?: string }
+/** Render looks for boxes: self-lit LED panel, printed banner / video screen (showing `text`), see-through safety net. */
+export type BoxDecor = 'led' | 'banner' | 'screen' | 'net';
 export interface CylPrim { kind: 'cyl'; c: V3; r: number; h: number; mat: Material; color?: number; tag?: string } // c = base centre, vertical
 export interface SpherePrim { kind: 'sphere'; c: V3; r: number; mat: Material; color?: number; tag?: string }
 /** Convex polyhedron: planes = (nx, ny, nz, d) per face, outward normals, inside where n·p <= d. edges = (a, b) xyz pairs. */
 export interface BrushPrim { kind: 'brush'; c: V3; planes: Float64Array; edges: Float64Array; min: V3; max: V3; mat: Material; tag?: string }
 export type Prim = BoxPrim | CylPrim | SpherePrim | BrushPrim;
 
-export interface GateDef { id: number; c: V3; yaw: number; width: number; height: number; kind: 'square' | 'arch' | 'flag' | 'dive' }
+/**
+ * A timed obstacle. c = bottom centre of the counted opening (dive: frame centre; flag: pole foot),
+ * yaw = direction of travel (CCW from +y), width x height = clear opening.
+ * hurdle: wide low opening under a banner; ladder: `stack` openings on top of each other, only the
+ * top one counts; onTop: the gate sits on the gate below it (no legs / bottom bar, e.g. a split-S stack).
+ */
+export interface GateDef {
+  id: number; c: V3; yaw: number; width: number; height: number;
+  kind: 'square' | 'arch' | 'flag' | 'dive' | 'hurdle' | 'ladder';
+  stack?: number; onTop?: boolean;
+}
 
 export interface MapDef {
   id: string; name: string;
@@ -35,6 +47,7 @@ export interface MapDef {
   pilot?: V3;                         // pilot / video receiver position (default: beside the spawn)
   windScale?: number;                 // indoor maps: scale the configured wind
   quake?: QuakeLevel;                 // render data for maps loaded from Quake .map sources
+  decor?: Prim[];                     // render-only scenery (crowds, screens, LED strips): no collision
 }
 
 /** Floor height under the spawn point. */

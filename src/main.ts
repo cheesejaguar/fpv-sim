@@ -48,8 +48,8 @@ let fwStatus = 'Loading Betaflight firmware…';
 const cliListeners: ((t: string) => void)[] = [];
 const batchWaiters = new Map<number, (s: string) => void>();
 let batchId = 1;
-const gateTimes: { gate: number; t: number }[] = [];
 let lapStart = -1, bestLap = Infinity, lastLap = 0, lapCount = 0;
+let nextGate = 0; // index into map.gates of the gate to fly next (mirrors the worker's counter)
 const logLines: string[] = [];
 // Hover-box drill: stay inside a 1.5 m sphere centred 3 m above the pad; score = time inside / elapsed.
 const drill = { on: false, t0: 0, inside: 0, last: 0, best: 0 };
@@ -73,14 +73,16 @@ send({ type: 'init', sab: sh.sab, spec, settings: simSettings });
 function log(t: string) { logLines.push(t); if (logLines.length > 6) logLines.shift(); }
 
 function onGate(gate: number, t: number) {
-  const n = map.gates.length;
-  gateTimes.push({ gate, t });
-  if (gate === 0) {
+  const i = map.gates.findIndex((g) => g.id === gate);
+  nextGate = (i + 1) % map.gates.length;
+  if (i === 0) {
     if (lapStart >= 0) { lastLap = t - lapStart; lapCount++; bestLap = Math.min(bestLap, lastLap); mp.sendLap(lapCount, lastLap, bestLap); }
     lapStart = t;
   }
-  void n;
 }
+/** The worker respawned the quad (reset key / map change): its gate counter restarts at gate 0. */
+function onRespawn() { nextGate = 0; lapStart = -1; }
+function sendReset(fullBattery = false) { input.disarm(); onRespawn(); send({ type: 'reset', repair: true, fullBattery }); }
 
 // ---------------------------------------------------------------------------------------------
 // Rendering
@@ -111,7 +113,7 @@ void osd.setFont(view.osdFont);
 const link = new VideoLink();
 const audio = new MotorAudio();
 const input = new InputManager();
-input.onReset = () => send({ type: 'reset', repair: true });
+input.onReset = () => { onRespawn(); send({ type: 'reset', repair: true }); };
 input.onMenu = () => toggleMenu();
 const blackbox = new Blackbox();
 // Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
@@ -159,7 +161,7 @@ function applySim(s: SimSettings) {
     if (simSettings.mapId !== s.mapId) return; // superseded while loading
     sceneB.scene.remove(drone.root); sceneB.dispose();
     map = MAPS[s.mapId](); world = new PrimitiveWorld(map); sceneB = buildScene(map); sceneB.scene.add(drone.root);
-    lapStart = -1; bestLap = Infinity; lapCount = 0;
+    lapStart = -1; bestLap = Infinity; lapCount = 0; nextGate = 0;
     if (mp.connected && !fromRoom) mp.sendMap(s.mapId); // the room flies one shared map
   }, (e) => log(`Map ${s.mapId} failed to load: ${e}`));
   send({ type: 'settings', settings: { ...s, paused: menuOpen && pauseInMenu } });
@@ -179,11 +181,11 @@ setInterval(() => { const ch = input.poll(); sh.rc.set(ch); Atomics.add(sh.ctrl,
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
   if (e.code === 'Escape') toggleMenu();
-  if (e.code === 'KeyR') { input.disarm(); send({ type: 'reset', repair: true }); }
+  if (e.code === 'KeyR') sendReset();
   if (e.code === 'KeyC') { const order: ViewSettings['view'][] = ['fpv', 'chase', 'los']; applyView({ ...view, view: order[(order.indexOf(view.view) + 1) % 3] }); }
   if (e.code === 'KeyH') applyView({ ...view, telemetry: !view.telemetry });
   if (e.code === 'KeyG') { drill.on = !drill.on; drill.t0 = -1; drill.inside = 0; }
-  if (e.code === 'KeyB') { input.disarm(); send({ type: 'reset', repair: true, fullBattery: true }); }
+  if (e.code === 'KeyB') sendReset(true);
   if (e.code === 'KeyF') toggleSpectrum();
 });
 // Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the
@@ -330,7 +332,7 @@ function updateHud() {
     telBox.style.display = 'block'; sticks.style.display = 'block';
     drawSticks();
   } else { telBox.style.display = 'none'; sticks.style.display = 'none'; }
-  lapBox.textContent = map.gates.length ? `Lap ${lapCount}  last ${lastLap ? lastLap.toFixed(2) : '--'} s  best ${bestLap < Infinity ? bestLap.toFixed(2) : '--'} s  next gate ${(gateTimes.length % map.gates.length) + 1}/${map.gates.length}` : '';
+  lapBox.textContent = map.gates.length ? `Lap ${lapCount}  last ${lastLap ? lastLap.toFixed(2) : '--'} s  best ${bestLap < Infinity ? bestLap.toFixed(2) : '--'} s  next gate ${nextGate + 1}/${map.gates.length}` : '';
   // live room leaderboard (best lap first)
   if (mp.connected && map.gates.length) {
     const rows = [{ name: loadPilot().name + ' (you)', lap: lapCount, best: bestLap }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity }))]
@@ -437,6 +439,7 @@ function animate(now: number) {
   const tCap = Math.floor(tDisp / period) * period;
   // props spin visual
   const rpmNow = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]];
+  sceneB.setGateHighlight(nextGate, view.highlightGate, now / 1000);
   if (view.view === 'fpv') {
     if (tCap !== lastCap && poseAt(tCap)) {
       const dtw = (now - lastCapWall) / 1000; lastCapWall = now;

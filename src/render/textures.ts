@@ -83,3 +83,41 @@ export function gateTexture(color: string) {
     ctx.fillStyle = 'rgba(0,0,0,0.85)'; for (let i = 0; i < 4; i++) ctx.fillRect(0, i * 32 + 12, s, 6);
   }, 18, 1);
 }
+/** Safety net: transparent mesh of light cord (10 cm cells at the 0.8 m world-UV texel used for it). */
+export function netTexture() {
+  return canvasTex(128, (ctx, s) => {
+    ctx.clearRect(0, 0, s, s);
+    ctx.strokeStyle = 'rgba(235,235,235,0.9)'; ctx.lineWidth = 2;
+    for (let i = 0; i < s; i += 16) { ctx.beginPath(); ctx.moveTo(i + 1, 0); ctx.lineTo(i + 1, s); ctx.moveTo(0, i + 1); ctx.lineTo(s, i + 1); ctx.stroke(); }
+  }, 19, 1);
+}
+/** Printed advertising board / video screen: '|' separates lines. Width:height follows the board. */
+export function textTexture(text: string, bg: number, aspect: number, screen: boolean) {
+  const w = 1024, h = Math.max(64, Math.min(1024, Math.round(w / Math.max(aspect, 0.25))));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d')!;
+  const hex = '#' + bg.toString(16).padStart(6, '0');
+  ctx.fillStyle = hex; ctx.fillRect(0, 0, w, h);
+  const lines = text.split('|');
+  if (screen) {
+    // LED video wall: glowing frame and scanlines behind bright text
+    const g = ctx.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#0d2a5c'); g.addColorStop(1, '#3a0d4f');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#38e1ff'; ctx.lineWidth = Math.max(4, h * 0.03); ctx.strokeRect(ctx.lineWidth, ctx.lineWidth, w - 2 * ctx.lineWidth, h - 2 * ctx.lineWidth);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; for (let y = 0; y < h; y += 4) ctx.fillRect(0, y, w, 1);
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(0, 0, w, h * 0.12); ctx.fillRect(0, h * 0.88, w, h * 0.12);
+  }
+  const size = Math.min((h * 0.8) / lines.length, (w * 1.6) / Math.max(...lines.map((l) => l.length)));
+  ctx.font = `900 ${size}px "Arial Black", Impact, sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  lines.forEach((l, i) => {
+    const y = h / 2 + (i - (lines.length - 1) / 2) * size * 1.05;
+    if (screen) { ctx.shadowColor = '#7ff3ff'; ctx.shadowBlur = size * 0.2; ctx.fillStyle = i === 0 ? '#ffffff' : '#ffd84a'; }
+    else ctx.fillStyle = '#ffffff';
+    ctx.fillText(l, w / 2, y, w * 0.94);
+  });
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}

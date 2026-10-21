@@ -9,6 +9,7 @@ import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { defaultCli, osdGrid, osdLayout } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
 import { MAPS, preloadMap } from '../maps/maps';
+import { gatePassed } from '../maps/gates';
 import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from '../maps/world';
 import { RcLink } from '../sim/rcLink';
 import { isa } from '../sim/atmosphere';
@@ -341,29 +342,7 @@ function detectGates() {
   const gates = map.gates;
   if (!gates.length) { lastPos = { ...p }; return; }
   const g: GateDef = gates[nextGate % gates.length];
-  let passed = false;
-  if (g.kind === 'dive') {
-    if (lastPos.z > g.c.z && p.z <= g.c.z) {
-      const c = Math.cos(-g.yaw), s = Math.sin(-g.yaw);
-      const dx = p.x - g.c.x, dy = p.y - g.c.y;
-      const lx = c * dx - s * dy, ly = s * dx + c * dy;
-      passed = Math.abs(lx) < g.width / 2 && Math.abs(ly) < g.width / 2;
-    }
-  } else if (g.kind === 'flag') {
-    // flag: count once the quad has gone around it (within 6 m and on its far side wrt travel)
-    const nx = -Math.sin(g.yaw), ny = Math.cos(g.yaw);
-    const d0 = (lastPos.x - g.c.x) * nx + (lastPos.y - g.c.y) * ny, d1 = (p.x - g.c.x) * nx + (p.y - g.c.y) * ny;
-    passed = d0 < 0 && d1 >= 0 && Math.hypot(p.x - g.c.x, p.y - g.c.y) < 6;
-  } else {
-    const nx = -Math.sin(g.yaw), ny = Math.cos(g.yaw);
-    const d0 = (lastPos.x - g.c.x) * nx + (lastPos.y - g.c.y) * ny, d1 = (p.x - g.c.x) * nx + (p.y - g.c.y) * ny;
-    if (d0 < 0 && d1 >= 0) {
-      const u = d0 / (d0 - d1);
-      const ix = lastPos.x + (p.x - lastPos.x) * u, iy = lastPos.y + (p.y - lastPos.y) * u, iz = lastPos.z + (p.z - lastPos.z) * u;
-      const lat = (ix - g.c.x) * Math.cos(g.yaw) + (iy - g.c.y) * Math.sin(g.yaw);
-      passed = Math.abs(lat) < g.width / 2 && iz > g.c.z && iz < g.c.z + g.height;
-    }
-  }
+  const passed = gatePassed(g, lastPos, p);
   if (passed) { post({ type: 'gate', gate: g.id, t: simT }); nextGate++; }
   lastPos = { ...p };
 }
