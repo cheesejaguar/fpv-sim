@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
@@ -11,6 +12,16 @@ const fwVersion = (() => {
     return h.digest('hex').slice(0, 12);
   } catch { return 'dev'; }
 })();
+
+// App version for the menu / bug reports: package.json version + short commit ("0.1.0+1a2b3c4").
+// Vercel builds have no .git, but tell us the commit in VERCEL_GIT_COMMIT_SHA.
+const commit = (() => {
+  const v = process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA;
+  if (v && /^[0-9a-f]{7,40}$/i.test(v)) return v.toLowerCase();
+  try { return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return ''; }
+})();
+const pkgVersion = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version;
+const appVersion = commit ? `${pkgVersion}+${commit.slice(0, 7)}` : pkgVersion;
 
 // SharedArrayBuffer requires cross-origin isolation.
 const isolation = {
@@ -32,8 +43,24 @@ export default defineConfig({
   plugins: [isolateAll],
   server: { headers: isolation, port: 5173 },
   preview: { headers: isolation },
-  define: { __FW_VERSION__: JSON.stringify(fwVersion) },
+  define: {
+    __FW_VERSION__: JSON.stringify(fwVersion),
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
+    'import.meta.env.VITE_APP_COMMIT': JSON.stringify(commit),
+  },
   worker: { format: 'es' },
-  build: { target: 'es2022' },
+  build: {
+    target: 'es2022',
+    // .map files are emitted (for debugging a production stack trace) but not referenced by the bundles
+    sourcemap: 'hidden',
+    // never inline fonts as data: URIs: the Content-Security-Policy (vercel.json) allows font-src 'self' only
+    assetsInlineLimit: (file: string) => (/\.(woff2?|ttf|otf)$/i.test(file) ? false : undefined),
+    rolldownOptions: {
+      output: {
+        // three.js core changes far less often than the app: its own long-cached chunk
+        codeSplitting: { groups: [{ name: 'three', test: /node_modules[\\/]three[\\/]build[\\/]/ }] },
+      },
+    },
+  },
   test: { environment: 'node', include: ['tests/**/*.test.ts'] },
 } as any);
