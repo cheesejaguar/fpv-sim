@@ -1,100 +1,19 @@
-// The launch maps: an open field with a MultiGP-style race course and an abandoned industrial
+// The launch maps: a World Cup stadium race course and an abandoned industrial
 // "bando" for freestyle (procedural but deterministic), plus classic id Software Quake levels built
 // from their GPL'd .map sources (see public/maps/quake/ATTRIBUTION.md), and a Freedoom level
 // (BSD-3-Clause; see public/maps/freedoom/ATTRIBUTION.md).
 import freedoomTextures from '../../public/maps/freedoom/textures/manifest.json';
 import { doomMapDef } from './doomMap';
 import { quakeMapDef } from './quakeMap';
-import { BoxPrim, fbm, GateDef, MapDef, Prim, seededRandom } from './world';
+import { BoxPrim, fbm, MapDef, Prim, seededRandom } from './world';
+import { worldCupMap } from './worldCup';
 
 const deg = Math.PI / 180;
 
-// ---------------------------------------------------------------------------------------------
-// Gate geometry builders (MultiGP spec: 5 ft x 5 ft inner opening square gates, flags, dive gates)
-
-function squareGate(g: GateDef, prims: Prim[]) {
-  const t = 0.05, w = g.width, h = g.height;
-  const c = Math.cos(g.yaw), s = Math.sin(g.yaw);
-  const at = (lx: number, z: number) => ({ x: g.c.x + c * lx, y: g.c.y + s * lx, z: g.c.z + z });
-  // gate's opening faces along local y (yaw = direction of travel); posts on local x
-  const base: Omit<BoxPrim, 'c' | 'half'> = { kind: 'box', yaw: g.yaw, mat: 'gate', visual: 'gate', tag: `gate${g.id}` };
-  prims.push({ ...base, c: at(-w / 2 - t, h / 2), half: { x: t, y: t, z: h / 2 + t } });
-  prims.push({ ...base, c: at(w / 2 + t, h / 2), half: { x: t, y: t, z: h / 2 + t } });
-  prims.push({ ...base, c: at(0, h + t), half: { x: w / 2 + 2 * t, y: t, z: t } });
-  if (g.kind === 'square') prims.push({ ...base, c: at(0, 0.02), half: { x: w / 2 + 2 * t, y: 0.15, z: 0.02 } });
-}
-
-function diveGate(g: GateDef, prims: Prim[]) {
-  // horizontal square frame on four poles: fly down through it
-  const w = g.width, t = 0.05, hgt = g.c.z;
-  const c = Math.cos(g.yaw), s = Math.sin(g.yaw);
-  const at = (lx: number, ly: number, z: number) => ({ x: g.c.x + c * lx - s * ly, y: g.c.y + s * lx + c * ly, z });
-  const base: Omit<BoxPrim, 'c' | 'half'> = { kind: 'box', yaw: g.yaw, mat: 'gate', visual: 'gate', tag: `gate${g.id}` };
-  prims.push({ ...base, c: at(0, -w / 2, hgt), half: { x: w / 2, y: t, z: t } });
-  prims.push({ ...base, c: at(0, w / 2, hgt), half: { x: w / 2, y: t, z: t } });
-  prims.push({ ...base, c: at(-w / 2, 0, hgt), half: { x: t, y: w / 2, z: t } });
-  prims.push({ ...base, c: at(w / 2, 0, hgt), half: { x: t, y: w / 2, z: t } });
-  for (const [lx, ly] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) prims.push({ kind: 'cyl', c: at((lx * w) / 2, (ly * w) / 2, 0), r: 0.025, h: hgt, mat: 'metal', tag: 'pole' });
-}
-
-function flag(g: GateDef, prims: Prim[]) {
-  prims.push({ kind: 'cyl', c: { x: g.c.x, y: g.c.y, z: 0 }, r: 0.03, h: g.height, mat: 'gate', tag: `gate${g.id}` });
-  prims.push({ kind: 'box', c: { x: g.c.x, y: g.c.y + 0.25, z: g.height * 0.62 }, half: { x: 0.01, y: 0.25, z: g.height * 0.3 }, yaw: g.yaw, mat: 'foliage', visual: 'gate', tag: `flag${g.id}` });
-}
-
-export function buildGatePrims(gates: GateDef[], prims: Prim[]) {
-  for (const g of gates) {
-    if (g.kind === 'dive') diveGate(g, prims);
-    else if (g.kind === 'flag') flag(g, prims);
-    else squareGate(g, prims);
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-
-export function fieldMap(): MapDef {
-  const rnd = seededRandom(1337);
-  const terrain = (x: number, y: number) => {
-    const r = Math.hypot(x, y);
-    const flat = Math.min(1, Math.max(0, (r - 70) / 80)); // flat flying field in the middle
-    return flat * (fbm(x / 90, y / 90, 4, 3) * 9 + fbm(x / 25, y / 25, 2, 9) * 1.2) + fbm(x / 12, y / 12, 2, 5) * 0.06;
-  };
-  const gates: GateDef[] = [];
-  const course: [number, number, number, GateDef['kind'], number?][] = [
-    // x, y, yawDeg, kind, z
-    [0, 18, 0, 'square'], [12, 42, -30, 'square'], [34, 52, -90, 'arch'], [55, 38, -150, 'square'],
-    [52, 12, 180, 'flag'], [40, -12, 150, 'dive', 4.5], [18, -30, 110, 'square'], [-10, -38, 80, 'square'],
-    [-34, -22, 30, 'arch'], [-40, 6, 0, 'flag'], [-26, 26, -45, 'square'], [-10, 8, -110, 'square'],
-  ];
-  course.forEach(([x, y, yd, kind, z], i) => {
-    const big = kind === 'arch';
-    gates.push({ id: i, c: { x, y, z: kind === 'dive' ? z! : terrain(x, y) }, yaw: yd * deg, width: big ? 3.0 : 1.524, height: big ? 2.6 : kind === 'flag' ? 3.2 : 1.524, kind });
-  });
-  const prims: Prim[] = [];
-  buildGatePrims(gates, prims);
-  // start/finish pads and a pit tent
-  for (let i = 0; i < 4; i++) prims.push({ kind: 'box', c: { x: -6 + i * 4, y: 0, z: 0.01 }, half: { x: 0.6, y: 0.6, z: 0.01 }, yaw: 0, mat: 'wood', visual: 'pad', tag: 'pad' });
-  prims.push({ kind: 'box', c: { x: -18, y: -6, z: 1.2 }, half: { x: 3, y: 1.5, z: 0.04 }, yaw: 0.2, mat: 'wood', visual: 'plain', color: 0x2a5bd7, tag: 'tent' });
-  for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) prims.push({ kind: 'cyl', c: { x: -18 + dx * 2.8, y: -6 + dy * 1.4, z: 0 }, r: 0.03, h: 1.2, mat: 'metal' });
-  // hay-bale / tyre obstacles
-  for (let i = 0; i < 10; i++) {
-    const a = rnd() * Math.PI * 2, r = 20 + rnd() * 45;
-    prims.push({ kind: 'cyl', c: { x: Math.cos(a) * r, y: Math.sin(a) * r, z: 0 }, r: 0.6, h: 1.2, mat: 'dirt', color: 0xc8a75a, tag: 'bale' });
-  }
-  // trees: tree line around the field + some isolated "powerloop" trees
-  const trees: MapDef['trees'] = [];
-  for (let i = 0; i < 260; i++) {
-    const a = rnd() * Math.PI * 2, r = 85 + rnd() * 120;
-    const x = Math.cos(a) * r, y = Math.sin(a) * r;
-    trees.push({ x, y, h: 9 + rnd() * 12, r: 2 + rnd() * 2.5, type: rnd() < 0.55 ? 'pine' : 'oak' });
-  }
-  for (const [x, y] of [[-55, 45], [70, -30], [20, 75], [-70, -50], [62, 62]]) trees.push({ x, y, h: 14 + rnd() * 6, r: 3.5 + rnd(), type: 'oak' });
-  return {
-    id: 'field', name: 'Open Field — Race Course', size: 220, terrain, groundMat: 'grass', prims, gates,
-    spawn: { pos: { x: -6, y: 0, z: 0.25 }, yaw: 90 * deg }, sun: { azimuthDeg: 220, elevationDeg: 38 }, sky: 'clear',
-    wakeZones: [], elevationM: 120, trees,
-  };
-}
+// Gate builders live in ./gates (shared with the worker's pass detection); the race course map is
+// the World Cup stadium in ./worldCup (id 'field' so saved settings keep pointing at it).
+export { buildGatePrims } from './gates';
+export const fieldMap = worldCupMap;
 
 // ---------------------------------------------------------------------------------------------
 
@@ -192,7 +111,7 @@ export interface MapEntry {
 const QUAKE_CREDIT = "id Software's original map source (GPL, released by John Romero 2006); textures: LibreQuake (BSD-3-Clause). Not affiliated with or endorsed by id Software or the LibreQuake project.";
 
 export const MAP_LIST: Record<string, MapEntry> = {
-  field: { name: 'Open Field — Race Course', credit: 'Original (this project, GPL-3.0-or-later)', build: fieldMap },
+  field: { name: 'FPV World Cup Stadium', credit: 'Original (this project, GPL-3.0-or-later); course sized from FAI F9 / MultiGP gate specs', build: fieldMap },
   bando: { name: 'Bando — Abandoned Industrial', credit: 'Original (this project, GPL-3.0-or-later)', build: bandoMap },
   'quake-e1m1': {
     name: 'Quake E1M1 — The Slipgate Complex', credit: `E1M1 by id Software (level design: John Romero). ${QUAKE_CREDIT}`, source: 'maps/quake/e1m1.map',

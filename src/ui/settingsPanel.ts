@@ -14,9 +14,10 @@ export interface ViewSettings {
   osd: boolean;
   view: 'fpv' | 'chase' | 'los';
   linkEffects: boolean;
+  highlightGate: boolean;  // make the next race gate glow
 }
 
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: true, osd: true, view: 'fpv', linkEffects: true };
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: true, osd: true, view: 'fpv', linkEffects: true, highlightGate: true };
 
 export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
@@ -59,6 +60,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
           checkbox('Motor sound', v.audio, (x) => { v.audio = x; pushV(); }),
           slider({ label: 'Volume', min: 0, max: 1, step: 0.01, value: v.volume, onInput: (x) => { v.volume = x; pushV(); } }).row,
           checkbox('Training telemetry overlay', v.telemetry, (x) => { v.telemetry = x; pushV(); }),
+          checkbox('Highlight next gate', v.highlightGate, (x) => { v.highlightGate = x; pushV(); }),
           select('View', [{ value: 'fpv', label: 'FPV goggles' }, { value: 'chase', label: 'Chase camera' }, { value: 'los', label: 'Line of sight (pilot)' }], v.view, (x) => { v.view = x; pushV(); }),
         ),
       ),
