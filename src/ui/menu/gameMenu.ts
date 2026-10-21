@@ -82,8 +82,8 @@ const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Pause
 const gateKnown = new Map<string, boolean>();
 export function mapHasGates(id: string): boolean | undefined {
   if (gateKnown.has(id)) return gateKnown.get(id);
-  if (id === 'field') return true;
-  if (id === 'bando' || id.startsWith('quake') || id.startsWith('freedoom')) return false;
+  if (['field', 'gym', 'practice', 'night', 'mountains'].includes(id)) return true;
+  if (id === 'bando' || id === 'park' || id.startsWith('quake') || id.startsWith('freedoom')) return false;
   return undefined;
 }
 const probing = new Map<string, Promise<boolean>>();
@@ -810,6 +810,11 @@ function mapBadges(id: string): HTMLElement[] {
   const m = MAP_LIST[id];
   const b = (t: string, c = '') => el('span', { class: `gm-badge ${c}` }, t);
   if (id === 'field') return [b('Race gates', 'rose'), b('Outdoor')];
+  if (id === 'gym') return [b('Whoop course', 'rose'), b('Indoor, no wind')];
+  if (id === 'practice') return [b('Spec track + drills', 'rose'), b('Outdoor')];
+  if (id === 'park') return [b('Freestyle'), b('Open field')];
+  if (id === 'mountains') return [b('Long range'), b('4 km', 'green')];
+  if (id === 'night') return [b('Race gates', 'rose'), b('Night')];
   if (id === 'bando') return [b('Freestyle'), b('Indoor + outdoor')];
   if (id.startsWith('quake')) return [b('Indoor'), b('Classic', 'green')];
   if (id.startsWith('freedoom')) return [b('Indoor'), b('Classic', 'green')];
@@ -819,7 +824,8 @@ function mapBadges(id: string): HTMLElement[] {
 /** Small generated illustrations for map tiles (no image assets needed). */
 function mapArt(id: string): SVGSVGElement {
   const t = document.createElement('template');
-  const sky = id === 'field' ? ['#4c1d95', '#0f0f23'] : id === 'bando' ? ['#334155', '#0f172a'] : id.startsWith('quake') ? ['#7c2d12', '#1c0f0a'] : id.startsWith('freedoom') ? ['#14532d', '#0a1a10'] : ['#1e3a8a', '#0f0f23'];
+  const sky = id === 'field' ? ['#4c1d95', '#0f0f23'] : id === 'bando' ? ['#334155', '#0f172a'] :
+    id === 'gym' ? ['#1e293b', '#0b1220'] : id === 'night' ? ['#0b1026', '#02030a'] : id === 'mountains' ? ['#0e7490', '#0f172a'] : (id === 'park' || id === 'practice') ? ['#166534', '#0f172a'] : id.startsWith('quake') ? ['#7c2d12', '#1c0f0a'] : id.startsWith('freedoom') ? ['#14532d', '#0a1a10'] : ['#1e3a8a', '#0f0f23'];
   let scene: string;
   if (id === 'field') scene = `<ellipse cx="160" cy="98" rx="150" ry="34" fill="#1e1c35" stroke="#a78bfa" stroke-opacity=".5"/><ellipse cx="160" cy="98" rx="110" ry="22" fill="#166534" opacity=".7"/>
     ${[70, 130, 190, 250].map((x, i) => `<rect x="${x}" y="${62 - i * 2}" width="26" height="22" rx="3" fill="none" stroke="${i === 1 ? '#f43f5e' : '#c4b5fd'}" stroke-width="3"/>`).join('')}

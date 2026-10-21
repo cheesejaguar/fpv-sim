@@ -5,7 +5,7 @@
 // a moon and stars, moonlight as the shadow-casting light and very little ambient.
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import type { MapDef, Prim } from '../maps/world';
+import { MAX_MAP_LIGHTS, type MapDef, type Prim } from '../maps/world';
 
 export type TimeOfDay = 'map' | 'morning' | 'noon' | 'golden' | 'dusk' | 'night';
 export type SkyKind = 'clear' | 'overcast' | 'dusk' | 'night';
@@ -22,9 +22,6 @@ export interface Environment {
   floods: number;
 }
 
-/** Point lights a map may carry (ENU metres; intensity in candela, range in m). */
-export interface MapLight { pos: { x: number; y: number; z: number }; color: number; intensity: number; range: number }
-export const MAX_MAP_LIGHTS = 8;
 
 const BASE: Record<Exclude<SkyKind, 'night'>, Omit<Environment, 'sky' | 'sunAz' | 'sunEl' | 'floods'>> = {
   clear: { sunColor: 0xfff1dd, sunIntensity: 4.5, hemiSky: 0xbfd9ff, hemiGround: 0x56603e, hemiIntensity: 1.9, fogColor: 0xbcd0e0, fogDensity: 0.0022, turbidity: 4, rayleigh: 1.4, mie: 0.006, skyScale: 0.3 },
@@ -39,7 +36,7 @@ const scaleHex = (c: number, k: number) => new THREE.Color(c).multiplyScalar(k).
 
 /** Lighting for a map at a time of day ('map' = as the map was authored). */
 export function environment(map: MapDef, tod: TimeOfDay = 'map'): Environment {
-  const authored = map.sky as string as SkyKind;
+  const authored: SkyKind = map.sky;
   const overcast = authored === 'overcast';
   const fog = (e: Environment): Environment => {
     if (!map.fog) return e;
@@ -171,7 +168,7 @@ export function buildLights(map: MapDef, env: Environment): NightLights {
       lights.push(spot); objects.push(spot.target);
     }
   }
-  const ml = ((map as unknown as { lights?: MapLight[] }).lights ?? []).slice(0, MAX_MAP_LIGHTS);
+  const ml = (map.lights ?? []).slice(0, MAX_MAP_LIGHTS);
   if (ml.length) {
     const bulbGeo = new THREE.SphereGeometry(0.07, 10, 6); disp.push(bulbGeo);
     for (const l of ml) {

@@ -103,7 +103,7 @@ describe('simulation settings', () => {
 
   test('map id must be a map this build has', () => {
     expect(validSim({ mapId: 'bando' }).mapId).toBe('bando');
-    for (const bad of ['no-such-map', '__proto__', 'constructor', 'local-mine', 5]) expect(validSim({ mapId: bad }).mapId, String(bad)).toBe('field');
+    for (const bad of ['no-such-map', '__proto__', 'constructor', 'local-mine', 5]) expect(validSim({ mapId: bad }).mapId, String(bad)).toBe(DEFAULT_SETTINGS.mapId);
   });
 
   test('wind is merged field by field', () => {

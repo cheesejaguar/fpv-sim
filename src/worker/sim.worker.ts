@@ -16,7 +16,7 @@ import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/deri
 import { packageEntry, urlTableSource } from '../maps/mapFormat';
 import { hasMap, MAPS, preloadMap, registerMap } from '../maps/maps';
 import { gatePassed } from '../maps/gates';
-import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from '../maps/world';
+import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ, withCourse } from '../maps/world';
 import { RcLink } from '../sim/rcLink';
 import { G0, isa } from '../sim/atmosphere';
 import { Spectrum } from '../sim/fft';
@@ -143,7 +143,7 @@ async function loadMap(id: string): Promise<boolean> {
   else await preloadMap(id).catch((e) => { console.warn(e); error = (e as Error)?.message ?? String(e); id = 'field'; });
   if (map && want !== settings.mapId) return false; // superseded by a newer map change while loading
   let m: MapDef;
-  try { m = MAPS[id](); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
+  try { m = withCourse(MAPS[id](), settings.courseId); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
   map = m;
   world = new PrimitiveWorld(map);
   env = makeEnv();
@@ -754,7 +754,7 @@ async function firmwareOp(m: ToWorker) {
 async function handle(m: ToWorker) {
   switch (m.type) {
     case 'settings': {
-      const mapChanged = m.settings.mapId !== settings.mapId;
+      const mapChanged = m.settings.mapId !== settings.mapId || (m.settings.courseId ?? '') !== (settings.courseId ?? '');
       const rateChanged = m.settings.physicsHz !== settings.physicsHz;
       settings = m.settings;
       if (!env || !quad) break;

@@ -5,7 +5,6 @@
 // dark, a texel-snapped sun shadow, and fog. Wind animation and LOD run on shared uniforms (sway.ts).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { gateIdOf, isFlagBanner } from '../maps/gates';
 import { BoxPrim, MapDef, Prim } from '../maps/world';
 import { buildCrowd } from './crowd';
@@ -398,8 +397,12 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   // ---- glTF meshes (map packages); they load asynchronously, like the Quake textures ----
   let disposed = false;
   if (map.meshes?.length) {
+    const meshes = map.meshes;
+    // the glTF loader is only fetched for maps that have meshes
+    void import('three/examples/jsm/loaders/GLTFLoader.js').then(({ GLTFLoader }) => {
+    if (disposed) return;
     const loader = new GLTFLoader();
-    for (const mi of map.meshes) loader.load(mi.url, (gltf) => {
+    for (const mi of meshes) loader.load(mi.url, (gltf) => {
       const root = gltf.scene;
       // a scene switched away while this loaded: free it all, it will never be drawn
       if (disposed) { disposeObject(root); return; }
@@ -419,6 +422,7 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
       root.scale.setScalar(mi.scale);
       scene.add(root);
     }, undefined, (e) => console.warn(`map mesh ${mi.url} failed to load`, e));
+    }, (e) => console.warn('glTF loader failed to load', e));
   }
 
   // ---- wind: smoothed (gusts build over ~0.4 s), direction as a vector so it turns the short way ----

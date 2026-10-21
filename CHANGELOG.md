@@ -6,6 +6,64 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Flight feel (from a pilot flying a tiny whoop with an ExpressLRS radio)
+- **No more phantom roll in Angle mode.** Whoops fell over onto one duct on the pad, and the
+  accelerometer was calibrated on that 13° tilt, so Angle mode held it as "level" and drifted.
+  Whoops now stand on their duct guards, the accelerometer is calibrated on a level, still quad
+  (and again whenever the build's sensors change), and every existing calibration is redone once.
+- **No more yaw snaps from slow radios.** A BLE radio reaches the browser at 40–90 Hz; the RC link
+  repeated each report until the next one jumped, and Betaflight's feedforward spiked on every
+  jump. Sticks are now reconstructed between reports (a few ms of extra delay on slow inputs only).
+- Small quads no longer rattle or bounce on hard ground, at any physics rate.
+- **Radios are never treated as gamepads.** ExpressLRS in BLE joystick mode, EdgeTX / OpenTX
+  radios over USB and other transmitters some browsers label "standard gamepad" got the Xbox
+  layout: an arm switch could drive roll and the throttle scrolled the menus. A radio now flies
+  only after its stick & switch setup (the HUD says so), with no deadzone, as on a real quad; in
+  menus it steers with its calibrated right stick only, and the mouse wheel silences a held stick.
+
+### Maps
+- New: **Whoop Gym** (indoor, no wind, thin whoop gates; the first map for new pilots),
+  **Practice Field** (spec track plus slalom, figure-8 and power-loop drills, picked under
+  Simulation → Course), **Meadow Park**, **Ridgeline** (4 × 4 km long range) and **Night Session**.
+- The stadium is now the **FPV Grand Prix Stadium**. Maps can have a night sky and point lights.
+- Simulation → **Time of day**: morning, noon, golden hour, dusk or night on any map.
+
+### Firmware and simulation
+- Betaflight changes saved in the CLI survive reloads; boot-time messages are queued; a crashed
+  simulator restarts itself once, then shows an error page with a bug-report link.
+- Rebuilt Betaflight: real accelerometer calibration, BMI270 at 3.2 kHz, beeper and DShot beacon
+  sounds, a downloadable `.bbl` blackbox for Blackbox Explorer / PIDtoolbox, GPS (and GPS Rescue),
+  barometer noise, eRPM and current-sensor errors, 1S brownout reboots and real CPU load.
+- Physics: rotor drag and hub moments, ESC current limit off by default (as ESCs ship),
+  low-rpm protection, frame vibration modes, thermal damage, battery fast-transient sag and cold
+  derating, motor desyncs, IMU offsets and board tilt. The physics rate drops automatically when
+  the computer can't keep up (a setting).
+
+### Camera and video
+- The quad's own shadow, sun glare and lens ghosts, motion blur from the real shutter time,
+  anti-aliasing, camera jello from prop vibration and damage, sensor noise that grows in the dark,
+  prop discs that look like the camera sees them, a crisper HD OSD, and the goggles' own overlay
+  (signal, bitrate, DVR; a setting). **V** records the goggle feed with sound (DVR).
+- FPV renders at the video's own resolution on high-density displays and only redraws on new
+  camera frames: much less GPU work on Retina screens.
+
+### World and sound
+- Trees, flags and a windsock that move with the wind, ground detail, spectators, night lighting.
+- Motor sound with distance, Doppler, reverb indoors, the other pilots' quads, and Betaflight's own
+  beeper. Sound mutes in the menus and in background tabs.
+
+### Multiplayer
+- Rooms are unlisted unless made public; dropped connections rejoin by themselves; paused pilots
+  stay in the room, parked; tighter relay limits and validation (protocol v2, old clients still
+  work).
+
+### Reliability, privacy and security
+- Browser check with a clear page when something required is missing; versioned, validated saved
+  settings with a reset button; the simulation pauses in background tabs.
+- Content Security Policy and security headers; a fix for Safari, which could refuse to start the
+  simulator after a reload (cached files lost their cross-origin isolation headers).
+- Third-party notices (`/licenses.txt`) and a privacy notice (`/privacy.html`).
+
 ### Onboarding and HUD
 - **Arming coach**: while disarmed, a card turns Betaflight's arming-disable flag into one plain
   sentence and the fix ("The throttle isn't all the way down. Pull the throttle fully down, then

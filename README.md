@@ -109,8 +109,9 @@ The sim opens on a title screen, with your quad orbiting on the launch pad behin
 - **Quick fly**: fly straight away on the current map, always on the easiest quad, the 65 mm 1S
   tiny whoop (your own build is kept and can be picked again under New game → Drone).
 - **New game**: *Local* (pick a mode, map and drone) or *Multiplayer* (host or join a room).
-  Modes are free flight, race and hover drill. Race needs a map with gates (the FPV World Cup
-  Stadium, or a community race map); maps without gates can't be picked for it.
+  Modes are free flight, race and hover drill. Race needs a map with gates (the FPV Grand Prix
+  Stadium, the Whoop Gym, the Practice Field, Night Session, Ridgeline, or a community race map);
+  maps without gates can't be picked for it.
 - **Server browser**: public rooms.
 - **Settings**: Simulation, Controller, Betaflight (tuning, CLI, `diff all` import), Drone builder,
   Multiplayer relay and Blackbox.
@@ -239,8 +240,17 @@ turbulence) and indoor volumes.
 ## Maps
 
 Pick a map in **Simulation → Map**:
-- **FPV World Cup Stadium**: race course with lap timing, sized from FAI F9 / MultiGP gate specs
+- **FPV Grand Prix Stadium**: race course with lap timing, sized from FAI F9 / MultiGP gate specs
   (it replaced the old Open Field; saved settings keep working).
+- **Whoop Gym**: a sports hall for tiny whoops, with no wind: an 8-gate course with thin 0.7 m
+  gates (under a table, through a hoop, up to the gallery, down the stairs), hanging hoops and a
+  basketball rim. The first map for new pilots.
+- **Practice Field**: a MultiGP-style spec track, plus three drills timed on their own (slalom,
+  figure-8, power-loop tower), picked under **Simulation → Course**.
+- **Meadow Park**: freestyle over rolling meadow, tree lines and gaps, a picnic shelter and goals.
+- **Ridgeline**: 4 × 4 km of mountains for long range: launch from a summit, an out-and-back
+  course through an arch on the far ridge.
+- **Night Session**: a floodlit race course at night, with LED markers along the racing line.
 - **Bando**: abandoned industrial site for freestyle.
 - **Quake E1M1, The Slipgate Complex**: freestyle map built from the original level source.
 - **Quake DM3, The Abandoned Base**: freestyle map built from the original level source.
@@ -415,7 +425,7 @@ The in-app map selector shows the same credits.
 
 | Map | Source | License |
 |---|---|---|
-| FPV World Cup Stadium, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
+| FPV Grand Prix Stadium, Whoop Gym, Practice Field, Meadow Park, Ridgeline, Night Session, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
 | Quake E1M1, Quake DM3: geometry | id Software's original 1996 `.map` sources, released by John Romero in 2006 ([rome.ro](https://rome.ro/resources)) | GNU GPL |
 | Quake E1M1, Quake DM3: textures | [LibreQuake](https://github.com/lavenderdotpet/LibreQuake) replacements; some are derived from Freedoom / Blasphemer | BSD-3-Clause |
 | Community maps (`public/maps/community/<id>/`) | Their authors, see each package's `ATTRIBUTION.md` | Per map (`meta.license`), shown in the map selector |

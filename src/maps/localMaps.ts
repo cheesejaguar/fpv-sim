@@ -1,9 +1,9 @@
 // Map packages loaded from the user's disk (zip, folder or loose files), for trying a map before
 // contributing it. Files become blob: URLs that both the renderer and the physics worker can read;
 // the map is registered as "local-<id>" (never sent to multiplayer rooms) until the page reloads.
-import { loadMapPackage, MapFormatError, MapStats, packageEntry, PackageSource, urlTableSource } from './mapFormat';
+import { MapFormatError } from './mapError';
+import type { MapStats, PackageSource } from './mapFormat';
 import { registerMap } from './maps';
-import { readZip } from './zip';
 
 export interface LocalMapInfo { name: string; author: string; license: string }
 type Listener = (id: string, info: LocalMapInfo, urls: Record<string, string>) => void;
@@ -36,6 +36,7 @@ export async function filesFromList(list: FileList | File[]): Promise<Map<string
 }
 
 export async function filesFromZip(f: Blob): Promise<Map<string, Blob>> {
+  const { readZip } = await import('./zip');
   const m = new Map<string, Blob>();
   for (const e of readZip(new Uint8Array(await f.arrayBuffer()))) m.set(e.path, new Blob([(await e.read()) as BlobPart]));
   return rootAt(m);
@@ -62,6 +63,7 @@ export async function filesFromDrop(dt: DataTransfer): Promise<Map<string, Blob>
 
 /** Validate a package from disk and register it. Throws MapFormatError with every problem found. */
 export async function loadLocalMap(files: Map<string, Blob>): Promise<{ id: string; name: string; warnings: string[]; stats: MapStats }> {
+  const { loadMapPackage, packageEntry, urlTableSource } = await import('./mapFormat'); // loaded on first use
   const urls: Record<string, string> = {};
   for (const [p, b] of files) urls[p] = URL.createObjectURL(b);
   const src: PackageSource = { ...urlTableSource(urls), list: async () => [...files].map(([path, b]) => ({ path, size: b.size })) };

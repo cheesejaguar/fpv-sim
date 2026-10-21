@@ -97,12 +97,14 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
     hub.add(disc);
     root.add(hub); props.push(hub); blur.push(disc); dirs.push(rp.dir);
     if (frame.ducted) {
-      // prop guard duct: open thin-walled ring around the prop disc, with a lip at the top
-      const dh = (frame.ductHeightMm ?? 10) / 1000;
-      const ring = new THREE.Mesh(T(new THREE.CylinderGeometry(R * 1.08, R * 1.08, dh, 40, 1, true)), ductMat);
-      ring.position.copy(B(hx, hy, 0.006 + motor.bellHeightMm / 1000 + 0.004));
+      // prop guard duct: open thin-walled ring around the prop disc, with a lip at the top. It runs
+      // down to where the physics stands the quad (info.ductBottomMm), so it rests on the floor
+      const dh = (frame.ductHeightMm ?? 10) / 1000, propZ = 0.006 + motor.bellHeightMm / 1000 + 0.004, top = propZ + dh / 2;
+      const bottom = info.ductBottomMm != null ? Math.min(info.ductBottomMm / 1000, propZ - dh / 2) : propZ - dh / 2;
+      const ring = new THREE.Mesh(T(new THREE.CylinderGeometry(R * 1.08, R * 1.08, top - bottom, 40, 1, true)), ductMat);
+      ring.position.copy(B(hx, hy, (top + bottom) / 2));
       const lip = new THREE.Mesh(T(new THREE.TorusGeometry(R * 1.1, Math.max(0.0012, dh * 0.08), 8, 40)), ductMat);
-      lip.rotation.x = Math.PI / 2; lip.position.y = dh / 2;
+      lip.rotation.x = Math.PI / 2; lip.position.y = (top - bottom) / 2;
       ring.add(lip);
       root.add(ring);
     }

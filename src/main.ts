@@ -16,8 +16,8 @@ import { simHardwareCli } from './bf/defaults';
 import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
-import { hasMap, MAPS, preloadMap } from './maps/maps';
-import { PrimitiveWorld } from './maps/world';
+import { hasMap, MAP_LIST, MAPS, preloadMap } from './maps/maps';
+import { PrimitiveWorld, withCourse } from './maps/world';
 import { MultiplayerClient } from './net/multiplayer';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
@@ -78,7 +78,7 @@ renderer.domElement.addEventListener('webglcontextlost', () => {
 
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 await preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; });
-const map0 = MAPS[sim0.mapId]();
+const map0 = withCourse(MAPS[sim0.mapId](), sim0.courseId);
 const build0 = buildDrone(spec0);
 const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })), b.info.cgMm);
 
@@ -151,13 +151,13 @@ function rebuildScene() {
 }
 /** Rebuild the rendered world for a map that is loaded (preloaded or built in). */
 function showMap(id: string) {
-  ctx.map = MAPS[id](); ctx.world = new PrimitiveWorld(ctx.map);
+  ctx.map = withCourse(MAPS[id](), ctx.sim.courseId); ctx.world = new PrimitiveWorld(ctx.map);
   rebuildScene();
   resetLaps(ctx);
 }
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
-  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId;
+  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '');
   ctx.sim = s; store(KEYS.sim, s);
   // loading is async (Quake maps fetch their sources): remember now whether the room asked for it
   const fromRoom = applyingRoomMap;
@@ -245,9 +245,9 @@ document.addEventListener('visibilitychange', () => {
 ctx.mp.onMap = (m) => {
   if (!hasMap(m) || m === ctx.sim.mapId) return;
   applyingRoomMap = true;
-  applySim({ ...ctx.sim, mapId: m });
+  applySim({ ...ctx.sim, mapId: m, courseId: '' }); // the room shares the map; everyone flies its default course
   applyingRoomMap = false;
-  ctx.log(`Room switched the map to ${MAPS[m]().name}`);
+  ctx.log(`Room switched the map to ${MAP_LIST[m]?.name ?? m}`);
 };
 /** room: name / visibility, used if we are the first pilot in (the host) */
 function joinRoom(code: string, room?: { name: string; public: boolean }) {
