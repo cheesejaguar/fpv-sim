@@ -2,7 +2,7 @@
 // the derived flight model (mass budget, inertia, thrust, hover point, currents, flight time).
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO, byId } from '../data/catalog';
 import { buildDrone, DroneSpec, PRESETS, Overrides } from '../builder/derive';
-import { el, kv, section, select, slider } from './dom';
+import { confirmDialog, el, kv, section, select, setLeaveGuard, slider } from './dom';
 
 export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => void): HTMLElement {
   const root = el('div', { class: 'panel builder' });
@@ -37,8 +37,29 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
     }, 120);
   };
 
+  const nOverrides = () => Object.keys(spec.overrides).length;
+  const unapplied = () => JSON.stringify(spec) !== JSON.stringify(getSpec());
+  // leaving the tab / closing the menu with edits that were never applied asks first
+  setLeaveGuard(root, { dirty: unapplied, what: () => `The changes to ${spec.name} are not applied to your quad yet.` });
+
+  // a new component resets the slider overrides (they belonged to the old part): ask when there are some
   const comp = (label: string, key: keyof DroneSpec, list: { id: string; name: string }[]) =>
-    select(label, list.map((c) => ({ value: c.id, label: c.name })), spec[key] as string, (v) => { (spec as any)[key] = v; spec.overrides = {}; render(); });
+    select(label, list.map((c) => ({ value: c.id, label: c.name })), spec[key] as string, (v) => {
+      const n = nOverrides();
+      const go = () => { (spec as any)[key] = v; spec.overrides = {}; render(); };
+      if (!n) { go(); return; }
+      void confirmDialog({ title: `Change the ${label.toLowerCase()}?`, body: `Changing the ${label.toLowerCase()} resets your ${n} slider override${n === 1 ? '' : 's'} (motor, propeller, battery and airframe values) to the new parts’ data.`, ok: 'Change and reset', cancel: 'Keep current', danger: true })
+        .then((ok) => { if (ok) go(); else render(); });
+    });
+
+  const loadPreset = (v: string) => {
+    if (v === '') return;
+    const next = PRESETS[+v];
+    const go = () => { spec = structuredClone(next); render(); };
+    if (!unapplied() && !nOverrides()) { go(); return; }
+    void confirmDialog({ title: `Load “${next.name}”?`, body: 'The preset replaces the build you are editing, including its slider overrides and any changes you have not applied.', ok: 'Load preset', cancel: 'Keep editing', danger: true })
+      .then((ok) => { if (ok) go(); else render(); });
+  };
 
   const ov = (k: keyof Overrides, label: string, min: number, max: number, step: number, def: number, unit = '', hint = '') =>
     slider({ label, min, max, step, value: (spec.overrides[k] as number) ?? def, unit, hint, onInput: (v) => { (spec.overrides as any)[k] = v; refreshInfo(); } }).row;
@@ -60,13 +81,13 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
         el('b', {}, spec.name), dirtyTag,
         el('span', { class: 'spacer' }),
         el('button', { class: 'primary', onclick: () => apply(structuredClone(spec)) }, 'Apply & respawn'),
-        el('button', { onclick: () => { spec.overrides = {}; render(); } }, 'Reset overrides'),
+        el('button', { onclick: () => { const n = nOverrides(); if (!n) return; void confirmDialog({ title: 'Reset all overrides?', body: `Your ${n} slider override${n === 1 ? '' : 's'} go back to the components’ own data.`, ok: 'Reset overrides', cancel: 'Cancel', danger: true }).then((ok) => { if (ok) { spec.overrides = {}; render(); } }); } }, 'Reset overrides'),
         el('button', { onclick: () => { const blob = new Blob([JSON.stringify(spec, null, 2)], { type: 'application/json' }); const a = el('a', { href: URL.createObjectURL(blob), download: `${spec.name.replace(/\W+/g, '_')}.json` }); a.click(); } }, 'Export JSON'),
       ),
       el('div', { class: 'cols' },
         el('div', { class: 'col' },
           section('Preset',
-            select('Load preset', [{ value: '', label: '— choose —' }, ...PRESETS.map((p, i) => ({ value: String(i), label: p.name }))], '', (v) => { if (v !== '') { spec = structuredClone(PRESETS[+v]); render(); } }),
+            select('Load preset', [{ value: '', label: '— choose —' }, ...PRESETS.map((p, i) => ({ value: String(i), label: p.name }))], '', loadPreset),
           ),
           section('Components',
             comp('Frame', 'frame', FRAMES), comp('Motors', 'motor', MOTORS), comp('Propellers', 'prop', PROPS),

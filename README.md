@@ -5,7 +5,11 @@ firmware compiled to WebAssembly**, in lock-step with a physics / electrical / s
 The drone and its flight model are generated from component-level specs: frame, motors, props,
 battery, ESC, FC gyro and video system.
 
-Live: https://fpv-sim-gamma.vercel.app · Source: https://github.com/cheesejaguar/fpv-sim
+Live: https://fpv-sim-gamma.vercel.app · Source: https://github.com/cheesejaguar/fpv-sim ·
+Changes: [CHANGELOG.md](CHANGELOG.md)
+
+It is built for a desktop or laptop browser with a game controller or an RC radio. Phones and
+tablets work only with a paired Bluetooth gamepad: there are no touch controls.
 
 ## Quick start
 
@@ -34,76 +38,91 @@ PIDs, filters, RPM filter, dynamic notch, TPA, anti-gravity, and so on.
 The simulator uses the browser Gamepad API, so any USB or Bluetooth controller with sticks works.
 
 **Supported out of the box:**
-- **Xbox** (Series / One / 360) and **PlayStation 5 DualSense**: recognised automatically. Buttons
-  are labelled per controller (A/B/X/Y or ✕○□△), and crashes rumble the pad in Chrome and Edge.
+- **Xbox** (Series / One / 360) and **PlayStation 5 DualSense**: recognized automatically. Buttons
+  are labeled per controller (A/B/X/Y or ✕○□△), and crashes rumble the pad in Chrome and Edge.
 - **DJI FPV Remote Controller 3**: connect its USB-C port and it appears as "DJI Virtual Joystick"
   (USB 2ca3:1021). Run the **stick & switch setup** once. DJI doesn't document the axis order, so
   the wizard detects each stick, its direction, and the arm / flight-mode switches. Many radios
   report switches as axes, which is supported, including 3-position mode switches.
 - **Other RC radios** (EdgeTX / OpenTX in USB-joystick mode) and **HID joysticks**: same wizard.
-- **2026 Steam Controller**: driven directly over WebHID (see below).
+- **Steam Controller**: through Steam Input, or (2026 model) directly over WebHID. See below.
 
 The Controller tab offers:
 - Presets.
 - Per-channel "move the stick to detect".
 - Inversion.
 - Calibration, deadzone and expo.
-- Arm, mode, turtle, beeper, reset and menu buttons.
+- Arm, mode, turtle, beeper, respawn and menu buttons.
 - Live raw axes, and the RC channels sent to Betaflight.
 
-**Steam Controller on Windows:**
+**Steam Controller, option 1: Steam Input** (any browser, any Steam Controller). Steam turns the
+controller into a standard gamepad:
 1. Keep Steam running.
 2. Set the Desktop Layout to *Gamepad*, or add the browser as a non-Steam game with the gamepad
    template.
 3. Set the right trackpad to *Joystick Move* (absolute).
 4. Press a button with the page focused; browsers only expose pads after the first input.
 
-Gamepad sticks spring back to centre, so the throttle has three modes:
-- Full range: centre is 50%.
-- Upper half: centre is 0%.
+**Steam Controller, option 2: direct WebHID** (2026 Steam Controller, Chrome or Edge only). Without
+Steam the 2026 controller acts as a keyboard and mouse, so the Gamepad API never sees it; the sim
+drives it itself over WebHID with Valve's protocol (as documented by SDL):
+1. **Quit Steam completely** (it holds the controller), then connect the controller by USB or its
+   wireless puck.
+2. Click **Connect Steam Controller** (Settings → Controller, or the no-controller notice in flight)
+   and pick it in the browser's device prompt.
+3. Safari and Firefox have no WebHID: use option 1 there.
+
+Gamepad sticks spring back to center, so the throttle has three modes:
+- Full range: center is 50%.
+- Upper half: center is 0%.
 - Analog trigger.
 
-Default mapping (Mode 2, standard gamepad):
+Default mapping (Mode 2). The in-flight hint card shows your own controller's button names:
 
-| Control | Action |
-|---|---|
-| Left stick | Throttle / yaw |
-| Right stick | Pitch / roll |
-| RB | Arm (toggle) |
-| LB | Acro → horizon → angle |
-| X | Turtle |
-| A | Respawn |
-| Start | Menu |
+| Action | Xbox / Steam | PlayStation | Keyboard (fallback) |
+|---|---|---|---|
+| Throttle (up / down) | Left stick ↕ | Left stick ↕ | W / S (stays where you leave it) |
+| Yaw | Left stick ↔ | Left stick ↔ | A / D |
+| Pitch / roll | Right stick | Right stick | Arrow keys |
+| Arm / disarm (AUX1) | RB | R1 | Space |
+| Flight mode: acro → horizon → angle (AUX2) | LB | L1 | 1 / 2 / 3 |
+| Turtle (AUX3) | X | □ | T |
+| Beeper (AUX4, hold) | Y | △ | — |
+| Respawn | A | ✕ | R |
+| Respawn with a fresh battery | B | ○ | B |
+| Camera: FPV / chase / line of sight | D-pad ↑ | D-pad ↑ | C |
+| Telemetry overlay (off by default) | D-pad ↓ | D-pad ↓ | H |
+| Hover drill | D-pad ← | D-pad ← | G |
+| Gyro noise spectrum | D-pad → | D-pad → | F |
+| Pause menu | Menu / Start | Options | Esc |
 
-Keyboard fallback, for testing only:
+The keyboard is a fallback for a first try, not a substitute for sticks.
 
-| Key | Action |
-|---|---|
-| W / S | Throttle |
-| A / D | Yaw |
-| Arrows | Pitch / roll |
-| Space | Arm |
-| 1 / 2 / 3 | Modes |
-| T | Turtle |
-| R | Reset |
-| B | New battery |
-| C | Camera view |
-| H | Telemetry |
-| G | Hover-box drill |
-| F | Gyro noise spectrum |
-| Esc | Menu |
+**Arming coach.** While the quad is disarmed, a card explains why Betaflight refuses to arm, using
+the same flag the OSD shows (for example `THROTTLE`: "The throttle isn't all the way down. Pull
+the throttle fully down, then arm."). New pilots also get the first-flight steps: throttle down,
+arm, ease the throttle up.
 
 ## Menus
 
 The sim opens on a title screen, with your quad orbiting on the launch pad behind it:
-- **Quick fly**: fly straight away with the current map and drone.
+- **Quick fly**: fly straight away on the current map, always on the easiest quad, the 65 mm 1S
+  tiny whoop (your own build is kept and can be picked again under New game → Drone).
 - **New game**: *Local* (pick a mode, map and drone) or *Multiplayer* (host or join a room).
-  Modes are free flight, race and hover drill.
+  Modes are free flight, race and hover drill. Race needs a map with gates (the FPV World Cup
+  Stadium, or a community race map); maps without gates can't be picked for it.
 - **Server browser**: public rooms.
 - **Settings**: Simulation, Controller, Betaflight (tuning, CLI, `diff all` import), Drone builder,
   Multiplayer relay and Blackbox.
 - **Betaflight quick start**: a nine-chapter guide covering arming, flight modes, rates (with a
   live rate-curve explorer), PIDs, filters, OSD / LQ / RSSI, the CLI and your first flight.
+- **About** (footer): version and commit, license and no-warranty notice, third-party notices
+  (`/licenses.txt`), privacy notice (`/privacy.html`). The footer also has **Report a bug** (opens
+  a GitHub issue prefilled with your version, browser, GPU and controller; nothing is sent until
+  you submit it) and a **Fullscreen** toggle (F11 also works).
+
+Pause → **Respawn** restarts the mode you are actually flying. Settings panels with unsaved
+edits (Betaflight sliders, the drone builder) ask before you switch tabs or close the menu.
 
 Controllers navigate all of it:
 - D-pad or left stick moves, **A** selects and **B** goes back.
@@ -114,6 +133,12 @@ Keyboard: arrow keys, Enter, Esc, and Q / E for tabs. While a menu is open its b
 the quad or change the flight mode. The design follows a system generated with
 [UI UX Pro Max](https://uupm.cc/): "3D & Hyperrealism", Russo One and Chakra Petch (OFL), and
 `prefers-reduced-motion` is respected.
+
+**Accessibility.** Screens, dialogs and pickers are labeled for screen readers (mode / map / drone
+pickers are radio groups); only notices, the arming coach and the crash banner are live regions;
+slider help is visible text; text is at least 13 px. **Photosensitivity:** the simulated video
+link flickers (analog snow and static, digital break-up, 1S brownout dropouts). Turn off
+*Settings → Simulation → Video link degradation* if flashing images affect you.
 
 ## What is simulated
 
@@ -142,7 +167,7 @@ the filtered trace disappears.
 - Blade-element momentum theory over radius and azimuth, with Prandtl tip loss.
 - Glauert inflow in forward flight, momentum theory in climb and windmill-brake, and Leishman's
   empirical curve through the vortex-ring state.
-- Low-Reynolds airfoil polar with post-stall flat-plate behaviour.
+- Low-Reynolds airfoil polar with post-stall flat-plate behavior.
 - The solution is tabulated non-dimensionally over (advance angle, inflow angle), so it covers
   hover, edgewise flight, descent and a stopped rotor. It is then calibrated to a static
   thrust/torque point.
@@ -156,7 +181,7 @@ Descending or flipping back into your own wash raises local inflow and turbulenc
 - Equivalent DC machine with quasi-static current from back-EMF and winding plus ESC resistance.
 - Complementary-PWM active braking and regeneration.
 - No-load (iron and friction) losses, rotor plus prop inertia, ESC current limit and DShot
-  quantisation with one frame of delay.
+  quantization with one frame of delay.
 - Thermal model with temperature-dependent R and Kt.
 - Stator reaction torque (yaw), and gyroscopic coupling of the rotor's angular momentum.
 
@@ -176,7 +201,7 @@ ones. Sag directly reduces available thrust, and Betaflight sees it through its 
 
 **IMU** (`imu.ts`):
 - Datasheet noise density, bias random walk, turn-on bias, scale and cross-axis errors.
-- On-chip anti-alias filter, saturation and LSB quantisation.
+- On-chip anti-alias filter, saturation and LSB quantization.
 - Vibration from prop imbalance and blade-pass ripple through lightly damped frame modes, so the
   RPM filter and dynamic notch have real work to do.
 
@@ -201,7 +226,8 @@ turbulence) and indoor volumes.
 - Kannala–Brandt fisheye at the system's FOV, camera uptilt and rolling shutter.
 - Log-average auto-exposure with a time constant, plus WDR.
 - Emulated glass-to-glass latency with jitter; a display-pipeline compensation setting covers
-  your own monitor.
+  your own monitor. Settings → Simulation shows the effective latency of your video system on
+  your display; use a 120 Hz or faster display for the true feel of analog, HDZero or DJI O4.
 - Analog link: 5.8 GHz link budget with FSPL, two-ray multipath, obstruction raycasts, antenna
   pattern and fading. This drives FM-threshold noise and sparkles, chroma loss, sync tearing,
   interlaced fields and snow.
@@ -213,12 +239,13 @@ turbulence) and indoor volumes.
 ## Maps
 
 Pick a map in **Simulation → Map**:
-- **Open Field**: MultiGP-style race course with lap timing.
+- **FPV World Cup Stadium**: race course with lap timing, sized from FAI F9 / MultiGP gate specs
+  (it replaced the old Open Field; saved settings keep working).
 - **Bando**: abandoned industrial site for freestyle.
 - **Quake E1M1, The Slipgate Complex**: freestyle map built from the original level source.
 - **Quake DM3, The Abandoned Base**: freestyle map built from the original level source.
 - **Freedoom MAP01, Hydroelectric Plant**: freestyle map built from the Freedoom level data.
-- **Community maps**: contributed map packages, listed with their author and licence.
+- **Community maps**: contributed map packages, listed with their author and license.
   - **Quarry Loop** (example, CC0): race loop in a gravel quarry.
 
 ### Your own maps
@@ -280,7 +307,12 @@ Settings → **Betaflight** → *Bring your real quad*:
 1. In Betaflight Configurator's CLI on your real quad, run `diff all`.
 2. Paste the output and click **Preview**. It shows the Betaflight version and board, and what will
    be kept or skipped, with a reason for each skipped line.
-3. Click **Apply to simulated FC**.
+3. Click **Apply to simulated FC** and confirm. The simulated FC's current setup (`diff all`) is
+   backed up in your browser first; **Restore backup** puts it back exactly.
+
+**Restore sim defaults** (also confirmed) wipes the simulated FC back to the simulator's
+first-boot configuration. **Write & save** asks first too, because saving reboots the flight
+controller. The tuning sliders show real units (°/s, rpm, %), as in the guide.
 
 **What's kept and what's dropped:**
 - **Kept:** everything that defines how the quad flies — PIDs, feedforward, rates, filters
@@ -359,9 +391,15 @@ The closed-loop test flies the real firmware and checks:
 - Yaw drift below 0.15 °/s after boot calibration.
 - Full-stick roll rate close to Betaflight's default 670 °/s.
 
-## Licence
+## License
 
-GPL-3.0-or-later. This project embeds Betaflight (GPL-3.0) and uses its OSD fonts.
+GPL-3.0-or-later. This project embeds Betaflight (GPL-3.0) and uses its OSD fonts. It comes with
+no warranty; see [LICENSE](LICENSE). Third-party notices ship with the app at `/licenses.txt`.
+
+FPV Sim is an independent project. It is not affiliated with, endorsed by or sponsored by
+Betaflight, DJI, HDZero, Walksnail / Caddx, ExpressLRS, id Software, the Freedoom project, Valve,
+Microsoft, Sony or any other company or project named here. Product names and trademarks belong
+to their owners.
 
 ### Credits & licenses (maps)
 
@@ -369,7 +407,7 @@ The in-app map selector shows the same credits.
 
 | Map | Source | License |
 |---|---|---|
-| Open Field, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
+| FPV World Cup Stadium, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
 | Quake E1M1, Quake DM3: geometry | id Software's original 1996 `.map` sources, released by John Romero in 2006 ([rome.ro](https://rome.ro/resources)) | GNU GPL |
 | Quake E1M1, Quake DM3: textures | [LibreQuake](https://github.com/lavenderdotpet/LibreQuake) replacements; some are derived from Freedoom / Blasphemer | BSD-3-Clause |
 | Community maps (`public/maps/community/<id>/`) | Their authors, see each package's `ATTRIBUTION.md` | Per map (`meta.license`), shown in the map selector |

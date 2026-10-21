@@ -166,7 +166,10 @@ and to draw.
 
 ### gates
 
-Race gates, listed in **lap order**. The lap timer counts them in this order.
+Race gates, listed in **lap order**. The lap timer counts them in this order. A map needs at least
+one gate to be offered for **Race** mode in New game; maps without gates are free-flight only (in
+a multiplayer room they show the room roster instead of the lap panel). Tag a race map with
+`"race"` in `meta.tags` so pilots can tell it apart.
 
 ```json
 { "kind": "square", "pos": [0, -14], "yawDeg": 0 }

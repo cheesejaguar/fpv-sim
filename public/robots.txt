@@ -1,0 +1,5 @@
+# FPV Sim: everything may be crawled.
+User-agent: *
+Allow: /
+
+Sitemap: https://fpv-sim-gamma.vercel.app/sitemap.xml

@@ -1,16 +1,24 @@
-// Feeds the in-flight HUD every frame: notices, key hints for the device in use, telemetry, race /
-// drill panel, crash banner (+ rumble and impact sound), and lays it out around the OSD.
+// Feeds the in-flight HUD every frame: notices, key hints for the device in use, the arming coach,
+// telemetry, race / drill panel, crash banner (+ rumble and impact sound), and lays it out around the OSD.
 import { buttonName } from '../input/gamepad';
 import { webHidSupported } from '../input/steamHid';
-import { el } from '../ui/dom';
+import { el, touchOnly } from '../ui/dom';
+import { armingAdvice, CoachGlyphs } from '../ui/hud/coach';
 import { Hud, KeyHint, osdRects } from '../ui/hud/hud';
 import { newestTime, R, sampleRing } from '../worker/shared';
 import type { AppCtx } from './context';
 import type { SpectrumView, SticksView } from './instruments';
 import { raceInfo, updateDrill } from './race';
 
-const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['Space', 'Arm'], ['1-3', 'Mode'], ['R', 'Reset'], ['B', 'Battery'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
+const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['W S', 'Throttle'], ['A D', 'Yaw'], ['↑↓←→', 'Pitch / roll'], ['Space', 'Arm'], ['1-3', 'Mode'], ['T', 'Turtle'], ['R', 'Respawn'], ['B', 'Fresh battery'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
+// phones / tablets without a keyboard or controller: only the (tappable) menu chip makes sense
+const TOUCH_HINTS: KeyHint[] = [{ glyph: '☰', cls: 'key', label: 'Menu' }];
+const KB_GLYPHS: CoachGlyphs = { arm: 'Space', respawn: 'R', throttleUp: 'W', throttleDown: 'S', keyboard: true };
 const DPAD: Record<number, string> = { 12: '↑', 13: '↓', 14: '←', 15: '→' };
+
+/** Set once the pilot has flown (armed for a few seconds): the first-flight steps stop showing. */
+const FLOWN_KEY = 'fpv-flown';
+const hasFlown = () => { try { return localStorage.getItem(FLOWN_KEY) === '1'; } catch { return true; } };
 
 export class HudController {
   readonly hud: Hud;
@@ -18,6 +26,8 @@ export class HudController {
   // Shown while no controller is available. The 2026 Steam Controller is never visible to the
   // Gamepad API (outside Steam it acts as keyboard + mouse), so offer the direct WebHID driver.
   private padNotice: HTMLElement;
+  // Phones / tablets: there is no keyboard to fall back on.
+  private touchNotice = el('div', { class: 'card notice warn' }, el('b', {}, 'No controller'), el('p', {}, 'Pair a Bluetooth gamepad, then press a button on it. FPV Sim has no touch controls: tap Menu to go back.'));
   // Radios / HID joysticks with an unknown stick layout: point at the setup wizard.
   private setupNotice = el('div', { class: 'card notice' }, el('b', {}, 'New controller'), el('p', {}, 'Run the stick & switch setup once: Esc, Settings, Controller.'));
   private fwNotice = el('div', { class: 'card notice status' });
@@ -32,32 +42,42 @@ export class HudController {
   private armedSince = -1;
   private layoutAt = 0;
   private lastCrash: string | null = null;
+  private newPilot = !hasFlown();
 
   constructor(private ctx: AppCtx, private sticks: SticksView, private spectrum: SpectrumView) {
     this.hud = new Hud(sticks.canvas, spectrum.canvas);
+    const k = (t: string) => el('kbd', {}, t);
     this.padNotice = el('div', { class: 'card notice warn' },
       el('b', {}, 'No controller: keyboard fallback'),
+      el('p', { class: 'keys-line' }, k('W'), ' / ', k('S'), ' throttle · ', k('A'), ' / ', k('D'), ' yaw · arrow keys pitch / roll · ', k('Space'), ' arm'),
       el('p', {}, 'Connect a controller, then press a button on it: browsers only reveal a gamepad after its first input.'),
       ...(webHidSupported()
-        ? [el('p', { class: 'sub' }, 'Steam Controller (2026): quit Steam, connect it, then'), el('button', { onclick: () => void ctx.input.steamHid.request() }, 'Connect Steam Controller')]
+        ? [el('p', { class: 'sub' }, 'Steam Controller (2026) without Steam: quit Steam, connect it, then'), el('button', { onclick: () => void ctx.input.steamHid.request() }, 'Connect Steam Controller')]
         // Safari / Firefox: no WebHID, which the 2026 Steam Controller's direct connection needs
-        : [el('p', { class: 'sub' }, 'Steam Controller (2026) needs Chrome or Edge (WebHID).')]),
+        : [el('p', { class: 'sub' }, 'Steam Controller (2026) needs Chrome or Edge (WebHID), or Steam Input.')]),
       this.hidStatus);
   }
 
   /** Key hints for what is in use: keyboard keys, or this controller's own buttons (by family). */
   keyHints(): KeyHint[] {
     const input = this.ctx.input, pad = input.active;
-    if (!pad) return KB_HINTS;
+    if (!pad) return touchOnly() ? TOUCH_HINTS : KB_HINTS;
     const p = input.profileFor(pad), acts = input.actionButtons(pad, p);
     const btn = (i: number) => ({ glyph: DPAD[i] ?? buttonName(p.kind, i).replace(/ \(\d+\)$/, '').replace(/^button /, '#'), cls: DPAD[i] ? 'sh' : (['a', 'b', 'x', 'y'][i] ?? 'sh') });
     const out: KeyHint[] = [];
     const add = (i: number | null | undefined, label: string) => { if (i != null) out.push({ ...btn(i), label }); };
     const sw = (b: { index: number; src?: string } | null) => (b && (b.src ?? 'button') === 'button' ? b.index : null);
     add(p.menu, 'Menu'); if (!out.length) out.push({ glyph: 'Esc', cls: 'key', label: 'Menu' });
-    add(sw(p.arm), 'Arm'); add(sw(p.mode), 'Mode'); add(p.reset, 'Respawn'); add(acts.battery, 'Battery');
+    add(sw(p.arm), 'Arm'); add(sw(p.mode), 'Mode'); add(p.reset, 'Respawn'); add(acts.battery, 'Fresh battery');
     add(sw(p.turtle), 'Turtle'); add(acts.camera, 'Camera'); add(acts.telemetry, 'Telemetry'); add(acts.drill, 'Drill'); add(acts.spectrum, 'Spectrum');
     return out;
+  }
+
+  /** Names of the arm / respawn controls for the arming coach. */
+  private coachGlyphs(hints: KeyHint[]): CoachGlyphs {
+    if (!this.ctx.input.active) return KB_GLYPHS;
+    const find = (label: string) => hints.find((h) => h.label === label)?.glyph;
+    return { arm: find('Arm') ?? 'arm switch', respawn: find('Respawn') ?? 'Esc → Respawn', throttleUp: 'left stick', throttleDown: 'left stick', keyboard: false };
   }
 
   update() {
@@ -69,17 +89,18 @@ export class HudController {
     sampleRing(ctx.sh, head, rec);
     const armed = rec[R.armed] > 0.5;
     if (armed && this.armedSince < 0) this.armedSince = now; else if (!armed) this.armedSince = -1;
+    if (this.newPilot && armed && now - this.armedSince > 5000) { this.newPilot = false; try { localStorage.setItem(FLOWN_KEY, '1'); } catch { /* ignore */ } }
     const video = ctx.build.info.components.video;
     // notices: only the ones that matter right now, and controller help only while disarmed
-    this.hidStatus.textContent = input.steamHid.status;
-    this.fwNotice.textContent = ctx.fwStatus;
+    setText(this.hidStatus, input.steamHid.status);
+    setText(this.fwNotice, ctx.fwStatus);
     const notices: HTMLElement[] = [];
     if (ctx.fwStatus) notices.push(this.fwNotice);
     // digital link down for more than a moment: say so, and how to get the quad back
     const vLost = view.view === 'fpv' && video.kind === 'digital' && (ctx.link.state.lost > 0 || ctx.link.state.freeze);
     if (vLost && this.lostSince < 0) this.lostSince = now; else if (!vLost) this.lostSince = -1;
     if (vLost && now - this.lostSince > 1200) notices.push(this.lostNotice);
-    if (!input.active && !armed) notices.push(this.padNotice);
+    if (!input.active && !armed) notices.push(touchOnly() ? this.touchNotice : this.padNotice);
     if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(this.setupNotice);
     if (ctx.audio.blocked) notices.push(this.soundChip);
     { // multiplayer connection notice
@@ -94,7 +115,10 @@ export class HudController {
     }
     hud.notices(notices);
     // key hints collapse to a single "menu" chip a few seconds after arming
-    hud.keys(this.keyHints(), this.armedSince >= 0 && now - this.armedSince > 3000);
+    const hints = this.keyHints();
+    hud.keys(hints, this.armedSince >= 0 && now - this.armedSince > 3000);
+    // arming coach: why Betaflight refuses to arm (and the fix), first-flight steps for new pilots
+    hud.coach(!armed && tel && !ctx.fwStatus && (input.active || !touchOnly()) ? armingAdvice({ flags: tel.armingFlagNames, armRequested: input.armed, newPilot: this.newPilot, glyphs: this.coachGlyphs(hints) }) : null);
     if (view.telemetry && tel) {
       const b = tel.battery;
       const spd = Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]) * 3.6;
@@ -116,7 +140,7 @@ export class HudController {
       this.sticks.draw(input.channels);
     } else { hud.tel(null); hud.sticks(false); }
     hud.spectrum(this.spectrum.shown);
-    hud.race(raceInfo(ctx), updateDrill(ctx, head, armed));
+    hud.race(raceInfo(ctx), updateDrill(ctx, head, armed), now);
     // crash banner; haptic thump + impact sound on a new crash, scaled by impact speed ("Impact 12.3 m/s")
     const crash = tel?.crash ?? null;
     hud.crash(crash ? crash.toUpperCase() : null);
@@ -140,3 +164,6 @@ export class HudController {
     return ctx.view.view === 'fpv' && ctx.view.osd && osd.hasContent ? osdRects(osd.occupied, osd.cols, osd.rows, ctx.fpv.layout.osd) : [];
   }
 }
+
+/** Only touch the DOM when the text actually changes (the HUD is fed every frame). */
+function setText(n: HTMLElement, t: string) { if (n.textContent !== t) n.textContent = t; }

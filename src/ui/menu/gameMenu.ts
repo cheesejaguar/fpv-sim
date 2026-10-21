@@ -5,19 +5,20 @@ import './theme.css';
 import { KEYS, load, parseSpec, save, validNewGame } from '../../app/persist';
 import { DroneBuild, DroneSpec, PRESETS } from '../../builder/derive';
 import type { InputManager } from '../../input/gamepad';
-import { MAP_LIST } from '../../maps/maps';
+import { MAP_LIST, MAPS, preloadMap } from '../../maps/maps';
 import { fetchRooms, RoomListing } from '../../net/lobby';
 import { MultiplayerClient, randomRoomCode } from '../../net/multiplayer';
 import type { SimSettings } from '../../worker/shared';
-import { el } from '../dom';
+import { cancelTopModal, confirmDialog, dirtyGuard, el, runUnmounts, topModal, touchOnly } from '../dom';
 import { loadPilot, savePilot } from '../multiplayerPanel';
+import { APP_COMMIT, APP_VERSION, bugReportUrl, commitUrl, gpuRenderer, REPO_URL, versionLabel } from './about';
 import { cachedStats, DroneStats, droneStats } from './droneStats';
 import { CHAPTERS, GuideAction, guideDone, markDone } from './guide';
 import { icon, IconName, logo } from './icons';
 import { focusEl, focusables, MenuNav } from './nav';
 
 export type GameMode = 'free' | 'race' | 'drill';
-type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide';
+type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about';
 type JoinFrom = 'host' | 'code' | 'browser';
 
 export interface SettingsTab { id: string; label: string; icon: IconName; render: () => HTMLElement }
@@ -39,7 +40,7 @@ export interface MenuHost {
 }
 
 const MODES: { id: GameMode; title: string; sub: string; icon: IconName }[] = [
-  { id: 'free', title: 'Free flight', sub: 'No timer, no rules. Explore the map, practise lines and tricks.', icon: 'wind' },
+  { id: 'free', title: 'Free flight', sub: 'No timer, no rules. Explore the map, practice lines and tricks.', icon: 'wind' },
   { id: 'race', title: 'Race', sub: 'Laps and best-lap timing through the gates. The next gate glows.', icon: 'timer' },
   { id: 'drill', title: 'Hover drill', sub: 'Stay inside a 1.5 m sphere for 30 s. Scored, so you can see your throttle control improve.', icon: 'target' },
 ];
@@ -51,6 +52,7 @@ const TIPS = [
   'Tiny whoops are the most forgiving way to learn: light, slow and nearly crash-proof.',
   'Watch the LQ on the OSD. When link quality drops, turn back before you fail-safe.',
   'Press C to cycle FPV, chase and line-of-sight cameras.',
+  'No controller? W / S is throttle, A / D yaw, the arrow keys pitch and roll, and Space arms.',
 ];
 
 interface NewGameState { mode: GameMode; map: string; preset: number } // preset -1 = current build
@@ -71,7 +73,45 @@ const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s) || sameSpe
 function loadMine(): DroneSpec | null { return load(MINE_KEY, parseSpec); }
 function keepMine(s: DroneSpec) { if (!isPreset(s)) save(MINE_KEY, s); }
 
-const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start' };
+const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About' };
+
+/**
+ * Does a map have race gates? Known for the built-in maps; map packages (community, from disk) are
+ * loaded once to find out (probeGates), and the answer is kept.
+ */
+const gateKnown = new Map<string, boolean>();
+export function mapHasGates(id: string): boolean | undefined {
+  if (gateKnown.has(id)) return gateKnown.get(id);
+  if (id === 'field') return true;
+  if (id === 'bando' || id.startsWith('quake') || id.startsWith('freedoom')) return false;
+  return undefined;
+}
+const probing = new Map<string, Promise<boolean>>();
+function probeGates(id: string): Promise<boolean> {
+  const known = mapHasGates(id);
+  if (known !== undefined) return Promise.resolve(known);
+  let p = probing.get(id);
+  if (!p) {
+    p = (async () => {
+      let has = false;
+      try { await preloadMap(id); has = MAPS[id]().gates.length > 0; } catch { /* unloadable: no race */ }
+      gateKnown.set(id, has);
+      return has;
+    })();
+    probing.set(id, p);
+  }
+  return p;
+}
+/** First map with race gates (the stadium), for race mode on a gateless map. */
+const firstGatedMap = () => Object.keys(MAP_LIST).find((id) => mapHasGates(id) === true) ?? 'field';
+
+const fsElement = () => document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
+const fsSupported = () => !!(document.fullscreenEnabled || (document as any).webkitFullscreenEnabled);
+function toggleFullscreen() {
+  const d = document as any, root = document.documentElement as any;
+  const p = fsElement() ? (d.exitFullscreen ?? d.webkitExitFullscreen)?.call(d) : (root.requestFullscreen ?? root.webkitRequestFullscreen)?.call(root);
+  (p as Promise<void> | undefined)?.catch?.(() => {});
+}
 
 export class GameMenu {
   readonly root = el('div', { class: 'gm hidden', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'FPV Sim menu' });
@@ -88,20 +128,28 @@ export class GameMenu {
   private tabs: { count: number; go: (d: -1 | 1) => void } | null = null;
   private timers: number[] = [];
   private tipIdx = Math.floor(Math.random() * TIPS.length);
+  private topSig = '';
   /** true once the pilot has flown this session: the title shows "Continue" */
   inFlight = false;
+  /** The mode actually flying (pause → Respawn restarts this one, not the New game selection). */
+  activeMode: GameMode = 'free';
 
   constructor(private host: MenuHost) {
+    // every way into the air (quick fly, launch, rooms, respawn) goes through startFlight: track it
+    // (an overlay object: everything else still reads through to the host, getters included)
+    this.host = Object.assign(Object.create(host) as MenuHost, { startFlight: (m: GameMode) => { this.activeMode = m; host.startFlight(m); } });
     this.ng = loadNg(host.sim());
     this.root.append(this.top, this.main, this.foot);
     this.nav = new MenuNav({
-      scope: () => this.screenEl ?? this.root,
+      // a confirm dialog takes the controller / arrow-key focus until it is answered
+      scope: () => topModal() ?? this.screenEl ?? this.root,
       back: () => this.back(),
-      tab: (d) => this.tabs?.go(d),
+      tab: (d) => { if (!topModal()) this.tabs?.go(d); },
       scroller: () => this.screenEl,
     }, () => host.input.pads());
     this.nav.onDevice = () => this.renderFoot();
     host.mp.listen(() => { this.onMp(); if (this.openState) this.renderTop(); });
+    for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, () => { if (this.openState) this.renderFoot(); });
     // warm the drone-card stats in the background so New Game opens with numbers already there
     const warm = () => { for (const p of PRESETS) void droneStats(p); };
     if ('requestIdleCallback' in window) (window as any).requestIdleCallback(warm, { timeout: 4000 }); else setTimeout(warm, 1500);
@@ -115,10 +163,12 @@ export class GameMenu {
     this.stack = screen === 'title' || screen === 'pause' ? [screen] : [this.inFlight ? 'pause' : 'title', screen];
     if (!this.openState) { this.openState = true; this.root.classList.remove('hidden'); this.host.onOpenChange(true); this.nav.start(); }
     this.render();
+    hideSplash();
   }
 
   close() {
     if (!this.openState) return;
+    cancelTopModal();
     this.openState = false;
     this.root.classList.add('hidden');
     this.clearTimers();
@@ -129,19 +179,29 @@ export class GameMenu {
   /** Close the menu into flight (e.g. after applying a new build). */
   resume() { this.inFlight = true; this.close(); }
 
-  /** Esc / Start in flight. */
+  /** Esc / Start in flight (and the HUD's menu chip). */
   toggle() {
     if (!this.openState) { this.open(); return; }
-    if (this.inFlight) this.close();
-    else this.quickFly();
+    if (topModal()) { cancelTopModal(); return; }
+    if (this.inFlight) this.leave(() => this.close());
+    else this.leave(() => this.quickFly());
   }
 
   back() {
-    if (this.stack.length > 1) { this.stack.pop(); this.render(); return; }
+    if (cancelTopModal()) return; // Esc / B answers an open dialog with "Cancel"
+    if (this.stack.length > 1) { this.leave(() => { this.stack.pop(); this.render(); }); return; }
     if (this.stack[0] === 'pause') this.close();
   }
 
-  private go(s: Screen) { this.stack.push(s); this.render(); }
+  private go(s: Screen) { this.leave(() => { this.stack.push(s); this.render(); }); }
+
+  /** Leave the current screen: a settings panel with unsaved edits asks first. */
+  private leave(then: () => void) {
+    const g = dirtyGuard(this.screenEl);
+    if (!g) { then(); return; }
+    void confirmDialog({ title: 'Discard unsaved changes?', body: g.what?.() ?? 'Some changes in this panel are not applied yet.', ok: 'Discard changes', cancel: 'Keep editing', danger: true })
+      .then((ok) => { if (ok) then(); });
+  }
 
   private clearTimers() { for (const t of this.timers) clearInterval(t); this.timers = []; }
 
@@ -153,9 +213,10 @@ export class GameMenu {
     const s = this.stack[this.stack.length - 1];
     const keep = soft ? (document.activeElement as HTMLElement | null)?.dataset?.key : undefined;
     const scrollY = soft ? this.screenEl?.scrollTop ?? 0 : 0;
-    const scr = el('section', { class: soft ? 'gm-screen gm-static' : 'gm-screen enter', 'aria-label': s });
-    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide() }[s];
+    const scr = el('section', { class: soft ? 'gm-screen gm-static' : 'gm-screen enter', 'aria-label': SCREEN_NAMES[s] });
+    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about() }[s];
     scr.append(build());
+    runUnmounts(this.screenEl); // panels on the old screen drop their listeners (CLI output …)
     this.main.replaceChildren(scr);
     this.root.classList.toggle('deep', s !== 'title');
     this.screenEl = scr;
@@ -179,6 +240,10 @@ export class GameMenu {
     const pad = this.host.input.active;
     const mp = this.host.mp;
     const chip = (cls: string, text: string, title = '') => el('span', { class: `gm-chip ${cls}`, title }, el('span', { class: 'dot' }), text);
+    // refreshed every second: only rebuild (and let the live region speak) when something changed
+    const sig = [this.stack.join('>'), fw, pad?.id ?? '', mp.status, mp.room ?? '', mp.peers.size, mp.error ?? ''].join('|');
+    if (sig === this.topSig) return;
+    this.topSig = sig;
     this.top.replaceChildren(
       el('div', { class: 'gm-brand' }, logo(), el('div', { class: 'gm-wordmark' }, 'FPV SIM', el('small', {}, 'Betaflight in the loop'))),
       this.stack.length > 1 ? el('div', { class: 'gm-crumbs' }, names[this.stack[0]], icon('chevron'), el('b', {}, names[s])) : el('span'),
@@ -201,9 +266,18 @@ export class GameMenu {
     if (this.tabs) kids.push(hint(pad ? g('key', 'LB · RB') : g('key', 'Q · E'), s === 'guide' ? 'Chapter' : 'Switch tab'));
     kids.push(hint(pad ? g('key', 'D-pad') : g('key', '↑↓←→'), 'Move'));
     if (pad) kids.push(hint(g('key', 'R-stick'), 'Scroll'));
+    const fs = !!fsElement();
+    const bug = el('a', { href: `${REPO_URL}/issues/new`, target: '_blank', rel: 'noopener' }, 'Report a bug') as HTMLAnchorElement;
+    // filled in at click time: version, browser, GPU and the controller in use right now
+    bug.addEventListener('click', () => { bug.href = bugReportUrl({ version: APP_VERSION, commit: APP_COMMIT, userAgent: navigator.userAgent, gpu: gpuRenderer(), controller: this.host.input.active?.id ?? '', page: location.origin + location.pathname }); });
     this.foot.replaceChildren(...kids, el('span', { class: 'gm-spacer' }),
-      el('a', { href: 'https://github.com/cheesejaguar/fpv-sim', target: '_blank', rel: 'noopener' }, 'Source (GPL-3.0)'),
-      el('a', { href: 'https://betaflight.com/docs/wiki', target: '_blank', rel: 'noopener' }, 'Betaflight docs'));
+      el('div', { class: 'gm-foot-links' },
+        fsSupported() ? el('button', { class: 'gm-hint gm-hint-btn', tabindex: '-1', 'aria-pressed': String(fs), onclick: toggleFullscreen },
+          pad || touchOnly() ? null : g('key', 'F11'), fs ? 'Exit fullscreen' : 'Fullscreen') : null,
+        s === 'about' ? null : el('button', { class: 'gm-hint gm-hint-btn gm-link', tabindex: '-1', 'data-key': 'about', onclick: () => this.go('about') }, 'About'),
+        bug,
+        el('a', { class: 'gm-wide', href: 'https://betaflight.com/docs/wiki', target: '_blank', rel: 'noopener' }, 'Betaflight docs'),
+        el('span', { class: 'gm-version', title: APP_COMMIT ? `Commit ${APP_COMMIT}` : 'Development build' }, versionLabel())));
   }
 
   // -------------------------------------------------------------------------------------------
@@ -222,11 +296,26 @@ export class GameMenu {
       icon('back'), `Back to ${SCREEN_NAMES[prev].toLowerCase()}`);
   }
 
-  private quickFly() {
-    if (!sameSpec(this.host.spec(), EASY_SPEC)) { keepMine(this.host.spec()); this.host.applySpec(structuredClone(EASY_SPEC)); }
-    this.host.startFlight('free');
-    this.inFlight = true;
-    this.close();
+  /** Phone / tablet without a controller: the sim can't really be flown. Say so before flying. */
+  private needsController() { return touchOnly() && !this.host.input.active; }
+  private confirmFly(): Promise<boolean> {
+    if (!this.needsController()) return Promise.resolve(true);
+    return confirmDialog({
+      title: 'No controller connected',
+      body: 'FPV Sim is flown with a game controller or an RC radio on a desktop or laptop. On a phone or tablet, pair a Bluetooth gamepad first and press a button on it. Touch controls are not supported.',
+      ok: 'Fly anyway', cancel: 'Not now',
+    });
+  }
+
+  /** Fly now on the easiest quad (65 mm tiny whoop), in the given mode. */
+  private quickFly(mode: GameMode = 'free') {
+    void this.confirmFly().then((ok) => {
+      if (!ok) return;
+      if (!sameSpec(this.host.spec(), EASY_SPEC)) { keepMine(this.host.spec()); this.host.applySpec(structuredClone(EASY_SPEC)); }
+      this.host.startFlight(mode);
+      this.inFlight = true;
+      this.close();
+    });
   }
 
   private titleScreen(paused: boolean): HTMLElement {
@@ -234,7 +323,7 @@ export class GameMenu {
     const items: HTMLElement[] = paused
       ? [
         this.item({ icon: 'play', title: 'Resume', sub: 'Back to the quad', primary: true, autofocus: true, onClick: () => this.close() }),
-        this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.ng.mode); this.close(); } }),
+        this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.activeMode); this.close(); } }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: 'Arming, modes, rates, PIDs, OSD', onClick: () => this.go('guide') }),
         ...(mp.room && mp.status !== 'idle' ? [this.item({ icon: 'logout', title: 'Leave room', sub: mp.connected ? `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)` : `Room ${mp.room}: ${{ error: 'disconnected', reconnecting: 'reconnecting…', connecting: 'joining…' }[mp.status as string] ?? ''}`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
@@ -251,11 +340,15 @@ export class GameMenu {
     const pilot = loadPilot();
     const tip = el('p', {}, TIPS[this.tipIdx % TIPS.length]);
     if (!reduced()) this.timers.push(window.setInterval(() => { this.tipIdx++; tip.textContent = TIPS[this.tipIdx % TIPS.length]; }, 8000));
+    const touch = this.needsController();
     return el('div', { class: 'gm-title' },
       el('div', {},
         paused ? el('h1', { class: 'gm-hero' }, 'PAUSED') : el('h1', { class: 'gm-hero' }, 'FPV SIM'),
         el('p', { class: 'gm-tagline' }, paused ? 'Disarmed · physics frozen' : 'Real Betaflight · real physics · real latency'),
         paused ? null : this.roomCardView(),
+        // phones / tablets: up front, before the pilot taps Quick fly
+        touch ? el('div', { class: 'gm-callout warn gm-touch', role: 'note' }, icon('alert'),
+          el('p', {}, el('b', {}, 'Desktop + controller needed'), ' (or pair a Bluetooth gamepad and press a button on it). FPV Sim has no touch controls.')) : null,
         el('nav', { class: 'gm-mainnav gm-stagger', 'aria-label': 'Main' }, ...items)),
       el('aside', { class: 'gm-side gm-stagger' },
         el('div', { class: 'gm-card gm-pilot' },
@@ -270,8 +363,9 @@ export class GameMenu {
             el('dt', {}, 'Hover throttle'), el('dd', {}, `${(info.hoverThrottle * 100).toFixed(0)} %`),
             el('dt', {}, 'Flight time'), el('dd', {}, `≈ ${info.flightTimeMixedMin.toFixed(1)} min`),
             el('dt', {}, 'Video'), el('dd', {}, info.components.video.name))),
-        this.host.input.active ? null : el('div', { class: 'gm-card gm-tip' }, el('h3', {}, 'No controller yet'),
-          el('p', { style: { marginBottom: '12px' } }, 'Plug in or pair a controller and press any button on it. Browsers only reveal a gamepad after its first input. The keyboard works as a fallback.'),
+        this.host.input.active || touch ? null : el('div', { class: 'gm-card gm-tip gm-nopad' }, el('h3', {}, 'No controller yet'),
+          el('p', {}, 'Plug in or pair a controller and press any button on it: browsers only reveal a gamepad after its first input.'),
+          el('p', { class: 'gm-keys' }, 'Keyboard fallback: ', el('kbd', {}, 'W'), el('kbd', {}, 'S'), ' throttle · ', el('kbd', {}, 'A'), el('kbd', {}, 'D'), ' yaw · arrow keys pitch / roll · ', el('kbd', {}, 'Space'), ' arm'),
           el('button', { class: 'gm-btn', onclick: () => this.openSettings('controller') }, icon('gamepad'), 'Controller setup')),
         el('div', { class: 'gm-card gm-tip' }, el('h3', {}, 'Tip'), tip)),
     );
@@ -305,13 +399,19 @@ export class GameMenu {
       this.ngTab === 'local' ? this.localBody(rerender) : this.multiBody(rerender));
   }
 
+  /** Map picker (a radio group). In race mode, maps without gates can't be picked. */
   private mapTiles(onPick: () => void): HTMLElement {
-    return el('div', { class: 'gm-grid gm-stagger' }, ...Object.entries(MAP_LIST).map(([id, m]) =>
-      el('button', { class: 'gm-tile', 'data-key': `map-${id}`, 'aria-pressed': String(this.ng.map === id), onclick: () => { this.ng.map = id; onPick(); } },
+    const race = this.ngTab === 'local' && this.ng.mode === 'race';
+    return el('div', { class: 'gm-grid gm-stagger', role: 'radiogroup', 'aria-label': 'Map' }, ...Object.entries(MAP_LIST).map(([id, m]) => {
+      const gates = mapHasGates(id);
+      const blocked = race && gates !== true;
+      if (race && gates === undefined) void probeGates(id).then(() => { if (this.stack[this.stack.length - 1] === 'new') this.render(true); });
+      return el('button', { class: 'gm-tile', role: 'radio', 'data-key': `map-${id}`, 'aria-checked': String(this.ng.map === id), disabled: blocked, onclick: () => { this.ng.map = id; onPick(); } },
         el('div', { class: 'art' }, mapArt(id)),
         el('span', { class: 'tt' }, m.name.split(' — ')[0]),
         el('span', { class: 'ts' }, m.name.split(' — ')[1] ?? (m.community ? `by ${m.community.author}` : '')),
-        el('span', { class: 'stats' }, ...mapBadges(id)))));
+        el('span', { class: 'stats' }, ...(blocked ? [el('span', { class: 'gm-badge' }, gates === undefined ? 'Checking for gates…' : 'No race gates')] : mapBadges(id))));
+    }));
   }
 
   private droneTiles(onPick: () => void): HTMLElement {
@@ -325,13 +425,13 @@ export class GameMenu {
       el('span', { class: 'gm-badge' }, `${st.auwG.toFixed(0)} g`),
       el('span', { class: 'gm-badge rose' }, `T/W ${st.tw.toFixed(1)}`),
       el('span', { class: 'gm-badge green' }, `${st.minutes.toFixed(1)} min`)];
-    return el('div', { class: 'gm-grid gm-stagger' }, ...opts.map((o) => {
+    return el('div', { class: 'gm-grid gm-stagger', role: 'radiogroup', 'aria-label': 'Drone' }, ...opts.map((o) => {
       // current build is already derived; presets come from the stats worker (cached after first time)
       const info = o.idx === -1 ? this.host.build().info : null;
       const known: DroneStats | null = info ? { auwG: info.auwG, tw: info.thrustToWeight, minutes: info.flightTimeMixedMin } : cachedStats(o.spec);
       const stats = el('span', { class: 'stats' }, ...(known ? badges(known) : [el('span', { class: 'gm-badge gm-badge-wait' }, 'measuring…')]));
       if (!known) void droneStats(o.spec).then((st) => { if (st) stats.replaceChildren(...badges(st)); else stats.replaceChildren(); });
-      return el('button', { class: 'gm-tile', 'data-key': `drone-${o.idx}`, 'aria-pressed': String(this.ng.preset === o.idx), onclick: () => { this.ng.preset = o.idx; this.saveNg(); onPick(); } },
+      return el('button', { class: 'gm-tile', role: 'radio', 'data-key': `drone-${o.idx}`, 'aria-checked': String(this.ng.preset === o.idx), onclick: () => { this.ng.preset = o.idx; this.saveNg(); onPick(); } },
         el('span', { class: 'ts' }, o.label),
         el('span', { class: 'tt' }, o.spec.name.replace(/^Beginner: /, '')),
         stats);
@@ -364,17 +464,29 @@ export class GameMenu {
   }
 
   private localBody(rerender: () => void): HTMLElement {
+    // race needs gates: a gateless map (or one still being checked) switches to the stadium
+    if (this.ng.mode === 'race' && mapHasGates(this.ng.map) === false) this.ng.map = firstGatedMap();
+    const raceMap = async () => { if (this.ng.mode === 'race' && !(await probeGates(this.ng.map))) this.ng.map = firstGatedMap(); };
     const launch = el('button', { class: 'gm-btn cta', style: { width: '100%' }, onclick: () => {
-      this.applyChoices();
-      this.host.mp.leave(); history.replaceState(null, '', location.pathname);
-      this.host.startFlight(this.ng.mode);
-      this.inFlight = true; this.close();
+      void this.confirmFly().then(async (ok) => {
+        if (!ok) return;
+        await raceMap();
+        this.applyChoices();
+        this.host.mp.leave(); history.replaceState(null, '', location.pathname);
+        this.host.startFlight(this.ng.mode);
+        this.inFlight = true; this.close();
+      });
     } }, icon('play'), 'LAUNCH');
     return el('div', { class: 'gm-two' },
       el('div', {},
         el('h2', { class: 'gm-section-title' }, '1 · Mode'),
-        el('div', { class: 'gm-grid big gm-stagger' }, ...MODES.map((m, i) =>
-          el('button', { class: 'gm-tile', 'data-key': `mode-${m.id}`, 'aria-pressed': String(this.ng.mode === m.id), 'data-autofocus': i === 0 || undefined, onclick: () => { this.ng.mode = m.id; if (m.id === 'race' && !MAP_LIST[this.ng.map]?.name.includes('Stadium') && MAP_LIST.field) this.ng.map = 'field'; this.saveNg(); rerender(); } },
+        el('div', { class: 'gm-grid big gm-stagger', role: 'radiogroup', 'aria-label': 'Mode' }, ...MODES.map((m, i) =>
+          el('button', { class: 'gm-tile', role: 'radio', 'data-key': `mode-${m.id}`, 'aria-checked': String(this.ng.mode === m.id), 'data-autofocus': i === 0 || undefined, onclick: () => {
+            this.ng.mode = m.id; this.saveNg();
+            if (m.id === 'race' && mapHasGates(this.ng.map) === false) this.ng.map = firstGatedMap();
+            rerender();
+            if (m.id === 'race' && mapHasGates(this.ng.map) === undefined) void raceMap().then(() => { if (this.stack[this.stack.length - 1] === 'new') rerender(); });
+          } },
             el('span', { class: 'mico' }, icon(m.icon)),
             el('span', { class: 'tt' }, m.title), el('span', { class: 'ts' }, m.sub)))),
         el('h2', { class: 'gm-section-title' }, '2 · Map'),
@@ -595,7 +707,8 @@ export class GameMenu {
     const t = tabs[this.settingsIdx] ?? tabs[0];
     const panel = el('div', { class: 'gm-settings' });
     try { panel.append(t.render()); } catch (e) { panel.append(el('p', {}, `This panel failed to load: ${(e as Error).message}`)); }
-    const bar = this.tabsBar(tabs.map((x) => ({ id: x.id, label: x.label, icon: x.icon })), t.id, (id) => { this.settingsIdx = tabs.findIndex((x) => x.id === id); this.render(true); this.refocusTab(); });
+    // switching tabs throws the panel away: one with unsaved edits asks first
+    const bar = this.tabsBar(tabs.map((x) => ({ id: x.id, label: x.label, icon: x.icon })), t.id, (id) => this.leave(() => { this.settingsIdx = tabs.findIndex((x) => x.id === id); this.render(true); this.refocusTab(); }));
     return el('div', {}, this.backBar(), el('h1', { class: 'gm-h1' }, 'Settings'), bar, panel);
   }
 
@@ -611,7 +724,14 @@ export class GameMenu {
     const body = el('div');
     body.innerHTML = c.html; // static content from guide.ts
     const act = (a: GuideAction) => {
-      if (a === 'fly') { if (this.inFlight) this.close(); else { this.ng.mode = c.id === 'modes' ? 'drill' : this.ng.mode; this.quickFly(); } return; }
+      if (a === 'fly') {
+        // "Fly a hover drill" (flight modes chapter) starts the drill; "Fly now" free flight
+        const mode: GameMode = c.id === 'modes' ? 'drill' : 'free';
+        if (!this.inFlight) this.quickFly(mode);
+        else if (mode !== this.activeMode) { this.host.startFlight(mode); this.close(); }
+        else this.close();
+        return;
+      }
       this.openSettings({ bf: 'bf', controller: 'controller', builder: 'builder', sim: 'sim' }[a]);
     };
     art.append(
@@ -634,6 +754,50 @@ export class GameMenu {
             el('span', { class: 'n' }, done.has(x.id) && i !== this.chapter ? icon('check') : String(i + 1)), x.title))),
         art));
   }
+
+  // -------------------------------------------------------------------------------------------
+  // About: version, license, notices, support
+  private about(): HTMLElement {
+    const base = import.meta.env.BASE_URL ?? '/';
+    const ext = (href: string, text: string, autofocus = false) => el('a', { class: 'gm-btn', href, target: '_blank', rel: 'noopener', 'data-autofocus': autofocus || undefined }, text, icon('external'));
+    const fw = this.host.fwStatus();
+    const commit = APP_COMMIT ? el('a', { href: commitUrl(), target: '_blank', rel: 'noopener' }, APP_COMMIT.slice(0, 7)) : '—';
+    const bug = ext(`${REPO_URL}/issues/new`, 'Report a bug') as HTMLAnchorElement;
+    bug.addEventListener('click', () => { bug.href = bugReportUrl({ version: APP_VERSION, commit: APP_COMMIT, userAgent: navigator.userAgent, gpu: gpuRenderer(), controller: this.host.input.active?.id ?? '', page: location.origin + location.pathname }); });
+    return el('div', {},
+      this.backBar(), el('h1', { class: 'gm-h1' }, 'About FPV Sim'),
+      el('p', { class: 'gm-lead' }, 'A browser FPV drone trainer that runs the real Betaflight flight controller firmware against a physics model of your quad.'),
+      el('div', { class: 'gm-two gm-about' },
+        el('div', { style: { display: 'grid', gap: '16px' } },
+          el('section', { class: 'gm-card', 'aria-labelledby': 'gm-ab-lic' },
+            el('h3', { id: 'gm-ab-lic' }, 'License'),
+            el('p', {}, 'FPV Sim is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.'),
+            el('p', {}, 'This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.'),
+            el('div', { class: 'gm-actions' }, ext(REPO_URL, 'Source code', true), ext('https://www.gnu.org/licenses/gpl-3.0.html', 'GPL-3.0 text'))),
+          el('section', { class: 'gm-card', 'aria-labelledby': 'gm-ab-not' },
+            el('h3', { id: 'gm-ab-not' }, 'Notices'),
+            el('p', {}, 'FPV Sim includes Betaflight (GPL-3.0), its OSD fonts, Three.js and three-mesh-bvh (MIT), the Russo One and Chakra Petch fonts (SIL OFL 1.1) and map data under their own licenses. Map credits are also listed in Settings → Simulation → Credits & licenses.'),
+            el('div', { class: 'gm-actions' }, ext(`${base}licenses.txt`, 'Third-party notices'), ext(`${base}privacy.html`, 'Privacy notice'))),
+          el('p', { class: 'gm-affil' }, 'FPV Sim is an independent project. It is not affiliated with, endorsed by or sponsored by Betaflight, DJI, HDZero, Walksnail / Caddx, ExpressLRS, id Software, the Freedoom project, Valve, Microsoft, Sony or any other company or project named in it. Product names and trademarks belong to their owners.')),
+        el('div', {},
+          el('section', { class: 'gm-card', 'aria-labelledby': 'gm-ab-ver' },
+            el('h3', { id: 'gm-ab-ver' }, 'Version'),
+            el('dl', { class: 'gm-kv', style: { marginBottom: '16px' } },
+              el('dt', {}, 'FPV Sim'), el('dd', {}, versionLabel(APP_VERSION, '')),
+              el('dt', {}, 'Commit'), el('dd', {}, commit),
+              el('dt', {}, 'Firmware'), el('dd', {}, fw ? 'loading…' : 'Betaflight 4.5.5 (WebAssembly)'),
+              el('dt', {}, 'Controller'), el('dd', {}, this.host.input.active ? shortPad(this.host.input.active.id) : 'Keyboard')),
+            el('p', { class: 'gm-room-sub', style: { margin: '0 0 12px' } }, 'Found a problem? The report opens on GitHub with your version, browser, GPU and controller filled in. Nothing is sent until you submit it there.'),
+            bug))));
+  }
+}
+
+/** The loading splash in index.html: fade it out once the menu is up. */
+function hideSplash() {
+  const s = document.getElementById('splash');
+  if (!s || s.classList.contains('done')) return;
+  s.classList.add('done');
+  setTimeout(() => s.remove(), 450);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -649,7 +813,7 @@ function mapBadges(id: string): HTMLElement[] {
   if (id === 'bando') return [b('Freestyle'), b('Indoor + outdoor')];
   if (id.startsWith('quake')) return [b('Indoor'), b('Classic', 'green')];
   if (id.startsWith('freedoom')) return [b('Indoor'), b('Classic', 'green')];
-  return [b(m?.community?.local ? 'From disk' : 'Community', 'green')];
+  return [b(m?.community?.local ? 'From disk' : 'Community', 'green'), ...(mapHasGates(id) ? [b('Race gates', 'rose')] : [])];
 }
 
 /** Small generated illustrations for map tiles (no image assets needed). */

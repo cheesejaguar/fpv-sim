@@ -1,0 +1,31 @@
+/*
+ * Loading splash (index.html): shown from the first paint until the game menu opens (gameMenu.ts
+ * fades it out), so the page is never a black screen while Betaflight, the physics and the map load.
+ * A linked stylesheet rather than inline CSS, so it also works under a strict Content-Security-Policy.
+ */
+html, body { margin: 0; height: 100%; background: #0f0f23; }
+#splash {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 24px;
+  text-align: center; color: #e2e8f0; font-family: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background:
+    radial-gradient(120% 90% at 15% 10%, rgba(124, 58, 237, 0.28), transparent 55%),
+    radial-gradient(90% 70% at 100% 100%, rgba(244, 63, 94, 0.16), transparent 60%),
+    #0f0f23;
+  transition: opacity 400ms ease, visibility 0s linear 400ms;
+}
+#splash.done, body:has(.fatal) #splash { opacity: 0; visibility: hidden; pointer-events: none; }
+.sp-logo { width: 72px; height: 72px; filter: drop-shadow(0 6px 24px rgba(124, 58, 237, 0.5)); }
+.sp-word { font: 400 40px/1 'Russo One', system-ui, sans-serif; letter-spacing: 0.06em;
+  background: linear-gradient(100deg, #fff 10%, #a78bfa 55%, #f43f5e 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sp-sub { font-size: 14px; letter-spacing: 0.18em; text-transform: uppercase; color: #94a3b8; }
+.sp-bar { width: min(280px, 70vw); height: 4px; border-radius: 99px; background: rgba(148, 163, 184, 0.2); overflow: hidden; }
+.sp-bar i { display: block; width: 40%; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #a78bfa, #f43f5e); animation: sp-slide 1.3s ease-in-out infinite; }
+@keyframes sp-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+/* only if loading drags on (old browser, no WebGL 2, a script error): say what is needed */
+.sp-slow { max-width: 46ch; margin: 8px 0 0; font-size: 14px; line-height: 1.5; color: #94a3b8; opacity: 0; animation: sp-show 300ms ease 20s forwards; }
+@keyframes sp-show { to { opacity: 1; } }
+.sp-noscript { position: fixed; inset: auto 0 0; z-index: 101; padding: 20px 24px; background: #1e1c35; border-top: 1px solid #4c1d95; color: #e2e8f0; font: 16px/1.5 system-ui, sans-serif; text-align: center; }
+.sp-noscript h1 { margin: 0 0 6px; font-size: 20px; }
+.sp-noscript p { margin: 0; color: #cbd5e1; }
+.sp-noscript a { color: #c4b5fd; }
+@media (prefers-reduced-motion: reduce) { .sp-bar i { animation: none; width: 100%; opacity: 0.6; } #splash { transition: none; } }

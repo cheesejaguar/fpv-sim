@@ -1,0 +1,17 @@
+{
+  "name": "FPV Sim — Betaflight-in-the-loop FPV trainer",
+  "short_name": "FPV Sim",
+  "description": "Browser FPV drone trainer running the real Betaflight firmware against a physics model of your quad.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0f0f23",
+  "theme_color": "#0f0f23",
+  "categories": ["games", "education", "sports"],
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon-32.png", "sizes": "32x32", "type": "image/png" }
+  ]
+}
