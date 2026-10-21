@@ -64,7 +64,9 @@ export function windsockSpot(map: MapDef): { x: number; y: number; z: number } |
       } else if (p.kind === 'cyl') { x0 = p.c.x - p.r; x1 = p.c.x + p.r; y0 = p.c.y - p.r; y1 = p.c.y + p.r; z0 = p.c.z; z1 = p.c.z + p.h; }
       else { x0 = p.c.x - p.r; x1 = p.c.x + p.r; y0 = p.c.y - p.r; y1 = p.c.y + p.r; z0 = p.c.z - p.r; z1 = p.c.z + p.r; }
       if (z1 < g || z0 > g + SOCK_POLE + 1) continue;
-      if (x >= x0 - 0.7 && x <= x1 + 0.7 && y >= y0 - 0.7 && y <= y1 + 0.7) return false;
+      // anything as high as the sock must be clear of its swing (a sock length + margin), low things of the pole
+      const m = z1 > g + SOCK_POLE - SOCK_LEN ? SOCK_LEN + 0.6 : 0.7;
+      if (x >= x0 - m && x <= x1 + m && y >= y0 - m && y <= y1 + m) return false;
     }
     return true;
   };
