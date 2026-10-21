@@ -77,6 +77,8 @@ export interface DerivedInfo {
   flightTimeMixedMin: number;
   estTopSpeedKmh: number;
   frameFreqHz: number;
+  /** Ducted frames: bottom of the duct guards (frame z, mm, arm plane = 0), what the quad stands on. */
+  ductBottomMm?: number;
 }
 
 export interface DroneBuild { spec: DroneSpec; params: QuadParams; info: DerivedInfo; tables: BemtTable }
@@ -278,12 +280,13 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
   // Whoops stand on their duct rims: the moulded guards run down past the battery cradle, so the pack
   // sits between the ducts, 1 mm off the floor. (A pack hanging below on its two centre-line spheres
   // made the quad fall over onto one duct: 13° of roll on the pad, and Angle mode learnt it as level.)
+  let ductBottom: number | undefined;
   if (ducted) {
-    const low = Math.min(...colliders.map((c) => c.pos.z - c.radius)) + cg.z; // lowest body point, frame z
+    ductBottom = Math.min(...colliders.map((c) => c.pos.z - c.radius)) + cg.z - 0.001; // lowest body point, frame z
     const rr = Math.max(0.002, ductH / 4);
     for (let k = 0; k < 4; k++) {
       const h = hubs[k];
-      for (let j = 0; j < 6; j++) { const a = ((j + 0.5) / 6) * 2 * Math.PI; add(h.x + Math.cos(a) * R * 1.08, h.y + Math.sin(a) * R * 1.08, low - 0.001 + rr, rr, 'frame'); }
+      for (let j = 0; j < 6; j++) { const a = ((j + 0.5) / 6) * 2 * Math.PI; add(h.x + Math.cos(a) * R * 1.08, h.y + Math.sin(a) * R * 1.08, ductBottom + rr, rr, 'frame'); }
     }
   }
 
@@ -325,6 +328,7 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
   if (ov.propImbalance != null) { /* applied to rotor damage state at sim creation */ }
 
   const info = deriveInfo(spec, params, { frame, motor, prop, battery, esc, fc, video }, items, cg, fRP);
+  if (ductBottom !== undefined) info.ductBottomMm = ductBottom * 1000;
   return { spec, params, info, tables: tbl };
 }
 

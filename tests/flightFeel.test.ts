@@ -48,6 +48,14 @@ describe('on the pad', () => {
     expect(q.s.touching).toBe(true);
   });
 
+  test('ducted frames report the duct bottom they stand on (for the 3D model)', () => {
+    for (const spec of PRESETS) {
+      const b = buildDrone(spec), low = Math.min(...b.params.colliders.map((c) => c.pos.z - c.radius)) + b.info.cgMm.z / 1000;
+      if (!b.info.components.frame.ducted) { expect(b.info.ductBottomMm).toBeUndefined(); continue; }
+      expect(b.info.ductBottomMm!, spec.name).toBeCloseTo(low * 1000, 3);
+    }
+  }, 60000);
+
   test('the old whoop collider set fell over onto one duct (what Angle mode then learnt as level)', () => {
     const p = oldWhoopPad(buildDrone(WHOOP).params), q = new QuadSim(p, 8000), e = env(DEFAULT_WIND);
     q.reset({ x: 0, y: 0, z: 0.06 - Math.min(...p.colliders.map((c) => c.pos.z - c.radius)) });
