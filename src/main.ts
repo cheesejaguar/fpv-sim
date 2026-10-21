@@ -7,6 +7,7 @@ import './style.css';
 import { WorkerBridge } from './app/bridge';
 import { AppCtx, makeLog } from './app/context';
 import { initDvr } from './app/dvr';
+import { parseReplayLink } from './app/replayLink';
 import { startFrameLoop } from './app/frameLoop';
 import { HudController } from './app/hudController';
 import { SpectrumView, SticksView } from './app/instruments';
@@ -354,6 +355,11 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+// replay permalinks: ?replay=<entry id>[&t=<s>] plays that leaderboard lap over the title screen
+{
+  const rl = parseReplayLink(location.search);
+  if (rl) void gameMenu.watchEntry(rl.id, rl.t);
+}
 
 // debugging handle (inspect from devtools), see `debug` above
 if (debug) (window as any).__fpv = {

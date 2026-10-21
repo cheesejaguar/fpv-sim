@@ -7,7 +7,8 @@ import { KEYS, load, parseSpec, save, validNewGame } from '../../app/persist';
 import { DroneBuild, DroneSpec, PRESETS } from '../../builder/derive';
 import type { InputManager } from '../../input/gamepad';
 import { MAP_LIST, MAPS, preloadMap } from '../../maps/maps';
-import { formatLap } from '../../net/leaderboard';
+import { parseReplayLink, replayUrl, withoutReplayLink } from '../../app/replayLink';
+import { fetchEntry, fetchReplay, formatLap } from '../../net/leaderboard';
 import { fetchRooms, RoomListing } from '../../net/lobby';
 import { MultiplayerClient, randomRoomCode } from '../../net/multiplayer';
 import type { PbShots } from '../../share/capture';
@@ -64,7 +65,8 @@ export interface MenuHost {
 }
 
 /** Where a replay came from (its title in the player): a board entry, the pilot's best, the last lap, a file. */
-export interface ReplayLabel { source: 'board' | 'best' | 'last' | 'file'; pilot?: string; rank?: number | null }
+/** entryId: a leaderboard lap (its permalink, /?replay=id); startAt: lap time (s) to start from. */
+export interface ReplayLabel { source: 'board' | 'best' | 'last' | 'file'; pilot?: string; rank?: number | null; entryId?: number; startAt?: number }
 /** What the player needs of the menu. */
 export interface ReplayUi { root: HTMLElement; open(o: NavOverlay): void; usingPad(): boolean; pads(): Gamepad[]; onClose(): void }
 
@@ -806,11 +808,19 @@ export class GameMenu {
   private player: { close(): void } | null = null;
   private watching = false;
 
+  /** A leaderboard lap's replay by its entry id (a permalink, /?replay=id&t=s), named and ranked from the board. */
+  async watchEntry(id: number, startAt?: number) {
+    const info = await fetchEntry(id).catch(() => null); // only for the title: the replay itself says if the lap is gone
+    await this.watch(() => fetchReplay(id).then((x) => ('bytes' in x ? x.bytes : x)), { source: 'board', pilot: info?.entry?.initials, rank: info?.rank ?? null, entryId: id, startAt });
+  }
+
   /** Load a replay (from the board, the pilot's best, the last lap or a file) and play it. */
   async watch(get: () => Promise<Uint8Array | { error: string }>, label: ReplayLabel) {
     if (this.watching || !this.openState) return;
     this.watching = true;
     const from = document.activeElement as HTMLElement | null;
+    // a leaderboard lap's permalink stays in the address bar while it plays (the URL to share)
+    const before = withoutReplayLink(location.href);
     const wait = el('div', { class: 'rp-loading', role: 'status', 'aria-live': 'polite' }, el('div', { class: 'gm-card' }, el('span', { class: 'rp-spinner', 'aria-hidden': 'true' }), 'Loading the replay…'));
     this.root.append(wait);
     let fail = '';
@@ -824,6 +834,7 @@ export class GameMenu {
           onClose: () => {
             this.player = null; this.watching = false;
             this.root.classList.remove('gm-replaying');
+            if (label.entryId) history.replaceState(history.state, '', before);
             if (from?.isConnected) { if (this.nav.usingPad) focusEl(from); else from.focus({ preventScroll: true }); }
           },
         });
@@ -835,6 +846,9 @@ export class GameMenu {
       wait.remove();
       if (!this.player) this.watching = false;
     }
+    if (this.player && label.entryId) history.replaceState(history.state, '', replayUrl(location.origin, label.entryId, label.startAt));
+    // a permalink that can't play: the address stops pointing at it (a reload doesn't try again)
+    if (!this.player && parseReplayLink(location.search)) history.replaceState(history.state, '', before);
     if (fail) await confirmDialog({ title: 'Can’t play this replay', body: fail.charAt(0).toUpperCase() + fail.slice(1), ok: 'OK', cancel: 'Close' });
   }
 

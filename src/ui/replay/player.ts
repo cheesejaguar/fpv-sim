@@ -8,6 +8,7 @@
 import './player.css';
 import { decodeReplay, REPLAY_MIME } from '../../../server/src/replayFormat';
 import type { AppCtx, ReplayView } from '../../app/context';
+import { replayUrl } from '../../app/replayLink';
 import { enterReplay, replayWorld } from '../../app/replaySession';
 import { OsdPlayback, ReplayClock, ReplayTrack, SPEEDS } from '../../app/replayTrack';
 import { className } from '../../builder/droneClass';
@@ -38,11 +39,19 @@ export function lapClock(t: number): string {
 
 const speedLabel = (s: number) => `${s}×`;
 
+/** Put text on the clipboard: the Clipboard API, else the older copy command (embedded pages, older browsers). */
+async function copyText(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* blocked: try the old way */ }
+  const ta = el('textarea', { readonly: '', style: { position: 'fixed', opacity: '0', top: '0', left: '0' } }) as HTMLTextAreaElement;
+  ta.value = text; document.body.append(ta); ta.select();
+  try { return document.execCommand('copy'); } catch { return false; } finally { ta.remove(); }
+}
+
 export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLabel, ui: ReplayUi): Promise<Player> {
   const track = new ReplayTrack(await decodeReplay(bytes));
   const world = await replayWorld(track);
   const h = track.header, gates = world.map.gates;
-  const clock = new ReplayClock(track.t0, track.t1, 1 / track.rate);
+  const clock = new ReplayClock(track.t0, track.t1, 1 / track.rate, label.startAt ?? track.t0); // a permalink may start mid-lap
   clock.loop = prefs.loop;
   const osd = new OsdPlayback(track.osd);
   const rec = new Float64Array(REC);
@@ -69,10 +78,20 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
   const toggles = el('div', { class: 'rp-toggles', role: 'group', 'aria-label': 'Overlays' });
   const drawToggles = () => toggles.replaceChildren(
     ...OVERLAYS.map(([k, name]) => el('button', { class: 'rp-chip', 'data-key': `ov-${k}`, 'aria-pressed': String(prefs.show[k]), onclick: () => { prefs.show[k] = !prefs.show[k]; drawToggles(); layoutCards(); } }, name)),
-    el('button', { class: 'rp-chip', 'data-key': 'ov-link', 'aria-pressed': String(link), title: 'FPV: the video link’s noise and breakup', onclick: () => { link = prefs.link = !link; drawToggles(); } }, 'Video link'));
+    el('button', { class: 'rp-chip', 'data-key': 'ov-link', 'aria-pressed': String(link), title: 'FPV camera: the video link’s noise and breakup, as the pilot saw them', onclick: () => toggleLink() }, 'Video link'));
+  // the link only shows in the FPV picture, and a paused picture is drawn again so the change shows at once
+  const toggleLink = () => {
+    link = prefs.link = !link; drawToggles();
+    if (link && prefs.cam !== 'fpv') setCam('fpv');
+    clock.redraw();
+    toast(link ? 'Video link on: noise and breakup as the pilot saw them (little of either close to the pilot)' : 'Video link off: a clean picture');
+  };
   const download = el('button', { class: 'gm-btn rp-btn', 'data-key': 'rp-download', title: 'Download this replay (.fpvreplay)', onclick: () => save() }, icon('download'), el('span', { class: 'rp-wide' }, 'Download'));
+  // a leaderboard lap has a permalink: at the paused moment, or from the start
+  const id = label.entryId;
+  const copyLink = id ? el('button', { class: 'gm-btn rp-btn', 'data-key': 'rp-link', title: 'Copy a link to this replay (paused mid-lap: to that moment)', onclick: () => void copy(id) }, icon('copy'), el('span', { class: 'rp-wide' }, 'Copy link')) : null;
   const back = el('button', { class: 'gm-btn ghost rp-back', 'data-key': 'rp-back', onclick: () => close() }, icon('back'), 'Back');
-  const top = el('header', { class: 'rp-top' }, back, title, el('span', { class: 'gm-spacer' }), toggles, download);
+  const top = el('header', { class: 'rp-top' }, back, title, el('span', { class: 'gm-spacer' }), toggles, copyLink, download);
 
   // overlays
   const sticksCv = el('canvas', { width: 196, height: 92, class: 'rp-sticks', 'aria-hidden': 'true' }) as HTMLCanvasElement;
@@ -116,12 +135,28 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
   const bar = el('footer', { class: 'rp-bar' }, timeline, controls, hints);
   const stage = el('div', { class: 'rp-stage' });
   const status = el('div', { class: 'rp-status', role: 'status', 'aria-live': 'polite' });
-  const root = el('div', { class: 'rp', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Lap replay: ${formatLap(h.lapMs)} on ${trackName}` }, stage, top, cards, splitsCard, bar, status);
+  const toastEl = el('div', { class: 'rp-toast', 'aria-hidden': 'true' });
+  const root = el('div', { class: 'rp', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Lap replay: ${formatLap(h.lapMs)} on ${trackName}` }, stage, top, cards, splitsCard, bar, status, toastEl);
 
   const layoutCards = () => {
     sticksCard.hidden = !prefs.show.sticks; flightCard.hidden = !prefs.show.flight; battCard.hidden = !prefs.show.battery; splitsCard.hidden = !prefs.show.splits;
   };
   const say = (t: string) => { status.textContent = t; };
+  /** A short visible message (and the same words for screen readers). */
+  let toastTimer = 0;
+  const toast = (t: string, ms = 3000, selectable = false) => {
+    say(t); toastEl.textContent = t; wake();
+    toastEl.classList.toggle('sel', selectable); // a link to copy by hand
+    toastEl.style.top = `${Math.round(top.getBoundingClientRect().bottom + 8)}px`; // under the header, however it wraps
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), ms);
+  };
+  const copy = async (entry: number) => {
+    const at = !clock.playing && clock.t > track.t0 + 0.05 && !clock.atEnd ? clock.t : undefined;
+    const url = replayUrl(location.origin, entry, at);
+    if (await copyText(url)) toast(at === undefined ? 'Link to this replay copied' : `Link copied: it starts at ${lapClock(at)}`);
+    else toast(url, 12_000, true); // clipboard blocked (permissions, an embedded page): select and copy it by hand
+  };
   const setCam = (c: Cam) => { prefs.cam = c; say(`${CAM_NAMES[c]} camera`); };
   const save = () => {
     const a = el('a', { href: URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: REPLAY_MIME })), download: `fpv-sim-${h.map}${h.course ? `-${h.course}` : ''}-${formatLap(h.lapMs).replace(/[:.]/g, '-')}.fpvreplay` }) as HTMLAnchorElement;

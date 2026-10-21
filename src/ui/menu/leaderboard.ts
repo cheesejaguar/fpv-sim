@@ -122,7 +122,7 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
     else empty.replaceChildren();
   };
 
-  const watchEntry = (e: BoardEntry, rank: number) => h.watch(() => fetchReplay(e.id).then((x) => ('bytes' in x ? x.bytes : x)), { source: 'board', pilot: e.initials, rank });
+  const watchEntry = (e: BoardEntry, rank: number) => h.watch(() => fetchReplay(e.id).then((x) => ('bytes' in x ? x.bytes : x)), { source: 'board', pilot: e.initials, rank, entryId: e.id });
   // a row with a replay plays it (A / Enter / click on the row, or its Watch button)
   const row = (e: BoardEntry, rank: number, me: boolean) => el('tr', {
     class: `gm-row lb-row${me ? ' me' : ''}${e.replay ? ' has-replay' : ''}`, tabindex: '0',

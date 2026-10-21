@@ -70,6 +70,11 @@
 .rp.idle .rp-top, .rp.idle .rp-bar { opacity: 0; pointer-events: none; }
 .rp.idle .rp-stage { cursor: none; }
 .rp-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.rp-toast { position: absolute; z-index: 3; left: 50%; top: 120px; transform: translateX(-50%); max-width: min(92vw, 620px); padding: 10px 16px; border-radius: 12px;
+  background: var(--gm-bg-glass); border: 1px solid var(--gm-border); color: var(--gm-fg); font: 600 14px/1.35 var(--gm-font); text-align: center; overflow-wrap: anywhere;
+  backdrop-filter: blur(8px); opacity: 0; transition: opacity 200ms var(--gm-ease); pointer-events: none; }
+.rp-toast.show { opacity: 1; }
+.rp-toast.sel.show { pointer-events: auto; user-select: all; -webkit-user-select: all; cursor: text; }
 
 @media (prefers-reduced-motion: reduce) { .rp-top, .rp-bar { transition: none; } }
 @media (max-width: 900px) {

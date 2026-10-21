@@ -7,7 +7,6 @@ import { CUSTOM } from '../../server/src/leaderboardCore';
 import { defaultInitials, LapBoard, onBoard, pbKey } from '../app/leaderboard';
 import type { DroneBuild, DroneSpec } from '../builder/derive';
 import { droneClass } from '../builder/droneClass';
-import { decodeReplay } from '../../server/src/replayFormat';
 import { type BoardEntry, fetchReplay } from '../net/leaderboard';
 import { el } from '../ui/dom';
 import { icon } from '../ui/menu/icons';
@@ -20,6 +19,7 @@ import { classLabel, fmtLap, SITE } from './layout';
 import { shareUrl } from './link';
 import { drawQr, encodeQr } from './qr';
 import { trackInfo } from './trackInfo';
+import { trailFromReplay } from './trail';
 import { CARD_STYLES, CardStyle, Palette, paletteOf, PALETTES, ShareLap } from './types';
 import { actionButtons, injectShareCss, shareIcon, thumb } from './ui';
 
@@ -32,12 +32,7 @@ async function flownLine(board: LapBoard, t: ShareTarget): Promise<{ x: number; 
   let bytes: Uint8Array | null = null;
   if (t.entry?.replay) { const r = await fetchReplay(t.entry.id); bytes = 'bytes' in r ? r.bytes : null; }
   bytes ??= await board.localReplay(t.map, t.course, t.cls);
-  if (!bytes) return null;
-  const { px, py } = (await decodeReplay(bytes)).columns;
-  if (!px?.length || !py) return null;
-  const step = Math.max(1, Math.ceil(px.length / 400)), out: { x: number; y: number }[] = [];
-  for (let i = 0; i < px.length; i += step) out.push({ x: px[i], y: py[i] });
-  return out;
+  return bytes ? trailFromReplay(bytes) : null;
 }
 
 export interface ShareScreenHost {

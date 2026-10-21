@@ -4,13 +4,15 @@
 // firmware, worker or physics, and three.js only once the drone card is drawn.
 import '../ui/menu/theme.css';
 import { TRACKS, trackKey } from '../../server/src/leaderboardCore';
-import { fetchEntry, formatLap } from '../net/leaderboard';
+import { replayUrl } from '../app/replayLink';
+import { fetchEntry, fetchReplay, formatLap } from '../net/leaderboard';
 import { el } from '../ui/dom';
 import { icon, logo } from '../ui/menu/icons';
 import { detectEnv, shareUi } from './actions';
 import { CardDeck } from './deck';
 import { classLabel, fmtDate, rankText, SITE } from './layout';
 import { parseShareUrl, splitsFor } from './link';
+import { trailFromReplay } from './trail';
 import { CARD_STYLES, CardStyle, paletteOf, ShareLap } from './types';
 import { actionButtons, injectShareCss } from './ui';
 
@@ -124,11 +126,15 @@ async function main() {
     el('h1', { class: 'sp-title' }, `${lap.initials} · ${formatLap(lap.lapMs)}`),
     el('p', { class: 'gm-lead' }, [lap.track, lap.summary, r.rank ? rankText(r.rank, r.total) : '', fmtDate(lap.at)].filter(Boolean).join(' · ')),
     carousel, dots,
-    el('div', { class: 'sp-actions' }, ...acts.els),
+    el('div', { class: 'sp-actions' }, ...acts.els,
+      // the replay plays in the simulator itself (a bigger download than this page)
+      e.replay ? el('a', { class: 'gm-btn', href: replayUrl(location.origin, e.id) }, icon('play'), 'Watch the replay in FPV Sim') : null),
     el('p', { class: 'sh-hint' }, ui.primary?.hint ?? 'This browser can’t hand images to other apps: download the PNG, then post it from Instagram.'),
     statusEl, about(), privacy()));
   await deck.set({});
   layout();
+  // the map card's flown line, from the lap's replay (the card is complete without it)
+  if (e.replay && info?.gates.length) void fetchReplay(e.id).then((x) => ('bytes' in x ? trailFromReplay(x.bytes) : null)).then((trail) => (trail ? deck.set({ course: { gates: info.gates, trail } }) : undefined)).catch(() => {});
   const first = link.card && deck.available().includes(link.card) ? link.card : 'stats';
   select(first, false);
   requestAnimationFrame(() => cards.get(first)?.scrollIntoView({ inline: 'center', block: 'nearest' }));

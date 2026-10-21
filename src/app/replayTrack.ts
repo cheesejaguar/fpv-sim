@@ -145,6 +145,8 @@ export class ReplayClock {
   /** One sample forward / back (pauses: frame stepping is for looking closely). */
   step(d: 1 | -1) { this.playing = false; this.seek(this.min + (Math.round((this.t - this.min) / this.frame) + d) * this.frame); }
   restart() { this.seek(this.min); this.seq++; this.playing = true; }
+  /** Draw the picture at the playhead again (a view setting changed while paused). */
+  redraw() { this.seq++; }
   setSpeed(i: number) { this.speedIdx = Math.max(0, Math.min(SPEEDS.length - 1, i)); }
   faster() { this.setSpeed(this.speedIdx + 1); }
   slower() { this.setSpeed(this.speedIdx - 1); }

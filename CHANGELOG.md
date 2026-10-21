@@ -7,6 +7,12 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 ## Unreleased
 
 ### Lap replays
+- **Replay permalinks**: `/?replay=<entry id>` opens a leaderboard lap's replay straight from a link,
+  and `&t=<seconds>` starts it at that moment. The address bar shows the link while a board replay
+  plays; **Copy link** in the player copies it (at the paused moment, when paused mid-lap), and the
+  phone share page has **Watch the replay**.
+- The player's **Video link** switch takes effect at once, also while paused, and switches to the
+  FPV camera (the only view it changes).
 - **Every timed lap is recorded**, from just before gate 0 to just after the finish: the flight
   path and attitude, motor speeds, the sticks Betaflight received, armed state and flight mode,
   battery, every gate's time and Betaflight's OSD, in a compact `.fpvreplay` file (about
