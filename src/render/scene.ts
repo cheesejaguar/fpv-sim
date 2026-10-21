@@ -1,34 +1,58 @@
-// Builds the Three.js scene for a MapDef: terrain, primitives (merged per material), render-only
-// decor (crowds instanced), instanced trees, gates (a mesh set each so the next gate can glow), sky,
-// sun with shadows and atmospheric fog.
+// Builds the Three.js scene for a MapDef: tiled terrain with an anti-repeat ground shader and near
+// clutter, primitives (merged per material), render-only decor (crowd figures instanced), instanced
+// leaf-card trees with LOD, gates (a mesh set each so the next gate can glow; flag banners as waving
+// cloth), a windsock, sky / sun / moon for the time of day with floodlights and map lights after
+// dark, a texel-snapped sun shadow, and fog. Wind animation and LOD run on shared uniforms (sway.ts).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import { gateIdOf } from '../maps/gates';
+import { gateIdOf, isFlagBanner } from '../maps/gates';
 import { BoxPrim, MapDef, Prim } from '../maps/world';
+import { buildCrowd } from './crowd';
+import { buildClutter, groundMaterial, pitchDecal, terrainTiles } from './ground';
 import { addQuakeLevel } from './quakeScene';
-import { brickTexture, concreteTexture, dirtTexture, gateTexture, grassTexture, metalTexture, netTexture, padTexture, textTexture, woodTexture } from './textures';
+import { buildLights, buildSky, courseCentre, Environment, environment, skyDir, TimeOfDay } from './sky';
+import { flowDir, makeWorldUniforms, windStrength } from './sway';
+import { brickTexture, concreteTexture, dirtTexture, foliageAtlas, gateTexture, grassTexture, grassTuftTexture, macroNoiseTexture, metalTexture, netTexture, padTexture, pitchTexture, textTexture, woodTexture } from './textures';
+import { buildTrees } from './trees';
+import { buildWindsock, clothMaterials, flagCloth, windsockSpot } from './windVisuals';
+
+export type { TimeOfDay } from './sky';
+export interface SceneOptions {
+  /** 'map' (default) lights the map as authored; the others move the sun / switch to night. */
+  timeOfDay?: TimeOfDay;
+}
 
 export interface SceneBundle {
   scene: THREE.Scene;
+  /** the shadow-casting sky light (the moon at night) */
   sun: THREE.DirectionalLight;
   sunDir: THREE.Vector3;
   /** sky ambient; its base intensity is scaled down where the sky is hidden (interiors) */
   hemi: THREE.HemisphereLight;
   hemiBase: number;
   gateMeshes: THREE.Object3D[];
+  /** the lighting in use (time of day resolved) */
+  env: Environment;
   /** Light up gate index `next` (and, dimmer, the one after); on = false leaves every gate normal. t in s. */
   setGateHighlight(next: number, on: boolean, t: number): void;
+  /**
+   * Wind for the visuals (flags, trees, grass, windsock, crowd motion): speed (m/s), direction it
+   * blows FROM (deg, 0 = north, as SimSettings.wind), time (s). Call every frame; smoothed here.
+   */
+  setWind(speedMs: number, dirDeg: number, t: number): void;
   dispose(): void;
 }
 
 const HIGHLIGHT = 0x5dff3a, NEXT2 = 0xffb020;
+/** Sun shadow box half-size (m) and resolution. */
+const SHADOW_HALF = 45, SHADOW_RES = 2048;
 
 interface GateVisual {
   id: number;
   frameMat: THREE.MeshStandardMaterial; ledMat: THREE.MeshBasicMaterial; ledBase: number;
   glow: THREE.Mesh; glowMat: THREE.MeshBasicMaterial; beam: THREE.Mesh; beamMat: THREE.MeshBasicMaterial;
+  cloth: THREE.MeshStandardMaterial | null;
   state: number;
 }
 
@@ -81,65 +105,100 @@ function imageTexture(url: string): THREE.Texture {
   return t;
 }
 
-export function buildScene(map: MapDef): SceneBundle {
+/**
+ * Shadows fade out over the outer ~9 % of the sun's shadow box instead of ending in a hard line
+ * (the box follows the quad, so that line used to sweep across the ground and pop shadows). A
+ * global chunk patch, applied once, to the directional / spot shadow lookups only.
+ */
+function patchShadowFade() {
+  const chunks = THREE.ShaderChunk as unknown as Record<string, string>, k = 'shadowmap_pars_fragment', src = chunks[k];
+  const ret = 'return mix( 1.0, shadow, shadowIntensity );', cut = src.indexOf('float getPointShadow');
+  if (src.includes('sfEdge') || !src.includes(ret)) return;
+  const head = cut > 0 ? src.slice(0, cut) : src, tail = cut > 0 ? src.slice(cut) : '';
+  chunks[k] = head.split(ret).join('vec2 sfEdge = abs( shadowCoord.xy * 2.0 - 1.0 );\n\t\t\tshadow = mix( shadow, 1.0, smoothstep( 0.82, 1.0, max( sfEdge.x, sfEdge.y ) ) );\n\t\t\t' + ret) + tail;
+}
+
+/**
+ * Snap the sun's shadow box to whole shadow-map texels in the light's view plane: the box follows
+ * the quad, and sub-texel moves made every shadow edge shimmer. Light and target move together, so
+ * the light direction is unchanged.
+ */
+export function snapShadow(sun: THREE.DirectionalLight) {
+  const sh = sun.shadow, base = sh.updateMatrices.bind(sh), texel = (2 * SHADOW_HALF) / SHADOW_RES;
+  const r = new THREE.Vector3(), up = new THREE.Vector3(), t = new THREE.Vector3();
+  sh.updateMatrices = (light: THREE.Light) => {
+    base(light); // orients the shadow camera (its axes depend only on the sun direction)
+    const e = sh.camera.matrixWorld.elements, l = light as THREE.DirectionalLight;
+    r.set(e[0], e[1], e[2]); up.set(e[4], e[5], e[6]);
+    t.setFromMatrixPosition(l.target.matrixWorld);
+    const a = t.dot(r), b = t.dot(up), da = Math.round(a / texel) * texel - a, db = Math.round(b / texel) * texel - b;
+    if (da === 0 && db === 0) return;
+    t.copy(r).multiplyScalar(da).addScaledVector(up, db);
+    l.position.add(t); l.target.position.add(t);
+    l.updateMatrixWorld(); l.target.updateMatrixWorld();
+    base(light);
+  };
+}
+
+/** Dispose everything a (late-loading) glTF scene holds: geometry, materials and their textures. */
+function disposeObject(root: THREE.Object3D) {
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    m.geometry.dispose();
+    for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+      for (const v of Object.values(mat)) if (v instanceof THREE.Texture) { v.dispose(); (v.image as { close?: () => void } | null)?.close?.(); }
+      mat.dispose();
+    }
+  });
+}
+
+export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
+  patchShadowFade();
   const scene = new THREE.Scene();
   const disposables: { dispose(): void }[] = [];
   const track = <T extends { dispose(): void }>(x: T) => (disposables.push(x), x);
+  const u = makeWorldUniforms();
+  const env = environment(map, opts.timeOfDay ?? 'map');
 
   // ---- sky / light ----
-  const sky = new Sky();
-  sky.scale.setScalar(4000);
-  const u = sky.material.uniforms;
-  const overcast = map.sky === 'overcast', dusk = map.sky === 'dusk'; // dusk: low golden-hour sun
-  u.turbidity.value = overcast ? 12 : dusk ? 7 : 4;
-  u.rayleigh.value = overcast ? 3.5 : dusk ? 2.2 : 1.4;
-  u.mieCoefficient.value = overcast ? 0.02 : dusk ? 0.009 : 0.006;
-  u.mieDirectionalG.value = 0.85;
-  const phi = THREE.MathUtils.degToRad(90 - map.sun.elevationDeg), theta = THREE.MathUtils.degToRad(map.sun.azimuthDeg);
-  // azimuth from north (ENU +y = three -z), clockwise
-  const sunDir = new THREE.Vector3(Math.sin(phi) * Math.sin(theta), Math.cos(phi), -Math.sin(phi) * Math.cos(theta));
-  u.sunPosition.value.copy(sunDir);
-  // Sky.js radiance is ~10x the sunlit-ground radiance our lights produce; real sunlit grass and
-  // clear sky have comparable luminance, so scale the sky into proportion for the camera model.
-  sky.material.uniforms.skyScale = { value: overcast ? 0.45 : 0.3 };
-  sky.material.fragmentShader = 'uniform float skyScale;\n' + sky.material.fragmentShader.replace('gl_FragColor = vec4( texColor, 1.0 );', 'gl_FragColor = vec4( texColor * skyScale, 1.0 );');
-  sky.material.needsUpdate = true;
+  const sunDir = skyDir(env.sunAz, env.sunEl);
+  const sky = buildSky(env, sunDir);
+  track(sky.geometry); track(sky.material as THREE.Material);
   scene.add(sky);
-
-  const hemi = new THREE.HemisphereLight(overcast ? 0xb8c2cc : dusk ? 0xc9c4dc : 0xbfd9ff, overcast ? 0x5a5650 : dusk ? 0x5a4a38 : 0x56603e, overcast ? 2.6 : dusk ? 1.7 : 1.9);
+  const hemi = new THREE.HemisphereLight(env.hemiSky, env.hemiGround, env.hemiIntensity);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(dusk ? 0xffc286 : 0xfff1dd, overcast ? 2.2 : dusk ? 4.2 : 4.5);
+  const sun = new THREE.DirectionalLight(env.sunColor, env.sunIntensity);
   sun.position.copy(sunDir).multiplyScalar(120);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(SHADOW_RES, SHADOW_RES);
   const sc = sun.shadow.camera as THREE.OrthographicCamera;
-  sc.left = -45; sc.right = 45; sc.top = 45; sc.bottom = -45; sc.near = 1; sc.far = 400;
+  sc.left = -SHADOW_HALF; sc.right = SHADOW_HALF; sc.top = SHADOW_HALF; sc.bottom = -SHADOW_HALF; sc.near = 1; sc.far = 400;
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
+  snapShadow(sun);
   scene.add(sun, sun.target);
-  scene.fog = new THREE.FogExp2(map.fog?.color ?? (overcast ? 0xa9b0b5 : dusk ? 0xd6b8a0 : 0xbcd0e0), map.fog?.density ?? (overcast ? 0.0045 : 0.0022));
+  track(sun); // DirectionalLight.dispose() frees the shadow map render target
+  scene.fog = new THREE.FogExp2(env.fogColor, env.fogDensity);
+  const night = buildLights(map, env);
+  track(night);
+  for (const l of night.lights) scene.add(l);
+  for (const o of night.objects) scene.add(o);
 
-  // ---- terrain ----
+  // ---- terrain: tiles (each cube face culls what it doesn't see), anti-repeat ground ----
   if (map.ground !== false) {
-    const S = map.size * 2.2, N = 320;
-    const tg = new THREE.PlaneGeometry(S, S, N, N);
-    tg.rotateX(-Math.PI / 2);
-    const pos = tg.getAttribute('position') as THREE.BufferAttribute;
-    const colors = new Float32Array(pos.count * 3);
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), zt = pos.getZ(i);
-      const h = map.terrain(x, -zt);
-      pos.setY(i, h);
-      const v = 0.85 + 0.15 * Math.sin(x * 0.05 + zt * 0.031) * Math.cos(zt * 0.043 - x * 0.02);
-      colors[i * 3] = v; colors[i * 3 + 1] = v; colors[i * 3 + 2] = v;
+    const builtin = !map.groundTexture, grass = map.groundMat === 'grass';
+    const groundTex = track(builtin ? (grass ? grassTexture() : dirtTexture()) : imageTexture(map.groundTexture!));
+    const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass));
+    for (const g of terrainTiles(map)) {
+      const tile = new THREE.Mesh(track(g), mat);
+      tile.receiveShadow = true; tile.name = 'terrain';
+      scene.add(tile);
     }
-    tg.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const uvs = tg.getAttribute('uv') as THREE.BufferAttribute;
-    for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * S / 3, uvs.getY(i) * S / 3);
-    tg.computeVertexNormals();
-    const groundTex = track(map.groundTexture ? imageTexture(map.groundTexture) : map.groundMat === 'grass' ? grassTexture() : dirtTexture());
-    const ground = new THREE.Mesh(track(tg), track(new THREE.MeshStandardMaterial({ map: groundTex, vertexColors: true, roughness: 0.95 })));
-    ground.receiveShadow = true;
-    scene.add(ground);
+    if (map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch) {
+      const decal = pitchDecal(map, track(pitchTexture(120, 73)), 120, 73);
+      track(decal.geometry); track(decal.material as THREE.Material); decal.name = 'pitch';
+      scene.add(decal);
+    }
   }
   if (map.quake) for (const d of addQuakeLevel(scene, map)) track(d);
 
@@ -153,8 +212,8 @@ export function buildScene(map: MapDef): SceneBundle {
     if (!g) { g = { mat: track(make()), geos: [], shadow }; groups.set(key, g); }
     return g;
   };
-  const gateParts = new Map<number, { frame: THREE.BufferGeometry[]; led: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; top: number }>();
-  const partsFor = (id: number) => { let g = gateParts.get(id); if (!g) { g = { frame: [], led: [], glow: [], top: 0 }; gateParts.set(id, g); } return g; };
+  const gateParts = new Map<number, { frame: THREE.BufferGeometry[]; led: THREE.BufferGeometry[]; glow: THREE.BufferGeometry[]; cloth: BoxPrim[]; top: number }>();
+  const partsFor = (id: number) => { let g = gateParts.get(id); if (!g) { g = { frame: [], led: [], glow: [], cloth: [], top: 0 }; gateParts.set(id, g); } return g; };
   const gateById = new Map(map.gates.map((g) => [g.id, g]));
   const m4 = new THREE.Matrix4(), s3 = new THREE.Vector3(1, 1, 1);
   const place = (geo: THREE.BufferGeometry, pr: SolidPrim) => {
@@ -169,7 +228,8 @@ export function buildScene(map: MapDef): SceneBundle {
     const parts = partsFor(gid), G = 0.07;
     if (pr.kind === 'box') {
       const hx = pr.half.x, hy = pr.half.y, hz = pr.half.z;
-      parts.frame.push(place(boxGeometryWorldUV(hx * 2, hz * 2, hy * 2, 0.5), pr));
+      if (isFlagBanner(pr)) parts.cloth.push(pr); // drawn as cloth (its collision stays the thin box)
+      else parts.frame.push(place(boxGeometryWorldUV(hx * 2, hz * 2, hy * 2, 0.5), pr));
       parts.glow.push(place(new THREE.BoxGeometry(hx * 2 + G * 2, hz * 2 + G * 2, hy * 2 + G * 2), pr));
       if (pr.visual === 'gate' && pr.mat === 'gate') {
         // strip runs along the tube and sticks 4 mm out of the faces across the direction of travel
@@ -191,7 +251,9 @@ export function buildScene(map: MapDef): SceneBundle {
       parts.top = Math.max(parts.top, pr.c.z + pr.r);
     }
   };
-  const decorPlain: BoxPrim[] = [];
+  const decorPlain: BoxPrim[] = [], crowd: BoxPrim[] = [];
+  // floodlight lamps glow (HDR, so the FPV camera blooms them) when the lights are on, grey glass by day
+  const floodColor = new THREE.Color(0xfff3d6).multiplyScalar(env.floods > 0 ? 1 + 5 * env.floods : 0.62);
   const addPrim = (pr: Prim, isDecor: boolean) => {
     if (pr.kind === 'brush') return; // drawn by addQuakeLevel
     const gid = gateIdOf(pr.tag);
@@ -204,7 +266,7 @@ export function buildScene(map: MapDef): SceneBundle {
         const url = pr.texture;
         geo = boxGeometryWorldUV(pr.half.x * 2, pr.half.z * 2, pr.half.y * 2, 2);
         key = `tex:${url}`; make = () => new THREE.MeshStandardMaterial({ map: track(imageTexture(url)), roughness: 0.85 });
-      } else if (isDecor && vis === 'plain') { decorPlain.push(pr); return; }
+      } else if (isDecor && vis === 'plain') { (pr.tag === 'crowd' ? crowd : decorPlain).push(pr); return; }
       else if (vis === 'banner' || vis === 'screen') {
         // printed / LED boards: the text faces out of both large sides (local ±y)
         geo = new THREE.BoxGeometry(pr.half.x * 2, pr.half.z * 2, pr.half.y * 2);
@@ -217,7 +279,8 @@ export function buildScene(map: MapDef): SceneBundle {
         shadow &&= !screen;
       } else {
         geo = boxGeometryWorldUV(pr.half.x * 2, pr.half.z * 2, pr.half.y * 2, vis === 'pad' ? Math.max(pr.half.x, pr.half.y) * 2 : vis === 'net' ? 0.8 : 2);
-        if (vis === 'led') { key = `led${pr.color ?? 0xffffff}`; make = () => new THREE.MeshBasicMaterial({ color: pr.color ?? 0xffffff }); shadow = false; }
+        if (vis === 'led' && pr.tag === 'flood') { key = 'flood'; make = () => new THREE.MeshBasicMaterial({ color: floodColor }); shadow = false; }
+        else if (vis === 'led') { key = `led${pr.color ?? 0xffffff}`; make = () => new THREE.MeshBasicMaterial({ color: pr.color ?? 0xffffff }); shadow = false; }
         else if (vis === 'net') {
           key = 'net'; shadow = false;
           make = () => new THREE.MeshStandardMaterial({ map: track(netTexture()), color: 0x9aa0a6, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.9 });
@@ -244,9 +307,9 @@ export function buildScene(map: MapDef): SceneBundle {
     mesh.castShadow = g.shadow; mesh.receiveShadow = true;
     scene.add(mesh);
   }
-  // render-only plain boxes (crowds): a single instanced draw
+  // render-only plain boxes: a single instanced draw
   if (decorPlain.length) {
-    const im = new THREE.InstancedMesh(track(new THREE.BoxGeometry(1, 1, 1)), track(new THREE.MeshStandardMaterial({ roughness: 0.9 })), decorPlain.length);
+    const im = track(new THREE.InstancedMesh(track(new THREE.BoxGeometry(1, 1, 1)), track(new THREE.MeshStandardMaterial({ roughness: 0.9 })), decorPlain.length));
     const col = new THREE.Color();
     decorPlain.forEach((pr, i) => {
       primMatrix(pr, m4).scale(s3.set(pr.half.x * 2, pr.half.z * 2, pr.half.y * 2));
@@ -255,8 +318,11 @@ export function buildScene(map: MapDef): SceneBundle {
     im.receiveShadow = true;
     scene.add(im);
   }
+  // spectators: instanced figures facing the course
+  const people = buildCrowd(crowd, courseCentre(map), u);
+  if (people) { track(people); for (const m of people.meshes) { m.name = 'crowd'; scene.add(m); } }
 
-  // ---- gates: frame / LED strip / glow halo / light beam, one set per gate ----
+  // ---- gates: frame / LED strip / glow halo / light beam (+ cloth for flags), one set per gate ----
   const gateColors = [0xff6a00, 0x1e90ff, 0xff2d75, 0x2bd96b, 0xffd400];
   const ledColors = [0xffa040, 0x40c8ff, 0xff5aa0, 0x5cff8a, 0xfff060];
   const beamGeo = track(lightBeamGeometry());
@@ -264,10 +330,9 @@ export function buildScene(map: MapDef): SceneBundle {
   const gateMeshes: THREE.Object3D[] = [];
   for (const [gid, parts] of [...gateParts].sort((a, b) => a[0] - b[0])) {
     const col = gateColors[gid % gateColors.length], led = ledColors[gid % ledColors.length];
-    const frameMat = track(new THREE.MeshStandardMaterial({ map: track(gateTexture('#' + col.toString(16).padStart(6, '0'))), roughness: 0.6, emissive: col, emissiveIntensity: 0.12 }));
+    const gateTex = track(gateTexture('#' + col.toString(16).padStart(6, '0')));
+    const frameMat = track(new THREE.MeshStandardMaterial({ map: gateTex, roughness: 0.6, emissive: col, emissiveIntensity: 0.12 }));
     const merge = (l: THREE.BufferGeometry[]) => { const m = track(mergeGeometries(l, false)!); for (const x of l) x.dispose(); return m; };
-    const frame = new THREE.Mesh(merge(parts.frame), frameMat);
-    frame.castShadow = true; frame.receiveShadow = true;
     const ledMat = track(new THREE.MeshBasicMaterial({ color: led }));
     const glowMat = track(new THREE.MeshBasicMaterial({ color: HIGHLIGHT, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false }));
     const glow = new THREE.Mesh(merge(parts.glow), glowMat);
@@ -277,10 +342,20 @@ export function buildScene(map: MapDef): SceneBundle {
     const gd = gateById.get(gid);
     if (gd) beam.position.set(gd.c.x, parts.top, -gd.c.y);
     beam.visible = false; beam.renderOrder = 3;
-    scene.add(frame, glow, beam);
+    scene.add(glow, beam);
+    if (parts.frame.length) {
+      const frame = new THREE.Mesh(merge(parts.frame), frameMat);
+      frame.castShadow = true; frame.receiveShadow = true;
+      scene.add(frame); gateMeshes.push(frame);
+    }
     if (parts.led.length) scene.add(new THREE.Mesh(merge(parts.led), ledMat));
-    gateMeshes.push(frame);
-    gates.push({ id: gid, frameMat, ledMat, ledBase: led, glow, glowMat, beam, beamMat, state: -1 });
+    let cloth: THREE.MeshStandardMaterial | null = null;
+    if (parts.cloth.length) {
+      const cm = clothMaterials(u, gateTex, col);
+      cloth = track(cm.mat); track(cm.depth);
+      for (const pr of parts.cloth) { const m = flagCloth(pr, cm.mat, cm.depth); track(m.geometry); scene.add(m); gateMeshes.push(m); }
+    }
+    gates.push({ id: gid, frameMat, ledMat, ledBase: led, glow, glowMat, beam, beamMat, cloth, state: -1 });
   }
 
   /** Light up the gate to fly through next (and, dimmer, the one after); others stay normal. */
@@ -304,36 +379,21 @@ export function buildScene(map: MapDef): SceneBundle {
         } else g.ledMat.color.setHex(g.ledBase);
         g.frameMat.emissiveIntensity = state === 1 ? 0.22 : 0.12;
       }
+      if (g.cloth) g.cloth.emissiveIntensity = g.frameMat.emissiveIntensity;
       g.glow.visible = g.beam.visible = state > 0;
       g.state = state;
     }
   };
 
-  // ---- trees (instanced) ----
-  const pines = map.trees.filter((t) => t.type === 'pine'), oaks = map.trees.filter((t) => t.type === 'oak');
-  const trunkGeo = track(new THREE.CylinderGeometry(0.12, 0.2, 1, 7));
-  const trunkMat = track(new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 1 }));
-  const pineGeo = track(new THREE.ConeGeometry(1, 1, 9));
-  const pineMat = track(new THREE.MeshStandardMaterial({ color: 0x2d4a2a, roughness: 1 }));
-  const oakGeo = track(new THREE.IcosahedronGeometry(1, 1));
-  const oakMat = track(new THREE.MeshStandardMaterial({ color: 0x41632f, roughness: 1, flatShading: true }));
-  const all = map.trees, q = new THREE.Quaternion(), p3 = new THREE.Vector3();
-  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, all.length);
-  const pineI = new THREE.InstancedMesh(pineGeo, pineMat, pines.length * 3);
-  const oakI = new THREE.InstancedMesh(oakGeo, oakMat, oaks.length * 2);
-  let ip = 0, io = 0;
-  all.forEach((t, i) => {
-    const gz = map.terrain(t.x, t.y);
-    m4.compose(p3.set(t.x, gz + t.h * 0.3, -t.y), q.identity(), s3.set(t.r * 0.6, t.h * 0.6, t.r * 0.6)); trunks.setMatrixAt(i, m4);
-    if (t.type === 'pine') for (let k = 0; k < 3; k++) {
-      const hh = t.h * (0.55 - k * 0.12), rr = t.r * (1.1 - k * 0.28);
-      m4.compose(p3.set(t.x, gz + t.h * (0.35 + k * 0.2) + hh / 2, -t.y), q.identity(), s3.set(rr, hh, rr)); pineI.setMatrixAt(ip++, m4);
-    } else {
-      m4.compose(p3.set(t.x, gz + t.h * 0.62, -t.y), q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.x), s3.set(t.r, t.r * 0.85, t.r)); oakI.setMatrixAt(io++, m4);
-      m4.compose(p3.set(t.x + t.r * 0.4, gz + t.h * 0.8, -t.y + t.r * 0.3), q.identity(), s3.set(t.r * 0.7, t.r * 0.6, t.r * 0.7)); oakI.setMatrixAt(io++, m4);
-    }
-  });
-  for (const im of [trunks, pineI, oakI]) { im.castShadow = true; im.receiveShadow = true; im.instanceMatrix.needsUpdate = true; scene.add(im); }
+  // ---- trees (instanced leaf cards, near / far LOD), ground clutter, windsock ----
+  const trees = map.trees.length ? buildTrees(map, u, track(foliageAtlas())) : null;
+  if (trees) { track(trees); for (const m of trees.meshes) { m.name = 'trees'; scene.add(m); } }
+  const clutter = buildClutter(map, u, track(grassTuftTexture()));
+  if (clutter) { track(clutter); for (const m of clutter.meshes) { m.name = 'clutter'; scene.add(m); } }
+  const sockAt = windsockSpot(map), sock = sockAt ? buildWindsock(sockAt) : null;
+  if (sock) { track(sock); sock.object.name = 'windsock'; scene.add(sock.object); }
+  // LOD centre = whichever camera renders (the cube faces, the chase camera); runs before the shadow pass
+  scene.onBeforeRender = (_r, _s, camera) => { u.uLod.value.setFromMatrixPosition(camera.matrixWorld); trees?.update(u.uLod.value); clutter?.update(u.uLod.value); };
 
   // ---- glTF meshes (map packages); they load asynchronously, like the Quake textures ----
   let disposed = false;
@@ -341,6 +401,8 @@ export function buildScene(map: MapDef): SceneBundle {
     const loader = new GLTFLoader();
     for (const mi of map.meshes) loader.load(mi.url, (gltf) => {
       const root = gltf.scene;
+      // a scene switched away while this loaded: free it all, it will never be drawn
+      if (disposed) { disposeObject(root); return; }
       root.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
@@ -355,14 +417,32 @@ export function buildScene(map: MapDef): SceneBundle {
       root.position.set(mi.pos.x, mi.pos.z, -mi.pos.y);
       root.rotation.y = mi.yaw;
       root.scale.setScalar(mi.scale);
-      if (disposed) { root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }); return; }
       scene.add(root);
     }, undefined, (e) => console.warn(`map mesh ${mi.url} failed to load`, e));
   }
 
+  // ---- wind: smoothed (gusts build over ~0.4 s), direction as a vector so it turns the short way ----
+  const flow = new THREE.Vector2(), want = new THREE.Vector2();
+  let speed = -1, lastT = 0;
+  const setWind = (speedMs: number, dirDeg: number, t: number) => {
+    const sp = Math.max(0, speedMs) * (map.windScale ?? 1), [fx, fz] = flowDir(dirDeg);
+    want.set(fx, fz);
+    const k = speed < 0 ? 1 : Math.min(1, Math.max(0, t - lastT) / 0.4);
+    lastT = t;
+    speed = speed < 0 ? sp : speed + (sp - speed) * k;
+    flow.lerp(want, k);
+    if (flow.lengthSq() < 1e-6) flow.copy(want);
+    const n = flow.length();
+    u.uWind.value.set(flow.x / n, flow.y / n, windStrength(speed), t % 2048);
+    sock?.update(flow.x / n, flow.y / n, speed, t);
+  };
+
   return {
-    hemi, hemiBase: hemi.intensity,
-    scene, sun, sunDir, gateMeshes, setGateHighlight,
-    dispose() { disposed = true; for (const d of disposables) d.dispose(); sky.material.dispose(); sky.geometry.dispose(); },
+    hemi, hemiBase: hemi.intensity, env,
+    scene, sun, sunDir, gateMeshes, setGateHighlight, setWind,
+    dispose() {
+      disposed = true;
+      for (const d of disposables) d.dispose(); // incl. every InstancedMesh (frees its instance buffers)
+    },
   };
 }
