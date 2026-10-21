@@ -8,8 +8,8 @@
 import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { defaultCli, osdGrid, osdLayout } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
-import { MAPS } from '../maps/maps';
-import { GateDef, MapDef, PrimitiveWorld } from '../maps/world';
+import { MAPS, preloadMap } from '../maps/maps';
+import { GateDef, MapDef, PrimitiveWorld, spawnGroundZ } from '../maps/world';
 import { isa } from '../sim/atmosphere';
 import { Spectrum } from '../sim/fft';
 import { QuadEnv, QuadSim } from '../sim/quad';
@@ -80,13 +80,18 @@ async function kvSet(key: string, v: any): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 
 function makeEnv(): QuadEnv {
-  const w = new Wind({ speed20ft: settings.wind.speed, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 + 1 });
+  const ws = map.windScale ?? 1;
+  const w = new Wind({ speed20ft: settings.wind.speed * ws, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: (settings.wind.speed * 0.8 + 1) * ws });
   w.zones = map.wakeZones;
   return { world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
 }
 
-function loadMap(id: string) {
-  map = (MAPS[id] ?? MAPS.field)();
+async function loadMap(id: string) {
+  const want = id;
+  if (!MAPS[id]) id = 'field';
+  await preloadMap(id).catch((e) => { console.warn(e); id = 'field'; });
+  if (map && want !== settings.mapId) return; // superseded by a newer map change while loading
+  map = MAPS[id]();
   world = new PrimitiveWorld(map);
   env = makeEnv();
 }
@@ -112,7 +117,7 @@ function serializeInfo(b: DroneBuild) {
 
 function respawn() {
   const sp = map.spawn;
-  const z = map.terrain(sp.pos.x, sp.pos.y) + 0.06 - Math.min(...build.params.colliders.map((c) => c.pos.z - c.radius));
+  const z = spawnGroundZ(map) + 0.06 - Math.min(...build.params.colliders.map((c) => c.pos.z - c.radius));
   quad.reset({ x: sp.pos.x, y: sp.pos.y, z }, sp.yaw);
   env.wake.reset();
   lastPos = { ...quad.s.pos };
@@ -407,7 +412,7 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       sh = createShared(m.sab);
       settings = m.settings;
       spec = (m.spec as DroneSpec) ?? DEFAULT_SPEC;
-      loadMap(settings.mapId);
+      await loadMap(settings.mapId);
       buildQuad();
       wallStart = performance.now(); simAtWallStart = 0;
       await bootFirmware();
@@ -436,9 +441,9 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       const mapChanged = m.settings.mapId !== settings.mapId;
       const rateChanged = m.settings.physicsHz !== settings.physicsHz;
       settings = m.settings;
-      if (mapChanged) { loadMap(settings.mapId); respawn(); }
+      if (mapChanged) { await loadMap(settings.mapId); respawn(); }
       else {
-        env.wind.p = { ...env.wind.p, speed20ft: settings.wind.speed, directionDeg: settings.wind.direction, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 + 1 };
+        env.wind.p = { ...env.wind.p, speed20ft: settings.wind.speed * (map.windScale ?? 1), directionDeg: settings.wind.direction, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: (settings.wind.speed * 0.8 + 1) * (map.windScale ?? 1) };
         env.damageEnabled = settings.damage; env.ambientC = settings.ambientC;
       }
       for (const a of quad.aero) a.propwashScale = settings.propwash;

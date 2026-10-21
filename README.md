@@ -181,6 +181,24 @@ obstacle wake zones behind buildings.
 - The Betaflight OSD is rendered from the firmware's character buffer with the real MCM fonts.
   Analog OSD is overlaid before the RF link, as on a MAX7456. HD OSD is crisp.
 
+## Maps
+
+Pick a map in **Simulation → Map**:
+- **Open Field**: MultiGP-style race course with lap timing.
+- **Bando**: abandoned industrial site for freestyle.
+- **Quake E1M1, The Slipgate Complex**: freestyle map built from the original level source.
+- **Quake DM3, The Abandoned Base**: freestyle map built from the original level source.
+
+The Quake maps load in the browser from the original `.map` brush sources (`src/maps/quakeMap.ts`):
+- Every convex brush is built by intersecting its planes.
+- Collision is exact sphere vs. convex polyhedron, on a 3D grid.
+- Rays and video-link obstruction are clipped against the same brushes.
+- Faces get Quake texture axes and baked vertex lighting from the level's light entities.
+- Doors and triggers are removed, so every area is reachable.
+- Liquids are drawn but not solid.
+- Wind is scaled down indoors.
+- Scale is 1/32 m per Quake unit.
+
 ## Builder
 
 Every component can be swapped from dropdowns, and every physical parameter overridden with
@@ -219,3 +237,19 @@ The closed-loop test flies the real firmware and checks:
 ## Licence
 
 GPL-3.0-or-later. This project embeds Betaflight (GPL-3.0) and uses its OSD fonts.
+
+### Credits & licenses (maps)
+
+The in-app map selector shows the same credits.
+
+| Map | Source | License |
+|---|---|---|
+| Open Field, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
+| Quake E1M1, Quake DM3: geometry | id Software's original 1996 `.map` sources, released by John Romero in 2006 ([rome.ro](https://rome.ro/resources)) | GNU GPL |
+| Quake E1M1, Quake DM3: textures | [LibreQuake](https://github.com/lavenderdotpet/LibreQuake) replacements; some are derived from Freedoom / Blasphemer | BSD-3-Clause |
+
+- No original Quake textures, BSPs, models or sounds are included.
+- Full notices, license texts and the texture substitution list are in
+  [`public/maps/quake/ATTRIBUTION.md`](public/maps/quake/ATTRIBUTION.md).
+- This project is not affiliated with or endorsed by id Software, John Romero, or the LibreQuake,
+  Freedoom or Blasphemer projects.

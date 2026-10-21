@@ -1,5 +1,7 @@
-// The two launch maps: an open field with a MultiGP-style race course, and an abandoned
-// industrial "bando" for freestyle. Both are procedural but deterministic.
+// The launch maps: an open field with a MultiGP-style race course and an abandoned industrial
+// "bando" for freestyle (procedural but deterministic), plus classic id Software Quake levels built
+// from their GPL'd .map sources (see public/maps/quake/ATTRIBUTION.md).
+import { quakeMapDef } from './quakeMap';
 import { BoxPrim, fbm, GateDef, MapDef, Prim, seededRandom } from './world';
 
 const deg = Math.PI / 180;
@@ -173,4 +175,58 @@ export function bandoMap(): MapDef {
   };
 }
 
-export const MAPS: Record<string, () => MapDef> = { field: fieldMap, bando: bandoMap };
+// ---------------------------------------------------------------------------------------------
+// Registry. Maps with a `source` are data files under public/ that must be fetched (preloadMap)
+// before build() can run synchronously; both the worker and the renderer do this.
+
+export interface MapEntry {
+  name: string;
+  credit: string;                         // source + license, shown in the map selector and README
+  source?: string;                        // file under public/ (fetched by preloadMap)
+  build: (src?: string) => MapDef;
+}
+
+const QUAKE_CREDIT = "id Software's original map source (GPL, released by John Romero 2006); textures: LibreQuake (BSD-3-Clause). Not affiliated with or endorsed by id Software or the LibreQuake project.";
+
+export const MAP_LIST: Record<string, MapEntry> = {
+  field: { name: 'Open Field — Race Course', credit: 'Original (this project, GPL-3.0-or-later)', build: fieldMap },
+  bando: { name: 'Bando — Abandoned Industrial', credit: 'Original (this project, GPL-3.0-or-later)', build: bandoMap },
+  'quake-e1m1': {
+    name: 'Quake E1M1 — The Slipgate Complex', credit: `E1M1 by id Software (level design: John Romero). ${QUAKE_CREDIT}`, source: 'maps/quake/e1m1.map',
+    build: (src) => quakeMapDef(src!, { id: 'quake-e1m1', name: 'Quake E1M1 — The Slipgate Complex', ambient: 40 }),
+  },
+  'quake-dm3': {
+    name: 'Quake DM3 — The Abandoned Base', credit: `DM3 by id Software. ${QUAKE_CREDIT}`, source: 'maps/quake/dm3.map',
+    build: (src) => quakeMapDef(src!, { id: 'quake-dm3', name: 'Quake DM3 — The Abandoned Base', ambient: 40 }),
+  },
+};
+
+const sources = new Map<string, string>();
+const built = new Map<string, MapDef>();
+
+/** Fetch a map's data files (no-op for procedural maps). Must resolve before MAPS[id]() is called. */
+export async function preloadMap(id: string): Promise<void> {
+  const e = MAP_LIST[id];
+  if (!e?.source || sources.has(id)) return;
+  const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/';
+  const res = await fetch(base + e.source);
+  if (!res.ok) throw new Error(`map ${id}: HTTP ${res.status} for ${e.source}`);
+  sources.set(id, await res.text());
+}
+
+/** Provide a map's source text directly (tests, offline use). */
+export function provideMapSource(id: string, text: string) { sources.set(id, text); built.delete(id); }
+
+function buildMap(id: string): MapDef {
+  const e = MAP_LIST[id];
+  if (!e.source) return e.build();
+  let m = built.get(id);
+  if (!m) {
+    const src = sources.get(id);
+    if (src === undefined) throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`);
+    built.set(id, (m = e.build(src)));
+  }
+  return m;
+}
+
+export const MAPS: Record<string, () => MapDef> = Object.fromEntries(Object.keys(MAP_LIST).map((id) => [id, () => buildMap(id)]));

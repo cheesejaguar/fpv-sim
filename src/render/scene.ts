@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { MapDef, Prim } from '../maps/world';
+import { addQuakeLevel } from './quakeScene';
 import { brickTexture, concreteTexture, dirtTexture, gateTexture, grassTexture, metalTexture, padTexture, woodTexture } from './textures';
 
 export interface SceneBundle {
@@ -63,26 +64,29 @@ export function buildScene(map: MapDef): SceneBundle {
   scene.fog = new THREE.FogExp2(overcast ? 0xa9b0b5 : 0xbcd0e0, overcast ? 0.0045 : 0.0022);
 
   // ---- terrain ----
-  const S = map.size * 2.2, N = 320;
-  const tg = new THREE.PlaneGeometry(S, S, N, N);
-  tg.rotateX(-Math.PI / 2);
-  const pos = tg.getAttribute('position') as THREE.BufferAttribute;
-  const colors = new Float32Array(pos.count * 3);
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), zt = pos.getZ(i);
-    const h = map.terrain(x, -zt);
-    pos.setY(i, h);
-    const v = 0.85 + 0.15 * Math.sin(x * 0.05 + zt * 0.031) * Math.cos(zt * 0.043 - x * 0.02);
-    colors[i * 3] = v; colors[i * 3 + 1] = v; colors[i * 3 + 2] = v;
+  if (map.ground !== false) {
+    const S = map.size * 2.2, N = 320;
+    const tg = new THREE.PlaneGeometry(S, S, N, N);
+    tg.rotateX(-Math.PI / 2);
+    const pos = tg.getAttribute('position') as THREE.BufferAttribute;
+    const colors = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), zt = pos.getZ(i);
+      const h = map.terrain(x, -zt);
+      pos.setY(i, h);
+      const v = 0.85 + 0.15 * Math.sin(x * 0.05 + zt * 0.031) * Math.cos(zt * 0.043 - x * 0.02);
+      colors[i * 3] = v; colors[i * 3 + 1] = v; colors[i * 3 + 2] = v;
+    }
+    tg.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const uvs = tg.getAttribute('uv') as THREE.BufferAttribute;
+    for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * S / 3, uvs.getY(i) * S / 3);
+    tg.computeVertexNormals();
+    const groundTex = track(map.groundMat === 'grass' ? grassTexture() : dirtTexture());
+    const ground = new THREE.Mesh(track(tg), track(new THREE.MeshStandardMaterial({ map: groundTex, vertexColors: true, roughness: 0.95 })));
+    ground.receiveShadow = true;
+    scene.add(ground);
   }
-  tg.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const uvs = tg.getAttribute('uv') as THREE.BufferAttribute;
-  for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * S / 3, uvs.getY(i) * S / 3);
-  tg.computeVertexNormals();
-  const groundTex = track(map.groundMat === 'grass' ? grassTexture() : dirtTexture());
-  const ground = new THREE.Mesh(track(tg), track(new THREE.MeshStandardMaterial({ map: groundTex, vertexColors: true, roughness: 0.95 })));
-  ground.receiveShadow = true;
-  scene.add(ground);
+  if (map.quake) for (const d of addQuakeLevel(scene, map)) track(d);
 
   // ---- primitives, merged per visual ----
   const texCache: Record<string, THREE.Texture> = {
@@ -98,6 +102,7 @@ export function buildScene(map: MapDef): SceneBundle {
   const gateMeshes: THREE.Object3D[] = [];
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p3 = new THREE.Vector3(), s3 = new THREE.Vector3(1, 1, 1);
   for (const pr of map.prims as Prim[]) {
+    if (pr.kind === 'brush') continue; // drawn by addQuakeLevel
     let geo: THREE.BufferGeometry, key: string, make: () => THREE.Material;
     if (pr.kind === 'box') {
       const vis = pr.visual ?? 'plain';

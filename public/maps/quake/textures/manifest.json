@@ -1,0 +1,487 @@
+{
+ "slipbotsd": {
+  "file": "t_trim2c.png",
+  "w": 64,
+  "h": 64
+ },
+ "+0slipbot": {
+  "file": "plus_0slipbot.png",
+  "w": 64,
+  "h": 64
+ },
+ "slipside": {
+  "file": "t_trim1c.png",
+  "w": 64,
+  "h": 64
+ },
+ "sliplite": {
+  "file": "tlightblfb_fbr.png",
+  "w": 32,
+  "h": 32
+ },
+ "sfloor4_2": {
+  "file": "t_flor2a.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech08_1": {
+  "file": "tech08_1.png",
+  "w": 128,
+  "h": 128
+ },
+ "tech04_3": {
+  "file": "t_blok06.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech04_1": {
+  "file": "t_blok05.png",
+  "w": 64,
+  "h": 128
+ },
+ "tech01_7": {
+  "file": "t_blok11.png",
+  "w": 64,
+  "h": 128
+ },
+ "tlight02": {
+  "file": "tlight12_fbr.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech09_3": {
+  "file": "tech14-1.png",
+  "w": 128,
+  "h": 128
+ },
+ "comp1_3": {
+  "file": "comp1_3.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_1": {
+  "file": "comp1_1.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_4": {
+  "file": "comp1_4.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_2": {
+  "file": "comp1_2.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_6": {
+  "file": "comp1_6.png",
+  "w": 64,
+  "h": 64
+ },
+ "tlight10": {
+  "file": "tlightfb_fbr.png",
+  "w": 32,
+  "h": 32
+ },
+ "tech01_1": {
+  "file": "t_blok10.png",
+  "w": 64,
+  "h": 128
+ },
+ "tech10_3": {
+  "file": "tech10_3.png",
+  "w": 32,
+  "h": 128
+ },
+ "tlight08": {
+  "file": "tek_lit2_fbr.png",
+  "w": 32,
+  "h": 32
+ },
+ "tlight07": {
+  "file": "tek_lit1_fbr.png",
+  "w": 32,
+  "h": 64
+ },
+ "tech01_6": {
+  "file": "t_blok08.png",
+  "w": 64,
+  "h": 128
+ },
+ "tech07_2": {
+  "file": "aqmetl14.png",
+  "w": 128,
+  "h": 128
+ },
+ "tlight11": {
+  "file": "tlight11_fbr.png",
+  "w": 64,
+  "h": 64
+ },
+ "ground1_6": {
+  "file": "gravel1.png",
+  "w": 128,
+  "h": 128
+ },
+ "uwall1_2": {
+  "file": "uwall1_2.png",
+  "w": 128,
+  "h": 128
+ },
+ "tech04_2": {
+  "file": "t_wall2a.png",
+  "w": 128,
+  "h": 128
+ },
+ "ground1_2": {
+  "file": "med_rock3.png",
+  "w": 256,
+  "h": 256
+ },
+ "*water0": {
+  "file": "star_water0.png",
+  "w": 64,
+  "h": 64
+ },
+ "ecop1_6": {
+  "file": "ecop1_4.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall5_3": {
+  "file": "t_wall6d.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall1_1": {
+  "file": "t_wall6a.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall2_2": {
+  "file": "t_wall7a.png",
+  "w": 128,
+  "h": 128
+ },
+ "twall2_5": {
+  "file": "t_wall7b.png",
+  "w": 128,
+  "h": 128
+ },
+ "twall1_2": {
+  "file": "t_wall6b.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall2_6": {
+  "file": "t_wall6c.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_5": {
+  "file": "comp1_5.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall5_1": {
+  "file": "t_wall05.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall2_1": {
+  "file": "twall2_3.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech11_2": {
+  "file": "t_tech06.png",
+  "w": 64,
+  "h": 64
+ },
+ "sfloor4_5": {
+  "file": "t_flor2b.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech01_9": {
+  "file": "t_blok09.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech10_1": {
+  "file": "tech10_3.png",
+  "w": 32,
+  "h": 128
+ },
+ "twall3_1": {
+  "file": "t_wall3b.png",
+  "w": 128,
+  "h": 128
+ },
+ "*slime0": {
+  "file": "star_slime1.png",
+  "w": 64,
+  "h": 64
+ },
+ "twall2_3": {
+  "file": "twall2_3.png",
+  "w": 64,
+  "h": 64
+ },
+ "ecop1_4": {
+  "file": "ecop1_4.png",
+  "w": 64,
+  "h": 64
+ },
+ "tlight01": {
+  "file": "tlight11_fbr.png",
+  "w": 64,
+  "h": 64
+ },
+ "*teleport": {
+  "file": "star_teleport.png",
+  "w": 64,
+  "h": 64
+ },
+ "ecop1_1": {
+  "file": "ecop1_1.png",
+  "w": 64,
+  "h": 64
+ },
+ "basebutn3": {
+  "file": "plus_abasebtn.png",
+  "w": 32,
+  "h": 32
+ },
+ "switch_1": {
+  "file": "plus_0button1.png",
+  "w": 64,
+  "h": 64
+ },
+ "z_exit": {
+  "file": "z_exit_fbr.png",
+  "w": 32,
+  "h": 32
+ },
+ "+0planet": {
+  "file": "plus_0planet_a_fbr.png",
+  "w": 32,
+  "h": 32
+ },
+ "+0slip": {
+  "file": "plus_0slipbot.png",
+  "w": 64,
+  "h": 64
+ },
+ "slip1": {
+  "file": "plus_0slipbot.png",
+  "w": 64,
+  "h": 64
+ },
+ "sliptopsd": {
+  "file": "t_trim2c.png",
+  "w": 64,
+  "h": 64
+ },
+ "+0sliptop": {
+  "file": "plus_0sliptop.png",
+  "w": 64,
+  "h": 64
+ },
+ "crate0_side": {
+  "file": "crate0_side.png",
+  "w": 64,
+  "h": 64
+ },
+ "crate0_top": {
+  "file": "crate0_top.png",
+  "w": 64,
+  "h": 64
+ },
+ "door02_1": {
+  "file": "door02_1.png",
+  "w": 48,
+  "h": 128
+ },
+ "edoor01_1": {
+  "file": "edoor01_1.png",
+  "w": 128,
+  "h": 128
+ },
+ "plat_stem": {
+  "file": "plat_stem.png",
+  "w": 16,
+  "h": 64
+ },
+ "plat_side1": {
+  "file": "plat_side1.png",
+  "w": 64,
+  "h": 16
+ },
+ "plat_top1": {
+  "file": "plat_top1.png",
+  "w": 64,
+  "h": 64
+ },
+ "+0basebtn": {
+  "file": "plus_0basebtn_fbr.png",
+  "w": 32,
+  "h": 32
+ },
+ "key01_3": {
+  "file": "met_brn_det1.png",
+  "w": 32,
+  "h": 32
+ },
+ "tech04_5": {
+  "file": "t_wall3a.png",
+  "w": 128,
+  "h": 128
+ },
+ "sfloor1_2": {
+  "file": "t_flor2d.png",
+  "w": 32,
+  "h": 32
+ },
+ "tech05_1": {
+  "file": "t_blok10.png",
+  "w": 64,
+  "h": 128
+ },
+ "tech01_5": {
+  "file": "t_trim1a.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech07_1": {
+  "file": "aqmetl01.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech06_2": {
+  "file": "t_metalsheetb.png",
+  "w": 128,
+  "h": 128
+ },
+ "tech04_8": {
+  "file": "t_trim2b.png",
+  "w": 64,
+  "h": 64
+ },
+ "sfloor4_8": {
+  "file": "tek_grate.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech04_6": {
+  "file": "t_trim1b.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech03_1": {
+  "file": "t_tech04.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech02_6": {
+  "file": "t_tech02.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech04_7": {
+  "file": "t_wall2b.png",
+  "w": 128,
+  "h": 128
+ },
+ "*water1": {
+  "file": "star_water1.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech01_2": {
+  "file": "t_blok02.png",
+  "w": 64,
+  "h": 128
+ },
+ "emetal1_3": {
+  "file": "met_brn_pan1.png",
+  "w": 64,
+  "h": 64
+ },
+ "tlight09": {
+  "file": "tek_lit3_fbr.png",
+  "w": 32,
+  "h": 64
+ },
+ "tech03_2": {
+  "file": "t_tech05.png",
+  "w": 64,
+  "h": 64
+ },
+ "sfloor4_1": {
+  "file": "t_flor1a.png",
+  "w": 64,
+  "h": 64
+ },
+ "tlight03": {
+  "file": "tlight13_fbr.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_7": {
+  "file": "comp1_7.png",
+  "w": 64,
+  "h": 64
+ },
+ "sfloor4_4": {
+  "file": "t_flor1b.png",
+  "w": 64,
+  "h": 64
+ },
+ "comp1_8": {
+  "file": "comp1_8.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech06_1": {
+  "file": "t_metalsheeta.png",
+  "w": 128,
+  "h": 128
+ },
+ "sfloor4_7": {
+  "file": "t_flor2c.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech05_2": {
+  "file": "t_blok11.png",
+  "w": 64,
+  "h": 128
+ },
+ "tech04_4": {
+  "file": "t_trim2a.png",
+  "w": 64,
+  "h": 64
+ },
+ "tech02_7": {
+  "file": "t_tech03.png",
+  "w": 128,
+  "h": 128
+ },
+ "sfloor3_2": {
+  "file": "tek_flr3.png",
+  "w": 64,
+  "h": 64
+ },
+ "ground1_7": {
+  "file": "med_rock10.png",
+  "w": 128,
+  "h": 128
+ },
+ "tele_top": {
+  "file": "tele_frame1.png",
+  "w": 64,
+  "h": 128
+ }
+}

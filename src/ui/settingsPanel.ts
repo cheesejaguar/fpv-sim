@@ -1,5 +1,5 @@
 // Simulation + presentation settings.
-import { MAPS } from '../maps/maps';
+import { MAP_LIST } from '../maps/maps';
 import { SimSettings } from '../worker/shared';
 import { checkbox, el, section, select, slider } from './dom';
 
@@ -21,11 +21,16 @@ export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 
 export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
   const pushS = () => onSim(structuredClone(s)), pushV = () => onView(structuredClone(v));
+  const credit = el('p', { class: 'note' }, MAP_LIST[s.mapId]?.credit ?? '');
   return el('div', { class: 'panel settings' },
     el('div', { class: 'cols' },
       el('div', { class: 'col' },
         section('World',
-          select('Map', Object.entries(MAPS).map(([id, f]) => ({ value: id, label: f().name })), s.mapId, (x) => { s.mapId = x; pushS(); }),
+          select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: m.name })), s.mapId, (x) => { s.mapId = x; credit.textContent = MAP_LIST[x]?.credit ?? ''; pushS(); }),
+          credit,
+          el('details', { class: 'note' }, el('summary', {}, 'Credits & licenses'),
+            ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),
+            el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md in the source repository.')),
           slider({ label: 'Wind (at 6 m)', min: 0, max: 15, step: 0.1, value: s.wind.speed, unit: 'm/s', onInput: (x) => { s.wind.speed = x; pushS(); } }).row,
           slider({ label: 'Wind from', min: 0, max: 359, step: 1, value: s.wind.direction, unit: '°', onInput: (x) => { s.wind.direction = x; pushS(); } }).row,
           slider({ label: 'Turbulence (Dryden) ×', min: 0, max: 3, step: 0.05, value: s.wind.turbulence, onInput: (x) => { s.wind.turbulence = x; pushS(); } }).row,

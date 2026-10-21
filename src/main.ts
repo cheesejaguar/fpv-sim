@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import './style.css';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from './builder/derive';
 import { InputManager } from './input/gamepad';
-import { MAPS } from './maps/maps';
-import { MapDef, PrimitiveWorld } from './maps/world';
+import { MAPS, preloadMap } from './maps/maps';
+import { MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from './maps/world';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat, enuToThree, quatEnuToThree } from './render/coords';
 import { buildDroneMesh, DroneModel } from './render/droneMesh';
@@ -90,6 +90,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 app.append(renderer.domElement);
 window.addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); chaseCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); });
 
+if (!MAPS[simSettings.mapId]) simSettings.mapId = 'field';
+await preloadMap(simSettings.mapId).catch((e) => { console.warn(e); simSettings.mapId = 'field'; });
 let map: MapDef = MAPS[simSettings.mapId]();
 let world = new PrimitiveWorld(map);
 let sceneB: SceneBundle = buildScene(map);
@@ -129,11 +131,12 @@ function applySpec(s: DroneSpec) {
 function applySim(s: SimSettings) {
   const mapChanged = s.mapId !== simSettings.mapId;
   simSettings = s; store('fpv-sim-settings', s);
-  if (mapChanged) {
+  if (mapChanged) void preloadMap(s.mapId).then(() => {
+    if (simSettings.mapId !== s.mapId) return; // superseded while loading
     sceneB.scene.remove(drone.root); sceneB.dispose();
     map = MAPS[s.mapId](); world = new PrimitiveWorld(map); sceneB = buildScene(map); sceneB.scene.add(drone.root);
     lapStart = -1; bestLap = Infinity; lapCount = 0;
-  }
+  }, (e) => log(`Map ${s.mapId} failed to load: ${e}`));
   send({ type: 'settings', settings: { ...s, paused: menuOpen && pauseInMenu } });
 }
 
@@ -306,7 +309,7 @@ function updateHud() {
   if (drill.on) {
     const head = newestTime(sh);
     sampleRing(sh, head, rec);
-    const sp = map.spawn.pos, gz = map.terrain(sp.x, sp.y);
+    const sp = map.spawn.pos, gz = spawnGroundZ(map);
     const d = Math.hypot(rec[R.px] - sp.x, rec[R.py] - sp.y, rec[R.pz] - (gz + 3));
     const armed = rec[R.armed] > 0.5;
     if (armed && drill.t0 < 0) { drill.t0 = head; drill.inside = 0; drill.last = head; }
@@ -373,8 +376,7 @@ function animate(now: number) {
   requestAnimationFrame(animate);
   const v = build.info.components.video;
   const head = newestTime(sh);
-  const sp = map.spawn.pos;
-  pilot.x = sp.x - 2; pilot.y = sp.y - 2; pilot.z = map.terrain(pilot.x, pilot.y) + 1.6;
+  pilotPos(map, pilot);
   // ---- emulated glass-to-glass latency + camera frame cadence ----
   const baseLat = (view.latencyOverrideMs || v.latencyMs) + link.state.latencyExtraMs;
   const lat = Math.max(0, baseLat + jitter - view.displayCompMs) / 1000;
@@ -432,7 +434,7 @@ function animate(now: number) {
   blackbox.pump(sh, input.channels);
   if (drillMesh.parent !== sceneB.scene) sceneB.scene.add(drillMesh);
   drillMesh.visible = drill.on;
-  if (drill.on) enuToThree(map.spawn.pos.x, map.spawn.pos.y, map.terrain(map.spawn.pos.x, map.spawn.pos.y) + 3, drillMesh.position);
+  if (drill.on) enuToThree(map.spawn.pos.x, map.spawn.pos.y, spawnGroundZ(map) + 3, drillMesh.position);
   audio.update(rpmNow.map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles);
   updateHud();
 }
