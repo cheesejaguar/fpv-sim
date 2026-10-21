@@ -23,6 +23,7 @@ import { builderPanel } from './ui/builderPanel';
 import { el } from './ui/dom';
 import { inputPanel } from './ui/inputPanel';
 import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
+import { DrillInfo, Hud, osdRects } from './ui/hud/hud';
 import { DEFAULT_VIEW, settingsPanel, ViewSettings } from './ui/settingsPanel';
 import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, newestTime, R, REC, sampleRing, SimSettings, Telemetry, ToWorker } from './worker/shared';
 
@@ -84,7 +85,7 @@ function onGate(gate: number, t: number) {
   }
 }
 /** The worker respawned the quad (reset key / map change): its gate counter restarts at gate 0. */
-function onRespawn() { nextGate = 0; lapStart = -1; }
+function onRespawn() { nextGate = 0; lapStart = -1; link.reset(); }
 function sendReset(fullBattery = false) { input.disarm(); onRespawn(); send({ type: 'reset', repair: true, fullBattery }); }
 
 // ---------------------------------------------------------------------------------------------
@@ -232,41 +233,34 @@ window.addEventListener('keydown', (e) => {
 for (const ev of ['pointerdown', 'keydown', 'touchstart'] as const) window.addEventListener(ev, () => audio.unlock(), { capture: true });
 
 // ---------------------------------------------------------------------------------------------
-// HUD
-const hud = el('div', { class: 'hud' });
-const status = el('div', { class: 'fw-status' });
-const telBox = el('div', { class: 'tel' });
-const sticks = el('canvas', { class: 'sticks', width: 220, height: 100 }) as HTMLCanvasElement;
-const lapBox = el('div', { class: 'laps' });
-const crashBox = el('div', { class: 'crash' });
-// Browsers block audio until a click / key press on the page (controller buttons don't count).
-const soundHint = el('div', { class: 'sound-hint' }, '🔇 Click anywhere (or press a key) to enable motor sound');
-const helpBox = el('div', { class: 'help' }, 'Esc menu · R reset · B new battery · C camera · H telemetry · G hover-box drill · F noise spectrum');
+// HUD (ui/hud): menu-styled widgets laid out around the Betaflight OSD
+const sticks = el('canvas', { width: 220, height: 100 }) as HTMLCanvasElement;
 const SPEC_W = 380, SPEC_ROW = 92;
-const specCanvas = el('canvas', { class: 'spectrum', width: SPEC_W, height: SPEC_ROW * 3 + 22 }) as HTMLCanvasElement;
-specCanvas.style.display = 'none';
+const specCanvas = el('canvas', { width: SPEC_W, height: SPEC_ROW * 3 + 22 }) as HTMLCanvasElement;
+const hud = new Hud(sticks, specCanvas);
+app.append(hud.root);
 // Shown while no controller is available. The 2026 Steam Controller is never visible to the
 // Gamepad API (outside Steam it acts as keyboard + mouse), so offer the direct WebHID driver.
-const hidStatus = el('div', { class: 'hid-status' });
-const padBox = el('div', { class: 'pad-warn' },
-  el('b', {}, 'No game controller detected — keyboard fallback is active.'),
-  el('div', {}, 'Xbox, PS5 DualSense, DJI FPV Remote Controller 3 (USB-C) or other USB joystick: connect it, click this page, then press a button or move a stick — browsers only reveal a controller after its first input.'),
+const hidStatus = el('p', { class: 'sub' });
+const padNotice = el('div', { class: 'card notice warn' },
+  el('b', {}, 'No controller: keyboard fallback'),
+  el('p', {}, 'Connect a controller, then press a button on it: browsers only reveal a gamepad after its first input.'),
   ...(webHidSupported()
-    ? [
-      el('div', {}, 'Steam Controller (2026): browsers can’t see it as a gamepad. Quit Steam completely (tray icon → Exit), connect it by cable or its wireless puck, then click:'),
-      el('button', { class: 'primary', onclick: () => void input.steamHid.request() }, 'Connect Steam Controller'),
-    ]
-    // Safari / Firefox: no WebHID, so the 2026 Steam Controller can't be driven from the page
-    : [el('div', { class: 'note' }, 'Steam Controller (2026): this browser has no WebHID, which the direct connection needs. Use Chrome or Edge for that controller.')]),
-  hidStatus,
-);
+    ? [el('p', { class: 'sub' }, 'Steam Controller (2026): quit Steam, connect it, then'), el('button', { onclick: () => void input.steamHid.request() }, 'Connect Steam Controller')]
+    // Safari / Firefox: no WebHID, which the 2026 Steam Controller's direct connection needs
+    : [el('p', { class: 'sub' }, 'Steam Controller (2026) needs Chrome or Edge (WebHID).')]),
+  hidStatus);
 // Radios / HID joysticks with an unknown stick layout: point at the setup wizard.
-const setupBox = el('div', { class: 'pad-warn' },
-  el('b', {}, 'New controller: run the stick & switch setup once.'),
-  el('div', {}, 'Press Esc → Controller → “Start stick & switch setup”. It detects your sticks, their directions and your arm / flight-mode switches.'),
-);
-hud.append(soundHint, status, padBox, setupBox, telBox, sticks, lapBox, crashBox, specCanvas, helpBox);
-app.append(hud);
+const setupNotice = el('div', { class: 'card notice' },
+  el('b', {}, 'New controller'),
+  el('p', {}, 'Run the stick & switch setup once: Esc, Settings, Controller.'));
+const fwNotice = el('div', { class: 'card notice status' });
+const lostNotice = el('div', { class: 'card notice warn status' }, el('b', {}, 'VIDEO SIGNAL LOST'), el('p', {}, 'Fly back toward yourself, or respawn: A / ✕ on a controller, R on the keyboard.'));
+let lostSince = -1;
+// Browsers block audio until a click / key press on the page (controller buttons don't count).
+const soundChip = el('div', { class: 'chip' }, 'Click or press a key to enable sound');
+let armedSince = -1;
+let hudLayoutAt = 0;
 
 function drawSticks() {
   const c = sticks.getContext('2d')!, ch = input.channels;
@@ -284,7 +278,6 @@ let specShown = false;
 let specView: GyroSpectrum | null = null;
 function toggleSpectrum() {
   specShown = !specShown; specView = null;
-  specCanvas.style.display = specShown ? 'block' : 'none';
   send({ type: 'spectrum', on: specShown });
   if (specShown) drawSpectrum();
 }
@@ -342,66 +335,80 @@ function drawSpectrum() {
 const rec = new Float64Array(REC);
 let lastCrash: string | null = null;
 function updateHud() {
-  hud.style.display = menuOpen ? 'none' : '';
+  hud.setVisible(!menuOpen);
   if (menuOpen) return;
-  status.textContent = fwStatus;
-  status.style.display = fwStatus ? 'block' : 'none';
-  padBox.style.display = input.active ? 'none' : 'block';
-  setupBox.style.display = input.active && input.profileFor(input.active).needsSetup && !menuOpen ? 'block' : 'none';
+  const now = performance.now();
+  const head = newestTime(sh);
+  sampleRing(sh, head, rec);
+  const armed = rec[R.armed] > 0.5;
+  if (armed && armedSince < 0) armedSince = now; else if (!armed) armedSince = -1;
+  // notices: only the ones that matter right now, and controller help only while disarmed
   hidStatus.textContent = input.steamHid.status;
+  fwNotice.textContent = fwStatus;
+  const notices: HTMLElement[] = [];
+  if (fwStatus) notices.push(fwNotice);
+  // digital link down for more than a moment: say so, and how to get the quad back
+  const vLost = view.view === 'fpv' && build.info.components.video.kind === 'digital' && (link.state.lost > 0 || link.state.freeze);
+  if (vLost && lostSince < 0) lostSince = now; else if (!vLost) lostSince = -1;
+  if (vLost && now - lostSince > 1200) notices.push(lostNotice);
+  if (!input.active && !armed) notices.push(padNotice);
+  if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(setupNotice);
+  if (audio.blocked) notices.push(soundChip);
+  hud.notices(notices);
+  // key hints collapse to a single "menu" chip a few seconds after arming
+  hud.keys(input.active ? 'pad' : 'kb', armedSince >= 0 && now - armedSince > 3000);
   if (view.telemetry && tel) {
     const b = tel.battery;
-    const head = newestTime(sh);
-    sampleRing(sh, head, rec);
     const spd = Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]) * 3.6;
     const rpm = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map((r) => Math.abs(r).toFixed(0).padStart(5)).join(' ');
     const modes = tel.modeFlags;
-    const lines = [
-      `${tel.fw}   sim ${(tel.simRate).toFixed(1)}× rt  step ${tel.stepCostUs.toFixed(1)} µs`,
-      `ARM ${Atomics.load(sh.ctrl, 5) ? 'ARMED' : 'disarmed'}  ${tel.armingFlagNames.length ? 'blocked: ' + tel.armingFlagNames.join(',') : ''}`,
-      `mode ${modes & 1 ? 'ANGLE' : modes & 2 ? 'HORIZON' : 'ACRO'}${rec[R.crashFlip] ? '  TURTLE' : ''}`,
-      `batt ${b.v.toFixed(2)} V (${b.cellV.toFixed(2)} V/cell)  ${b.i.toFixed(1)} A  sag ${b.sag.toFixed(2)} V`,
+    hud.tel([
+      `${tel.fw}  sim ${(tel.simRate).toFixed(1)}× rt  ${tel.stepCostUs.toFixed(0)} µs`,
+      `${Atomics.load(sh.ctrl, 5) ? 'ARMED' : 'disarmed'}  ${modes & 1 ? 'ANGLE' : modes & 2 ? 'HORIZON' : 'ACRO'}${rec[R.crashFlip] ? '  TURTLE' : ''}${tel.armingFlagNames.length ? '  blocked: ' + tel.armingFlagNames.join(',') : ''}`,
+      `batt ${b.v.toFixed(2)} V  ${b.cellV.toFixed(2)} V/cell  ${b.i.toFixed(1)} A  sag ${b.sag.toFixed(2)} V`,
       `     ${b.mah.toFixed(0)} mAh  SoC ${(b.soc * 100).toFixed(0)} %  ${b.tempC.toFixed(1)} °C`,
       `rpm ${rpm}`,
       `motor °C ${tel.motorTemps.map((t) => t.toFixed(0)).join(' ')}`,
-      `speed ${spd.toFixed(0)} km/h  alt ${(rec[R.pz] - map.terrain(rec[R.px], rec[R.py])).toFixed(1)} m  prop-wash ${(rec[R.vrs] * 100).toFixed(0)} %`,
-      `video ${build.info.components.video.name}  ${link.state.distance.toFixed(0)} m  ${link.state.rssiDbm.toFixed(0)} dBm${build.info.components.video.kind === 'analog' ? `  CNR ${link.state.cnr.toFixed(0)} dB` : ''}`,
+      `${spd.toFixed(0)} km/h  alt ${(rec[R.pz] - map.terrain(rec[R.px], rec[R.py])).toFixed(1)} m  wash ${(rec[R.vrs] * 100).toFixed(0)} %`,
+      `video ${link.state.distance.toFixed(0)} m  ${link.state.rssiDbm.toFixed(0)} dBm${build.info.components.video.kind === 'analog' ? `  CNR ${link.state.cnr.toFixed(0)} dB` : ''}`,
       `props ${tel.rotorDamage.map((d) => (d.broken ? 'BROKEN' : `${(d.thrust * 100).toFixed(0)}%`)).join(' ')}`,
-      ...logLines.slice(-3),
-    ];
-    telBox.textContent = lines.join('\n');
-    telBox.style.display = 'block'; sticks.style.display = 'block';
+      ...logLines.slice(-2),
+    ]);
+    hud.sticks(true);
     drawSticks();
-  } else { telBox.style.display = 'none'; sticks.style.display = 'none'; }
-  lapBox.textContent = map.gates.length ? `Lap ${lapCount}  last ${lastLap ? lastLap.toFixed(2) : '--'} s  best ${bestLap < Infinity ? bestLap.toFixed(2) : '--'} s  next gate ${nextGate + 1}/${map.gates.length}` : '';
-  // live room leaderboard (best lap first)
-  if (mp.connected && map.gates.length) {
-    const rows = [{ name: loadPilot().name + ' (you)', lap: lapCount, best: bestLap }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity }))]
-      .sort((a, b) => a.best - b.best);
-    lapBox.textContent += '\n' + rows.map((r, i) => `${i + 1}. ${r.name.padEnd(16)} lap ${String(r.lap).padStart(2)}  best ${r.best < Infinity ? r.best.toFixed(2) + ' s' : '--'}`).join('\n');
+  } else { hud.tel(null); hud.sticks(false); }
+  hud.spectrum(specShown);
+  // race panel + live room leaderboard (best lap first), or the hover drill
+  let drillInfo: DrillInfo | null = null;
+  if (drill.on) {
+    const sp = map.spawn.pos, gz = spawnGroundZ(map);
+    const d = Math.hypot(rec[R.px] - sp.x, rec[R.py] - sp.y, rec[R.pz] - (gz + 3));
+    if (armed && drill.t0 < 0) { drill.t0 = head; drill.inside = 0; drill.last = head; }
+    if (armed && drill.t0 >= 0) { if (d < 1.5) drill.inside += head - drill.last; drill.last = head; }
+    const el2 = drill.t0 >= 0 ? head - drill.t0 : 0;
+    const score = el2 > 0 ? (100 * drill.inside) / el2 : 0;
+    if (el2 >= 30 && armed) { drill.best = Math.max(drill.best, score); drill.t0 = -1; log(`Hover drill: ${score.toFixed(0)} % inside the box`); }
+    drillInfo = { inBox: d < 1.5, offBy: Math.max(0, d - 1.5), elapsed: el2, score, best: drill.best };
   }
-  crashBox.textContent = tel?.crash ?? '';
-  soundHint.style.display = audio.blocked && !menuOpen ? 'block' : 'none';
-  // haptic thump on a new crash, scaled by impact speed ("Impact 12.3 m/s")
+  const me = loadPilot();
+  const board = mp.connected && map.gates.length
+    ? [{ name: me.name, color: me.color, lap: lapCount, best: bestLap, me: true }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, color: p.info.color, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity, me: false }))].sort((a, b) => a.best - b.best)
+    : undefined;
+  hud.race(map.gates.length ? { lap: lapCount, last: lastLap, best: bestLap, gate: nextGate + 1, gates: map.gates.length, board } : null, drillInfo);
+  // crash banner; haptic thump + impact sound on a new crash, scaled by impact speed ("Impact 12.3 m/s")
   const crash = tel?.crash ?? null;
+  hud.crash(crash ? crash.toUpperCase() : null);
   if (crash && crash !== lastCrash) {
     const v = parseFloat(crash.replace(/[^\d.]/g, '')) || 8;
     input.rumble(Math.min(1, v / 15), Math.min(1, v / 25), 180 + Math.min(320, v * 15));
     audio.impact(Math.min(1, v / 12), view.view === 'chase' ? 2 : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z));
   }
   lastCrash = crash;
-  if (drill.on) {
-    const head = newestTime(sh);
-    sampleRing(sh, head, rec);
-    const sp = map.spawn.pos, gz = spawnGroundZ(map);
-    const d = Math.hypot(rec[R.px] - sp.x, rec[R.py] - sp.y, rec[R.pz] - (gz + 3));
-    const armed = rec[R.armed] > 0.5;
-    if (armed && drill.t0 < 0) { drill.t0 = head; drill.inside = 0; drill.last = head; }
-    if (armed && drill.t0 >= 0) { if (d < 1.5) drill.inside += head - drill.last; drill.last = head; }
-    const el2 = drill.t0 >= 0 ? head - drill.t0 : 0;
-    const score = el2 > 0 ? (100 * drill.inside) / el2 : 0;
-    if (el2 >= 30 && armed) { drill.best = Math.max(drill.best, score); drill.t0 = -1; log(`Hover drill: ${score.toFixed(0)} % inside the box`); }
-    lapBox.textContent = `HOVER DRILL  ${d < 1.5 ? 'IN BOX' : `off by ${(d - 1.5).toFixed(1)} m`}  ${el2.toFixed(1)}/30 s  score ${score.toFixed(0)} %  best ${drill.best.toFixed(0)} %`;
+  // place everything around the OSD (~8 Hz: cheap, and widgets don't jitter)
+  if (now - hudLayoutAt > 120) {
+    hudLayoutAt = now;
+    const fpvOn = view.view === 'fpv' && view.osd && osd.hasContent;
+    hud.layout(fpvOn ? osdRects(osd.occupied, osd.cols, osd.rows, fpv.layout.osd) : [], view.view === 'fpv' ? fpv.layout.frame : null);
   }
 }
 
@@ -507,7 +514,9 @@ function animate(now: number) {
     }
   } else if (view.view === 'fpv') {
     // (frames only move forward: per-frame jitter must never re-capture an older pose)
-    if (tCap > lastCap && !link.state.freeze && poseAt(tCap)) {
+    // a frozen digital decoder shows its last frame, but the link itself keeps being evaluated
+    // every camera frame, or it could never recover (fly back / respawn)
+    if (tCap > lastCap && poseAt(tCap)) {
       const dtw = (now - lastCapWall) / 1000; lastCapWall = now;
       lastCap = tCap;
       jitter = (Math.random() - 0.5) * v.latencyJitterMs;
@@ -518,16 +527,18 @@ function animate(now: number) {
       lensQ.copy(drone.root.quaternion).multiply(mountQ);
       // angular rate in camera frame (body FLU -> three body -> camera)
       omegaCam.set(rec[R.wx], rec[R.wz], -rec[R.wy]).applyQuaternion(tmpQ.copy(mountQ).invert());
-      // hide only the camera itself: whoop ducts, props and a 5"'s props at high uptilt are in view
-      for (const o of drone.fpvHidden) o.visible = false;
-      sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(drone.root.position);
-      sceneB.sun.target.position.copy(drone.root.position);
-      // shadow map at <= 30 Hz (a full scene pass): plenty for a moving camera
-      if (now - lastShadowAt > 33) { renderer.shadowMap.needsUpdate = true; lastShadowAt = now; }
-      updateSkyAmbient(dtw);
-      spinProps(rpmNow);
-      fpv.capture(sceneB.scene, lensPos, lensQ, omegaCam, dtw);
-      for (const o of drone.fpvHidden) o.visible = true;
+      if (!link.state.freeze) {
+        // hide only the camera itself: whoop ducts, props and a 5"'s props at high uptilt are in view
+        for (const o of drone.fpvHidden) o.visible = false;
+        sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(drone.root.position);
+        sceneB.sun.target.position.copy(drone.root.position);
+        // shadow map at <= 30 Hz (a full scene pass): plenty for a moving camera
+        if (now - lastShadowAt > 33) { renderer.shadowMap.needsUpdate = true; lastShadowAt = now; }
+        updateSkyAmbient(dtw);
+        spinProps(rpmNow);
+        fpv.capture(sceneB.scene, lensPos, lensQ, omegaCam, dtw, drone.root);
+        for (const o of drone.fpvHidden) o.visible = true;
+      }
       // link budget at capture time
       const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
       if (view.linkEffects) link.update(v, world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]));
@@ -592,4 +603,4 @@ requestAnimationFrame(animate);
 gameMenu.open('title');
 
 // debugging handle (inspect from devtools)
-(window as any).__fpv = { mp, menu: gameMenu, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };
+(window as any).__fpv = { mp, menu: gameMenu, hud, osdCells: () => (osd.hasContent && view.view === 'fpv' && view.osd ? osdRects(osd.occupied, osd.cols, osd.rows, fpv.layout.osd) : []), frameRect: () => fpv.layout.frame, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };

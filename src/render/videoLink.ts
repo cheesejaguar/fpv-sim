@@ -29,6 +29,9 @@ export class VideoLink {
   rxGainDbi = 8;       // goggle patch + omni diversity
   txGainDbi = 2;       // lollipop / pagoda
 
+  /** Respawn: back next to the pilot, the receiver re-acquires quickly. */
+  reset() { this.digi = 'resync'; this.digiT = 0.4; this.fade = this.fadeV = 0; this.obsDb = 0; this.obsTimer = 0; }
+
   /** speed: quad ground speed (m/s), which sets how fast multipath fading decorrelates. */
   update(video: VideoSpec, world: PrimitiveWorld, pilot: V3, quad: V3, quadUp: V3, dt: number, now: number, speed = 0): LinkState {
     void now;

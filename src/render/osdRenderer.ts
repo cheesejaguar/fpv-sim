@@ -44,6 +44,9 @@ export class OsdRenderer {
   private lastBlink = 0;
   cols = 30; rows = 16;
   hasContent = false;
+  /** Cells Betaflight has drawn (blinking ones count while hidden), row-major cols×rows: the
+   *  in-flight HUD lays itself out around them so it never covers the OSD. */
+  occupied = new Uint8Array(30 * 16);
 
   constructor() {
     this.canvas.width = 30 * GLYPH_W; this.canvas.height = 16 * GLYPH_H;
@@ -75,10 +78,12 @@ export class OsdRenderer {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (!this.atlas) return;
     let any = false;
+    if (this.occupied.length !== cols * rows) this.occupied = new Uint8Array(cols * rows); else this.occupied.fill(0);
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
       const c = sh.osd[y * OSD_MAX_COLS + x];
       const attr = sh.osd[OSD_MAX_COLS * OSD_MAX_ROWS + y * OSD_MAX_COLS + x];
       if (c === 0 || c === 0x20) continue;
+      this.occupied[y * cols + x] = 1;
       if ((attr & 0x40) && !this.blinkOn) continue;
       any = true;
       ctx.drawImage(this.atlas, (c % 16) * GLYPH_W, Math.floor(c / 16) * GLYPH_H, GLYPH_W, GLYPH_H, x * GLYPH_W, y * GLYPH_H, GLYPH_W, GLYPH_H);

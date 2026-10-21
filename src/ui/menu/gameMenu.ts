@@ -68,7 +68,8 @@ export const EASY_SPEC = PRESETS[EASY_IDX];
 /** The pilot's own (non-preset) build, kept when a preset replaces it so it can be picked again. */
 const MINE_KEY = 'fpv-spec-mine';
 const sameSpec = (a: DroneSpec, b: DroneSpec) => JSON.stringify(a) === JSON.stringify(b);
-const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s));
+// (a preset whose only difference is an older camera angle still counts as that preset)
+const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s) || sameSpec(p, { ...s, cameraUptiltDeg: p.cameraUptiltDeg }));
 function loadMine(): DroneSpec | null { try { const s = localStorage.getItem(MINE_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
 function keepMine(s: DroneSpec) { if (!isPreset(s)) try { localStorage.setItem(MINE_KEY, JSON.stringify(s)); } catch { /* ignore */ } }
 

@@ -42,17 +42,20 @@ export const DEFAULT_SPEC: DroneSpec = {
   batterySoc: 1, batteryAge: 1, motorTiltDeg: 0, overrides: {},
 };
 
+// Camera uptilt follows how each class is flown (typical real setups): racers lean far forward at
+// speed (45°), freestyle 5" ~30°, long range cruises ~25°, whoops indoors ~18-20°, cinewhoops are
+// flown slow and level for footage (~10°).
 export const PRESETS: DroneSpec[] = [
   DEFAULT_SPEC,
-  { ...DEFAULT_SPEC, name: '5" Race 4S', frame: 'f5-race', motor: 'm2306-2450', prop: 'p-hq515', battery: 'b4s1500', esc: 'e45', fc: 'fc-bmi270', video: 'v-analog', extraMassG: 10, cameraUptiltDeg: 40 },
-  { ...DEFAULT_SPEC, name: '5" Freestyle DJI O4 + GoPro', video: 'v-dji-o4', extraMassG: 25 + 60, extraMassZmm: 45, cameraUptiltDeg: 28 },
+  { ...DEFAULT_SPEC, name: '5" Race 4S', frame: 'f5-race', motor: 'm2306-2450', prop: 'p-hq515', battery: 'b4s1500', esc: 'e45', fc: 'fc-bmi270', video: 'v-analog', extraMassG: 10, cameraUptiltDeg: 45 },
+  { ...DEFAULT_SPEC, name: '5" Freestyle DJI O4 + GoPro', video: 'v-dji-o4', extraMassG: 25 + 60, extraMassZmm: 45, cameraUptiltDeg: 30 },
   { ...DEFAULT_SPEC, name: '5" HDZero 6S', video: 'v-hdzero', prop: 'p-hq5043' },
-  { ...DEFAULT_SPEC, name: '7" Long Range Li-ion', frame: 'f7-lr', motor: 'm2806-1300', prop: 'p-hq7040', battery: 'b6s1p-p45b', esc: 'e45', video: 'v-dji-o3', batteryMount: 'bottom', extraMassG: 30, cameraUptiltDeg: 20 },
+  { ...DEFAULT_SPEC, name: '7" Long Range Li-ion', frame: 'f7-lr', motor: 'm2806-1300', prop: 'p-hq7040', battery: 'b6s1p-p45b', esc: 'e45', video: 'v-dji-o3', batteryMount: 'bottom', extraMassG: 30, cameraUptiltDeg: 25 },
   // Beginner-friendly: fully guarded props, light enough to fly indoors and shrug off crashes
-  { ...DEFAULT_SPEC, name: 'Beginner: 65 mm Tiny Whoop 1S', frame: 'f65-whoop', motor: 'm0702-26000', prop: 'p-31mm4', battery: 'b1s300hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 15, propDirection: 'props-out' },
-  { ...DEFAULT_SPEC, name: 'Beginner: 75 mm Whoop 1S', frame: 'f75-whoop', motor: 'm0802-19000', prop: 'p-40mm3', battery: 'b1s450hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 15, propDirection: 'props-out' },
+  { ...DEFAULT_SPEC, name: 'Beginner: 65 mm Tiny Whoop 1S', frame: 'f65-whoop', motor: 'm0702-26000', prop: 'p-31mm4', battery: 'b1s300hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 18, propDirection: 'props-out' },
+  { ...DEFAULT_SPEC, name: 'Beginner: 75 mm Whoop 1S', frame: 'f75-whoop', motor: 'm0802-19000', prop: 'p-40mm3', battery: 'b1s450hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 20, propDirection: 'props-out' },
   { ...DEFAULT_SPEC, name: 'Beginner: 3" Cinewhoop 4S HD', frame: 'f3-cinewhoop', motor: 'm1404-3800', prop: 'p-hq3030', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-dji-o4', batteryMount: 'top', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 10 },
-  { ...DEFAULT_SPEC, name: '3" Toothpick 4S', frame: 'f3-toothpick', motor: 'm1404-3800', prop: 'p-gf3018', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-analog', extraMassG: 5, extraMassZmm: 5, cameraUptiltDeg: 25 },
+  { ...DEFAULT_SPEC, name: '3" Toothpick 4S', frame: 'f3-toothpick', motor: 'm1404-3800', prop: 'p-gf3018', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-analog', extraMassG: 5, extraMassZmm: 5, cameraUptiltDeg: 30 },
 ];
 
 interface MassItem { name: string; m: number; pos: V3; box: V3 } // box = full dimensions

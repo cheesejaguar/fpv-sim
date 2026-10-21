@@ -45,7 +45,7 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   const props: THREE.Object3D[] = [], blur: THREE.Mesh[] = [], dirs: number[] = [];
   const R = (prop.diameterIn * 0.0254) / 2;
   const bladeGeo = T(makeBladeGeometry(R, prop.chordFracs, prop.hubFrac));
-  const propMat = T(new THREE.MeshStandardMaterial({ color: [0xff3b30, 0x30c5ff, 0xffd60a, 0x34c759][Math.floor(Math.random() * 4)], roughness: 0.4, transparent: true, opacity: 0.95, side: THREE.DoubleSide }));
+  const propMat = T(new THREE.MeshStandardMaterial({ color: [0xff3b30, 0x30c5ff, 0xffd60a, 0x34c759][Math.floor(Math.random() * 4)], roughness: 0.4, side: THREE.DoubleSide })); // opaque: transparent blades sort badly up close
   const blurMat = T(new THREE.MeshBasicMaterial({ color: propMat.color, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
   rotorPos.forEach((rp, k) => {
     const hx = rp.x + cg.x / 1000, hy = rp.y + cg.y / 1000; // back to frame coordinates

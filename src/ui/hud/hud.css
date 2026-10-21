@@ -1,0 +1,75 @@
+/*
+ * In-flight HUD in the game menu's design language (UI UX Pro Max system, see ui/menu/theme.css):
+ * Russo One / Chakra Petch, deep-navy glass cards, violet + rose accents, round key glyphs.
+ * Everything is absolutely positioned by hud.ts, which keeps it clear of the Betaflight OSD.
+ */
+.ghud {
+  --h-bg: rgba(15, 15, 35, 0.72);
+  --h-bg-strong: rgba(15, 15, 35, 0.88);
+  --h-border: rgba(167, 139, 250, 0.28);
+  --h-fg: #e2e8f0;
+  --h-mut: #94a3b8;
+  --h-violet: #a78bfa;
+  --h-primary: #7c3aed;
+  --h-rose: #f43f5e;
+  --h-ok: #34d399;
+  --h-warn: #fbbf24;
+  --h-font: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --h-display: 'Russo One', 'Chakra Petch', system-ui, sans-serif;
+  /* readable on a laptop, not shouting on a 4K panel */
+  --h-size: clamp(14px, 0.55vw + 8px, 19px);
+  position: fixed; inset: 0; pointer-events: none; z-index: 10;
+  font-family: var(--h-font); font-size: var(--h-size); color: var(--h-fg); line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+}
+.ghud .hw { position: absolute; left: 0; top: 0; transition: opacity 220ms ease, left 160ms ease, top 160ms ease; will-change: left, top; }
+.ghud .hw.off { display: none; }
+.ghud .card { background: var(--h-bg); border: 1px solid var(--h-border); border-radius: 12px; padding: 0.6em 0.8em; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+
+/* race / drill panel */
+.ghud .race { min-width: 10.5em; }
+.ghud .race .lap { display: flex; align-items: baseline; gap: 0.45em; font-family: var(--h-display); letter-spacing: 0.04em; }
+.ghud .race .lap .k { font-size: 0.72em; color: var(--h-violet); letter-spacing: 0.16em; }
+.ghud .race .lap .v { font-size: 1.6em; line-height: 1; }
+.ghud .race dl { display: grid; grid-template-columns: auto auto; gap: 0.1em 1em; margin: 0.45em 0 0; font-variant-numeric: tabular-nums; }
+.ghud .race dt { color: var(--h-mut); font-size: 0.82em; letter-spacing: 0.08em; text-transform: uppercase; align-self: center; }
+.ghud .race dd { margin: 0; text-align: right; font-weight: 600; }
+.ghud .race dd.best { color: var(--h-ok); }
+.ghud .race .gate { margin-top: 0.5em; font-size: 0.82em; color: var(--h-mut); letter-spacing: 0.06em; }
+.ghud .race .bar { height: 0.32em; border-radius: 99px; background: rgba(148, 163, 184, 0.25); margin-top: 0.25em; overflow: hidden; }
+.ghud .race .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--h-violet), var(--h-rose)); border-radius: 99px; transition: width 200ms ease; }
+.ghud .race .board { margin: 0.55em 0 0; padding: 0.45em 0 0; border-top: 1px solid var(--h-border); list-style: none; font-size: 0.86em; font-variant-numeric: tabular-nums; }
+.ghud .race .board li { display: grid; grid-template-columns: 1.2em 0.7em 1fr auto; gap: 0.4em; align-items: center; }
+.ghud .race .board .dot { width: 0.6em; height: 0.6em; border-radius: 50%; }
+.ghud .race .board .me { color: var(--h-violet); font-weight: 600; }
+.ghud .race.drill .inbox { color: var(--h-ok); }
+.ghud .race.drill .outbox { color: var(--h-warn); }
+
+/* key hints */
+.ghud .keys { display: flex; flex-wrap: wrap; gap: 0.35em 0.7em; align-items: center; max-width: 34em; padding: 0.45em 0.7em; }
+.ghud .keys.vert { flex-direction: column; align-items: flex-start; max-width: none; }
+.ghud .kh { display: inline-flex; align-items: center; gap: 0.4em; color: var(--h-mut); font-size: 0.86em; white-space: nowrap; }
+.ghud .kg { min-width: 1.75em; height: 1.75em; padding: 0 0.45em; border-radius: 999px; display: inline-grid; place-items: center; font-size: 0.82em; font-weight: 700; background: #334155; color: var(--h-fg); }
+.ghud .kg.key { border-radius: 6px; }
+.ghud .kg.a { background: #22c55e; color: #0f0f23; } .ghud .kg.b { background: #ef4444; } .ghud .kg.x { background: #3b82f6; } .ghud .kg.y { background: #eab308; color: #0f0f23; }
+.ghud .kg.sh { background: #475569; }
+.ghud .keys.dim { opacity: 0.55; }
+
+/* telemetry + sticks + spectrum */
+.ghud .tel { white-space: pre; font: 0.74em/1.4 ui-monospace, 'Cascadia Mono', Consolas, monospace; color: #dbeafe; padding: 0.6em 0.75em; }
+.ghud .sticks canvas, .ghud .spec canvas { display: block; }
+.ghud .sticks, .ghud .spec { padding: 0.4em; }
+
+/* crash banner + notices */
+.ghud .crash { font-family: var(--h-display); font-size: 1.35em; letter-spacing: 0.06em; color: #fff; background: linear-gradient(90deg, rgba(244, 63, 94, 0.92), rgba(190, 18, 60, 0.92)); border: 0; padding: 0.4em 1em; border-radius: 999px; box-shadow: 0 10px 30px rgba(244, 63, 94, 0.45); }
+.ghud .notice { max-width: 26em; font-size: 0.9em; pointer-events: auto; }
+.ghud .notice b { display: block; font-family: var(--h-display); font-weight: 400; letter-spacing: 0.05em; color: var(--h-violet); margin-bottom: 0.2em; }
+.ghud .notice.warn b { color: var(--h-warn); }
+.ghud .notice p { margin: 0.2em 0; color: #cbd5e1; }
+.ghud .notice button { pointer-events: auto; margin-top: 0.45em; min-height: 2.4em; padding: 0 1em; border-radius: 9px; border: 0; background: var(--h-primary); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.ghud .notice .sub { color: var(--h-mut); font-size: 0.86em; }
+.ghud .narrow .notice { max-width: 15em; font-size: 0.82em; }
+.ghud .chip { display: inline-flex; align-items: center; gap: 0.5em; padding: 0.35em 0.85em; border-radius: 999px; background: var(--h-bg-strong); border: 1px solid var(--h-border); font-size: 0.86em; color: var(--h-warn); }
+.ghud .status { max-width: 30em; text-align: center; font-size: 1em; }
+
+@media (prefers-reduced-motion: reduce) { .ghud .hw { transition: none; } }

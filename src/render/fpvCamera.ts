@@ -63,8 +63,9 @@ void main() {
   // log-average over the whole frame, blended with a centre-weighted meter (what FPV cams do)
   float logAvg = mix(textureLod(frame, vec2(0.5), 12.0).a, textureLod(frame, vec2(0.5), 5.0).a, 0.4);
   float lum = exp(logAvg);
-  // ~8.5 stops of range: dark interiors brighten (noisily), bright sky is pulled down
-  float target = clamp(0.2 / lum, 0.06, 24.0);
+  // mid-grey target in linear light (the camera gamma brightens it to ~0.43 on screen); ~7 stops
+  // of range: dark interiors brighten (noisily) but are not pushed to daylight, sky is pulled down
+  float target = clamp(0.12 / lum, 0.06, 8.0);
   float prev = texture2D(prevExp, vec2(0.5)).r;
   if (prev <= 0.0) prev = target;
   // cameras react faster to over-exposure (bursting out into the sky) than to darkness
@@ -126,8 +127,8 @@ void main() {
   vec3 cL = tone(useprev ? texture2D(prevFrame, suv - dl).rgb : texture2D(frame, suv - dl).rgb, e);
   vec3 cR = tone(useprev ? texture2D(prevFrame, suv + dl).rgb : texture2D(frame, suv + dl).rgb, e);
   vec3 sharp = cY + (cY - 0.5 * (cL + cR)) * 0.6;
-  // small-sensor CMOS flare / bloom around the sun and bright sky
-  sharp += max(tone(textureLod(frame, suv, 4.0).rgb, e) - 0.8, 0.0) * 0.8;
+  // small-sensor CMOS flare around the sun and blown-out sky: gentle and bounded
+  sharp += min(max(tone(textureLod(frame, suv, 4.0).rgb, e) - 0.95, 0.0) * 0.35, vec3(0.12));
   sharp = oetf(sharp); cC = oetf(cC);
   vec3 yiq = vec3(rgb2yiq(sharp).x, rgb2yiq(cC).yz);
   // OSD is overlaid at the FC (MAX7456), i.e. before the RF link degrades it
@@ -185,8 +186,8 @@ void main() {
   }
   c = tone(c, e);
   // bloom from bright sky / sun
-  vec3 glow = max(tone(textureLod(frame, uv, 4.0).rgb, e) - 0.85, 0.0);
-  c += glow * 0.6;
+  vec3 glow = min(max(tone(textureLod(frame, uv, 4.0).rgb, e) - 0.95, 0.0) * 0.3, vec3(0.1));
+  c += glow;
   c = oetf(c);
   // HD OSD is drawn by the VTX/goggles after decoding: crisp
   vec4 o = osdAt(uv);
@@ -197,6 +198,7 @@ void main() {
 export class FpvCamera {
   cubeRT: THREE.WebGLCubeRenderTarget;
   cubeCam: THREE.CubeCamera;
+  private nearCam: THREE.CubeCamera;
   frameRT: THREE.WebGLRenderTarget;
   prevRT: THREE.WebGLRenderTarget;
   private expRT: THREE.WebGLRenderTarget[];
@@ -211,10 +213,15 @@ export class FpvCamera {
   mount = new THREE.Quaternion();
   field = 0;
   lastFrameAt = -1;
+  /** Where the last presented video frame and its OSD grid sit on screen (CSS px, top-left origin). */
+  layout = { frame: { x: 0, y: 0, w: 0, h: 0 }, osd: { x: 0, y: 0, w: 0, h: 0 } };
 
   constructor(private renderer: THREE.WebGLRenderer, cubeSize = 768) {
     this.cubeRT = new THREE.WebGLCubeRenderTarget(cubeSize, { type: THREE.HalfFloatType, generateMipmaps: false });
     this.cubeCam = new THREE.CubeCamera(0.02, 3000, this.cubeRT);
+    // the quad's own props / ducts pass within a centimetre of the lens: a second pass with a
+    // 3 mm near plane draws them, so the world pass keeps its depth precision
+    this.nearCam = new THREE.CubeCamera(0.003, 2, this.cubeRT);
     this.frameRT = this.makeFrameRT(640, 480);
     this.prevRT = this.makeFrameRT(640, 480);
     this.expRT = [0, 1].map(() => new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }));
@@ -261,12 +268,28 @@ export class FpvCamera {
   }
 
   /** Capture a new camera frame at the given lens pose (three world space). */
-  capture(scene: THREE.Scene, lensPos: THREE.Vector3, lensQuat: THREE.Quaternion, omegaCam: THREE.Vector3, dtSinceLast: number) {
+  /** near: the quad itself (drawn in the near pass, on top of the world). */
+  capture(scene: THREE.Scene, lensPos: THREE.Vector3, lensQuat: THREE.Quaternion, omegaCam: THREE.Vector3, dtSinceLast: number, near?: THREE.Object3D) {
     const r = this.renderer;
     // keep previous field/frame for interlacing & digital freeze/smear
     const t = this.prevRT; this.prevRT = this.frameRT; this.frameRT = t;
     this.cubeCam.position.copy(lensPos);
+    if (near) near.visible = false;
     this.cubeCam.update(r, scene);
+    if (near) {
+      near.visible = true;
+      // near pass: only the quad (and the lights), depth cleared per face so it sits on top
+      const hidden: THREE.Object3D[] = [];
+      for (const c of scene.children) if (c !== near && c.visible && !(c as THREE.Light).isLight) { c.visible = false; hidden.push(c); }
+      const bg = scene.background, ac = r.autoClear;
+      scene.background = null; r.autoClear = false;
+      const nc = this.nearCam;
+      nc.position.copy(lensPos); nc.updateMatrixWorld();
+      if (nc.coordinateSystem !== r.coordinateSystem) { nc.coordinateSystem = r.coordinateSystem; nc.updateCoordinateSystem(); }
+      for (let i = 0; i < 6; i++) { r.setRenderTarget(this.cubeRT, i); r.clearDepth(); r.render(scene, nc.children[i] as THREE.Camera); }
+      r.autoClear = ac; scene.background = bg;
+      for (const c of hidden) c.visible = true;
+    }
     const u = this.fisheyeMat.uniforms;
     u.camToWorld.value.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(lensQuat));
     u.omegaCam.value.copy(omegaCam);
@@ -308,6 +331,11 @@ export class FpvCamera {
     let ow = 1 - 2 * m, oh = ((1 - 2 * m) * frameAspect) / osdAspect;
     if (oh > 1 - 2 * m) { oh = 1 - 2 * m; ow = (oh * osdAspect) / frameAspect; }
     u.osdRect.value.set(0.5 - ow / 2, 0.5 - oh / 2, 0.5 + ow / 2, 0.5 + oh / 2);
+    // same rectangles in CSS pixels for the HUD layout
+    const cw = r.domElement.clientWidth || size.x, ch = r.domElement.clientHeight || size.y;
+    const fw = u.screenFit.value.x * cw, fh = u.screenFit.value.y * ch;
+    const f = this.layout.frame; f.x = (cw - fw) / 2; f.y = (ch - fh) / 2; f.w = fw; f.h = fh;
+    const o = this.layout.osd; o.w = ow * fw; o.h = oh * fh; o.x = f.x + (0.5 - ow / 2) * fw; o.y = f.y + (0.5 - oh / 2) * fh;
     this.quad.material = this.postMat;
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
