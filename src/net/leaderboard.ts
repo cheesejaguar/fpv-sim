@@ -1,7 +1,7 @@
 // Global lap leaderboard client: reads a board (GET /leaderboard on the relay that hosts the rooms)
 // and submits laps (POST). Like the server browser, everything the relay sends is checked, since a
 // pilot can point the sim at any relay.
-import { CLASSES, LB_VERSION } from '../../server/src/leaderboardCore';
+import { CLASSES, hasTrack, LB_VERSION } from '../../server/src/leaderboardCore';
 import { multiplayerUrl } from './config';
 
 export interface BoardEntry { id: number; initials: string; lapMs: number; cls: string; summary: string; at: number }
@@ -75,4 +75,19 @@ export function formatLap(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '—';
   const t = Math.round(ms), m = Math.floor(t / 60_000), s = Math.floor((t % 60_000) / 1000), r = t % 1000;
   return `${m}:${String(s).padStart(2, '0')}.${String(r).padStart(3, '0')}`;
+}
+
+/** One entry (share links): its track, its rank on its class board and that board's top 5. */
+export interface EntryResult { entry: (BoardEntry & { map: string; course: string }) | null; rank: number | null; total: number; top: BoardEntry[]; error: string | null }
+
+export async function fetchEntry(id: number, timeoutMs = 8000): Promise<EntryResult> {
+  const none = (error: string): EntryResult => ({ entry: null, rank: null, total: 0, top: [], error });
+  const r = await call(`/leaderboard/entry/${id}`, { cache: 'no-store' }, timeoutMs);
+  if ('error' in r) return none(r.error);
+  if (r.status === 404) return none('This lap is no longer on the leaderboard.');
+  if (r.status !== 200) return none(`The server answered ${r.status}.`);
+  const j = r.json, e = parseEntry(j?.entry);
+  const map = j?.entry?.map, course = j?.entry?.course ?? '';
+  if (!e || !hasTrack(map, course)) return none('The server sent something unexpected.');
+  return { entry: { ...e, map, course }, rank: int(j.rank, 1, 10_000) ? j.rank : null, total: int(j.total, 0, 10_000) ? j.total : 0, top: entries({ entries: j.top }).slice(0, 5), error: null };
 }

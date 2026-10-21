@@ -6,6 +6,19 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Share your lap to Instagram Stories
+- **Share** a personal best as a 9:16 card, from the post-your-lap card, the pause menu, the
+  posted-lap screen and your own leaderboard rows.
+  - Five styles: stats, a studio render of your drone, the FPV moment (your goggle view with
+    its OSD as the lap finished), a track map with your splits, and the leaderboard's top 5.
+  - Three colour themes.
+- On a phone, **Share to Instagram** opens the share sheet. On a desktop, download the PNG,
+  copy it, or use **Send to my phone**: a QR code opens a light page that draws the same cards on
+  the phone, ready for Instagram.
+- Cards are drawn on your device and the QR code is made there too: nothing is uploaded unless
+  you share it. The phone link shows the lap's public leaderboard entry (privacy notice updated).
+- Relay: `GET /leaderboard/entry/:id` (one entry, its rank and the board's top 5).
+
 ### Flight feel (from a pilot flying a tiny whoop with an ExpressLRS radio)
 - **No more phantom roll in Angle mode.** Whoops fell over onto one duct on the pad, and the
   accelerometer was calibrated on that 13° tilt, so Angle mode held it as "level" and drifted.

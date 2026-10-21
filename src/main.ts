@@ -29,6 +29,7 @@ import { OsdRenderer } from './render/osdRenderer';
 import { RemoteQuads } from './render/remoteQuads';
 import { buildScene } from './render/scene';
 import { VideoLink } from './render/videoLink';
+import { PbShots } from './share/capture';
 import { bfPanel } from './ui/bfPanel';
 import { Blackbox } from './ui/blackbox';
 import { builderPanel } from './ui/builderPanel';
@@ -268,7 +269,10 @@ function joinRoom(code: string, room?: { name: string; public: boolean }) {
 const hudCtl = new HudController(ctx, sticks, spectrum);
 hudCtl.hud.onMenuTap = () => gameMenu.toggle(); // the Esc key hint is a button on touch screens
 hudCtl.onPostLap = () => gameMenu.openInitials();
+hudCtl.onShareLap = () => { const p = ctx.lb.pending; if (p) gameMenu.openShare({ map: p.map, course: p.course, cls: p.cls }); };
 appEl.append(hudCtl.hud.root);
+// the view at each new personal best (share cards), and the newest best of this session
+const shots = new PbShots(ctx);
 
 function blackboxPanel(): HTMLElement {
   const root = el('div', { class: 'panel' });
@@ -329,11 +333,12 @@ const gameMenu = new GameMenu({
   },
   board: ctx.lb,
   track: () => ({ map: ctx.map.id, course: courseOf(ctx.map), cls: droneClass(ctx.spec) }),
+  shots,
 });
 appEl.append(gameMenu.root);
 
 // ---------------------------------------------------------------------------------------------
-startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => hudCtl.update() });
+startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
 initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 
 // invite links: ?room=CODE joins that room on load
@@ -346,7 +351,7 @@ bootDone();
 
 // debugging handle (inspect from devtools), see `debug` above
 if (debug) (window as any).__fpv = {
-  ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime,
+  ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime, shots,
   teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); },
   osdCells: () => hudCtl.osdCells(), frameRect: () => ctx.fpv.layout.frame,
   get scene() { return ctx.scene.scene; }, get tel() { return ctx.tel; }, get spectrum() { return spectrum.data; },

@@ -51,6 +51,8 @@ export interface BoardScreenHost {
   setTabs(t: { count: number; go: (d: -1 | 1) => void }): void;
   /** post a saved personal best (opens the initials entry) */
   post(map: string, course: string, cls: string): void;
+  /** share a personal best, or one of the pilot's own entries, as a card (src/share/) */
+  share?(map: string, course: string, cls: string, entry?: BoardEntry): void;
 }
 
 const CLASS_FILTERS = ['all', ...CLASS_IDS];
@@ -101,10 +103,16 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
 
   const row = (e: BoardEntry, rank: number, me: boolean) => el('tr', { class: `gm-row lb-row${me ? ' me' : ''}`, tabindex: '0', 'aria-label': `Rank ${rank}: ${e.initials}, ${formatLap(e.lapMs)}, ${e.summary}${me ? ' (you)' : ''}` },
     el('td', {}, el('span', { class: `lb-rank${rank <= 3 ? ` r${rank}` : ''}` }, String(rank))),
-    el('td', {}, el('span', { class: 'lb-ini-cell' }, e.initials), me ? el('span', { class: 'gm-badge green' }, 'YOU') : null),
+    el('td', {}, el('span', { class: 'lb-ini-cell' }, e.initials), me ? el('span', { class: 'gm-badge green' }, 'YOU') : null, me ? shareBtn(e) : null),
     el('td', { class: 'lb-time' }, formatLap(e.lapMs)),
     el('td', { class: 'lb-drone' }, e.summary),
     el('td', { class: 'lb-date' }, shortDate(e.at)));
+
+  const shareBtn = (e: BoardEntry) => {
+    const t = track();
+    return h.share && t ? el('button', { class: 'gm-btn ghost lb-share', 'data-key': `lb-share-${e.id}`, 'aria-label': `Share your lap ${formatLap(e.lapMs)}`,
+      onclick: (ev: Event) => { ev.stopPropagation(); h.share!(t.map, t.course, e.cls, e); } }, icon('share'), 'Share') : null;
+  };
 
   // the pilot's own best on the selected board: posted (and where), or a button to post it
   const drawMine = (t: Track | undefined, r: BoardResult | null) => {
@@ -116,7 +124,9 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
     const postable = !pb.submitted && pb.splitsMs.length > 0;
     mine.replaceChildren(el('div', { class: 'gm-card lb-mine' },
       el('div', {}, el('h3', {}, 'Your best'), el('p', {}, el('b', { class: 'lb-time' }, formatLap(pb.lapMs)), ` · ${shortDate(pb.at)} · ${status}`)),
-      postable ? el('button', { class: 'gm-btn primary', 'data-key': 'lb-post', onclick: () => h.post(t.map, t.course, f.cls) }, icon('trophy'), 'Post to leaderboard') : null));
+      el('div', { class: 'gm-actions' },
+        postable ? el('button', { class: 'gm-btn primary', 'data-key': 'lb-post', onclick: () => h.post(t.map, t.course, f.cls) }, icon('trophy'), 'Post to leaderboard') : null,
+        h.share ? el('button', { class: 'gm-btn', 'data-key': 'lb-share-mine', onclick: () => h.share!(t.map, t.course, f.cls) }, icon('share'), 'Share') : null)));
   };
 
   const load = async (force = false) => {
@@ -171,6 +181,8 @@ export interface InitialsScreenHost {
   open(o: NavOverlay): void;
   /** finished (saved, skipped): continue; board = show the board it was posted to */
   done(board: boolean): void;
+  /** share the lap as a card (src/share/) */
+  share?(): void;
 }
 
 export interface InitialsScreen { el: HTMLElement; skip(): void; busy(): boolean }
@@ -196,6 +208,7 @@ export function initialsScreen(h: InitialsScreenHost): InitialsScreen {
     if (kind === 'done') {
       actions.replaceChildren(
         el('button', { class: 'gm-btn cta', 'data-key': 'ini-board', 'data-autofocus': true, onclick: () => h.done(true) }, icon('trophy'), 'View leaderboard'),
+        ...(h.share ? [el('button', { class: 'gm-btn', 'data-key': 'ini-share', onclick: () => h.share!() }, icon('share'), 'Share')] : []),
         el('button', { class: 'gm-btn ghost', 'data-key': 'ini-continue', onclick: () => h.done(false) }, 'Continue'));
       return;
     }
