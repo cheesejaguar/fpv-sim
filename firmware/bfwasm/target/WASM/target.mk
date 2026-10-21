@@ -18,6 +18,7 @@ TARGET_SRC = \
 #   drivers/adc.c, pg/adc.c     -> battery_sim.c (emulated ADC)
 #   drivers/serial_tcp.c        -> serial_mem.c (never in the list: SITL adds it via TARGET_SRC)
 #   target/SITL/sitl.c          -> wasm_platform.c
+#   drivers/sound_beeper.c      -> beeper_sim.c (buzzer pin state for the host)
 MCU_EXCLUDES = \
             drivers/adc.c \
             drivers/bus_i2c.c \
@@ -45,4 +46,5 @@ MCU_EXCLUDES = \
             drivers/dshot_dpwm.c \
             drivers/max7456.c \
             io/displayport_max7456.c \
-            pg/adc.c
+            pg/adc.c \
+            drivers/sound_beeper.c

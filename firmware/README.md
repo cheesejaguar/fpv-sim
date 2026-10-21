@@ -9,12 +9,12 @@ and CMS are Betaflight's own code. Only the hardware layer is replaced.
 
 ```
 firmware/
-  betaflight/            pristine upstream clone (tag 4.5.5), never edited
+  betaflight/            pristine upstream clone (tag 4.5.5 = 4adbd3ef7cb5…), never edited (gitignored)
   bfwasm/
     target/WASM/         target.h / target.mk (derived from target/SITL)
     src/                 replacement hardware layer (see below)
-    include/             header shadows (serial_tcp.h, build/atomic.h)
-    patches/*.patch      5 small upstream diffs, applied to a copy at build time
+    include/             header shadows (drivers/serial_tcp.h, build/atomic.h)
+    patches/*.patch      11 small upstream diffs, applied to a copy at build time
     Makefile, build.sh   emcc build (runs inside Docker)
   build/                 generated: patched copy + objects (gitignored)
 public/bf/betaflight.{mjs,wasm}   build output (ES module factory + wasm)
@@ -25,11 +25,18 @@ scripts/bf-smoke.mjs              end-to-end smoke test
 ## Build
 
 Docker is the only requirement; the compiler is pinned to
-`emscripten/emsdk:4.0.10`.
+`emscripten/emsdk:4.0.10` and Betaflight to commit
+`4adbd3ef7cb546947600e5f747bd5453c9573063` (tag 4.5.5): the script clones it,
+fetches that exact commit if the tag ever moves, and refuses to build any
+other tree (the patches are written against it).
 
 ```bash
 bash scripts/build-firmware.sh
 ```
+
+`firmware/.gitignore` only ignores `/build/` and `/betaflight/` at this level:
+an unanchored `build/` used to swallow the `include/build/atomic.h` shadow, so a
+fresh clone could not compile `drivers/dshot.c`.
 
 PowerShell equivalent (repository root):
 
@@ -64,6 +71,13 @@ round-trips the EEPROM image into a second instance, and measures throughput.
 Measured (Node 22, Windows 11): **~1.0 M `bf_step(125)` calls/s armed** (≈120×
 real time at 8 kHz), ~1.7 M/s disarmed.
 
+`npx vitest run tests/closedloop.test.ts tests/firmware.test.ts` flies the
+real firmware on the generated plant: hover / rates / beginner presets, plus
+accelerometer calibration, yaw spin recovery, the BMI270 3.2 kHz gyro path,
+beeper and DShot beacon, the serial blackbox stream, the u-blox GPS handshake
+up to a 3D fix and home point (the test file contains a small UBX receiver),
+CPU load and eRPM telemetry errors.
+
 ## JS usage
 
 ```js
@@ -92,7 +106,7 @@ replace the views. All pointer arguments point into wasm memory (`_malloc`).
 |---|---|
 | `int bf_init(void)` | Boot. Returns 0, or `1 + failureMode_e` if the firmware hit `failureMode()`. Called again = power cycle (EEPROM kept if `bf_eeprom_loaded(1)` or after a firmware `save`). |
 | `void bf_step(uint32_t dt_us)` | Advance virtual time by `dt_us` and run the scheduler. Any `dt` works; it is sliced at the gyro period (125 µs) so exactly one gyro/filter/PID run happens per 125 µs, followed by every other task that is due. |
-| `void bf_set_gyro_acc(gx,gy,gz, ax,ay,az)` | IMU sample, see conventions below. Latched; re-applied every gyro period. |
+| `void bf_set_gyro_acc(gx,gy,gz, ax,ay,az)` | IMU sample, see conventions below. Each call is one fresh sample: it becomes data-ready at the start of the next gyro slice of `bf_step` and is read once; without a new call the gyro/acc report no new data (a chip slower than the loop). Call it every step at 8 kHz, or only when the simulated chip latched a new sample. |
 | `void bf_set_rc(const uint16_t ch[16])` | One received RC frame, µs (1000–2000), AETR1234 channel map by default. Call at the radio link rate (e.g. 150–500 Hz); Betaflight's failsafe triggers if frames stop. |
 | `void bf_set_battery(volts, amps, mah_drawn)` | Pack voltage and current. Converted to 12-bit ADC counts through the live `vbat_scale`/`ibata_scale` settings, so Betaflight's filtering, cell detection, sag compensation and warnings run as on hardware. `mah_drawn >= 0` overrides BF's mAh counter; negative lets BF integrate. |
 | `void bf_set_erpm(const float erpm[4])` | Electrical RPM per motor (mechanical RPM × pole pairs), motor index order. Encoded as real bidirectional-DShot GCR telemetry (period, `eee mmmmmmmmm`) and decoded by Betaflight's own code (RPM filter, dynamic idle, RPM limit, OSD/CLI). 0 = stopped. |
@@ -101,13 +115,46 @@ replace the views. All pointer arguments point into wasm memory (`_malloc`).
 | `int bf_get_motor_reversed(void)` | 1 while the ESCs have been commanded to reversed spin (crash flip / turtle, `DSHOT_CMD_SPIN_DIRECTION_REVERSED`), back to 0 after `..._NORMAL`. |
 | `int bf_serial_write(port, buf, len)` / `int bf_serial_read(port, buf, max)` | In-memory UARTs, port 0 = UART1 = MSP + CLI (`#` enters the CLI; replies arrive after ~100 ms of virtual time). Host queues: 4 KB in, 64 KB out per port; survive firmware reboots. |
 | `bf_osd_chars/attrs/cols/rows/frame` | OSD character buffer, `rows*cols` bytes, row major. `chars` are font indices for a Betaflight `.mcm` font; `attrs` are displayport attributes (Betaflight blinks by itself). `frame` increments on every completed OSD draw. Canvas follows `vcd_video_system`: PAL/AUTO 30×16, NTSC 30×13, HD `osd_canvas_width×height` (53×20). **Betaflight 4.5's default is HD**; set `vcd_video_system = PAL` for analog. |
-| `bf_eeprom_ptr/size/loaded/dirty` | The 32 KB config image (`eepromData`). Write it before `bf_init()` + `bf_eeprom_loaded(1)` to restore; `bf_eeprom_dirty()` returns 1 once after the image changed (CLI `save`, MSP save, …) — persist it then. |
+| `bf_eeprom_ptr/size/loaded/dirty` | The 32 KB config image (`eepromData`). Write it before `bf_init()` + `bf_eeprom_loaded(1)` to restore; `bf_eeprom_dirty()` returns 1 once after the image changed (CLI `save`, MSP save, acc calibration …) and resets itself on that read — persist the image whenever a read returns 1 (don't call it twice). |
 | `uint32_t bf_arming_disable_flags(void)` | `armingDisableFlags_e` bitmask (0 = can arm). |
 | `int bf_get_flight_mode_flags(void)` | `flightModeFlags` (ANGLE=1, HORIZON=2, …). |
 | `void bf_get_attitude(float rpy_deg[3])` | Betaflight's own attitude estimate: roll + = right wing down, pitch + = nose up, yaw = heading 0–360°, + clockwise seen from above. |
 | `void bf_get_debug(int16_t out[8])` | `debug[0..7]` for the configured `debug_mode`. |
+| `void bf_set_gyro_rate(int hz)` | Output data rate of the simulated gyro chip: 8000 (default; ICM-42688-P, MPU6000), 6400 / 6664, 3200 (BMI270 with the default hardware LPF). Kept across reboots, applied at the next boot (`gyroSetSampleRate`, patch 0010). Below 8 kHz every fresh sample also fires a virtual data-ready interrupt, so Betaflight's scheduler locks the gyro task onto the chip timing as with a real EXTI line. |
+| `int bf_calibrate_acc(void)` / `int bf_acc_calibrated(void)` / `int bf_acc_calibrating(void)` | Betaflight's accelerometer level calibration (400 samples ≈ 0.4 s, quad level and still; then `saveConfigAndNotify()`, so `bf_eeprom_dirty()` fires). Until calibrated, an acc mode (angle, horizon, GPS rescue) blocks arming with `ACC_CALIBRATION`, as on hardware (patch 0008). |
+| `int bf_get_beeper(void)` | 1 while the buzzer output is on (Betaflight's own sequences: arming, RX loss, BEEPER switch, battery …). |
+| `int bf_get_beacon(void)` | 1 for 250 ms after a `DSHOT_CMD_BEACON1..5` frame went out: the ESCs beep the motors (`beacon RX_SET` / `beacon RX_LOST` enable it; disarmed only). |
+| `int bf_yaw_spin_detected(void)` | 1 while yaw spin recovery is active. |
+| `int bf_cpu_load(void)` | CPU load in % (emulated F7 task timings, see below). |
+| `int bf_gps_info(int32_t out[11])` | GPS as the FC sees it: state (5 = receiving), 3D fix, sats, lat/lon 1e-7°, alt cm, ground speed cm/s, course °×10, home fix, distance (m) and direction (°) to home. |
 
 Extras: `bf_micros()`, `bf_boot_count()`, `bf_gyro_period_us()`, `bf_debug_dump()` (prints PG registry size, tasks, UART and RX state).
+
+### Serial ports
+
+| host port | UART | default use in the simulator |
+|---|---|---|
+| 0 | UART1 | MSP + CLI |
+| 1 | UART2 | native blackbox: `serial 1 128 115200 57600 0 2000000`, `set blackbox_device = SERIAL`, `set blackbox_sample_rate = 1/4` (2 kHz at 8 kHz PID), `set blackbox_mode = NORMAL`. The stream from arm to disarm (`H Product:Blackbox flight data recorder by Nicholas Sherlock` … `End of log`) is a log file Blackbox Explorer / PIDtoolbox read as is; ~75 KiB/s at 2 kHz. Drain it at least every ~0.5 s (64 KiB queue). |
+| 2 | UART3 | u-blox GPS (`feature GPS`, `serial 2 2 115200 115200 0 115200`, `gps_provider = UBLOX`): the host emulates the receiver (UBX: answer the MON-VER poll, ACK the CFG messages, send NAV-PVT) |
+
+### Emulated hardware details
+
+* **eRPM telemetry**: the reply read at a motor update carries the eRPM of
+  the previous DShot frame (one frame of lag, like a real ESC); 0.1 % of
+  replies are corrupt (deterministic xorshift): they keep the last value and
+  count as `Dshot invalid pkts` in `dshot_telemetry_info`.
+* **CPU load** (patch 0009, `cpu_load.c`): virtual time stands still inside a
+  task, so each task run is charged its average F722 execution time (gyro 7,
+  filter 14, PID 20, attitude 22, RX 21 µs …) in the load statistics only —
+  `status`, `tasks`, MSP and the OSD see ~35 % at 8k/8k and ~16 % for a
+  3.2 kHz BMI270 build. Scheduling decisions are not affected.
+* **Gyro overflow / yaw spin** (patch 0007): the SITL-disabled checks run.
+  Yaw spin recovery engages above `yaw_spin_threshold` (auto: max yaw rate
+  + 25 %, ≥ 200 °/s margin). The overflow check itself is still skipped for
+  the virtual gyro because Betaflight lists `GYRO_VIRTUAL` with the chips that
+  have hardware overflow protection (`gyroHasOverflowProtection`), like the
+  ICM-42688-P it imitates.
 
 ## Axis / sign convention (exact)
 
@@ -153,6 +200,8 @@ M4 front-left.
 | `drivers/adc.c`, `pg/adc.c` | `battery_sim.c` | ADC counts for vbat/current |
 | UDP RC | `rx_sim.c` | `RX_PROVIDER_UDP`, one frame per `bf_set_rc` |
 | libc malloc | `wasm_malloc.c` | allocator state lives in the heap (survives reboots) |
+| `drivers/sound_beeper.c` | `beeper_sim.c` | buzzer pin state for the host (`bf_get_beeper`) |
+| — | `cpu_load.c` | emulated task execution times for the CPU load |
 | — | `wasm_stubs.c` | hardware-only symbols generic code references |
 
 Patches (`bfwasm/patches/`):
@@ -169,6 +218,18 @@ Patches (`bfwasm/patches/`):
    for `GYRO_VIRTUAL` because SITL's gyro feed is ideal; the simulator's IMU has
    turn-on bias and noise, so without this an uncalibrated bias shows up as
    yaw drift (and the "keep still while booting" behaviour would be missing).
+6. `common_post.h`: keep `USE_RX_RSSI_DBM` without a serial CRSF receiver
+   (`USE_SIM_RX_LINK_STATS`): the simulator reports ELRS-style LQ / RSSI dBm.
+7. `gyro.c`: run the gyro overflow and yaw-spin detection that SITL compiles
+   out (`#if !defined(SIMULATOR_BUILD) || defined(WASM_BUILD)`).
+8. `acceleration_init.c`: `accHasBeenCalibrated()` checks the stored
+   calibration instead of SITL's "always calibrated".
+9. `scheduler.c`: CPU load from emulated task execution times (`cpu_load.c`)
+   instead of the forced 0 %.
+10. `gyro_sync.c`: the virtual gyro's sample rate follows `bf_set_gyro_rate()`
+    (BMI270 3.2 kHz, acc 800 Hz).
+11. `serial.c`: no blocking `serialPassthrough()` (would hang the
+    single-threaded firmware on `gpspassthrough`); `wasm_stubs.c` has a no-op.
 
 **Reboot** (CLI `save`/`exit`, MSP reboot): `systemReset()` only sets a flag;
 after the current task returns, `bf_step` restores *all* static data
@@ -181,21 +242,28 @@ buffers the host `_malloc`ed stay valid.
 ## What is stubbed / not simulated (and why)
 
 * **No SPI/I2C buses, no hardware gyro/baro/mag drivers** – virtual sensors
-  (`accgyro_virtual.c`, `barometer_virtual.c`). Magnetometer and GPS are not
-  built (not needed for an FPV quad; GPS rescue therefore unavailable).
+  (`accgyro_virtual.c`, `barometer_virtual.c`). No magnetometer (GPS rescue
+  works without one, as on most FPV quads). GPS is a u-blox protocol receiver
+  emulated by the host on UART3 (NMEA support is not built).
 * **Task execution time is zero** – virtual time doesn't advance while a task
-  runs, so `tasks` shows 0 µs and CPU load 0 %. Loop timing is perfect.
+  runs; only the CPU-load statistics are emulated (see above). Loop timing is
+  otherwise perfect, apart from the gyro task following a slower chip's
+  samples on the 125 µs physics grid (BMI270: 250 / 375 µs periods averaging
+  312.5 µs; about 0.2 % of runs see no fresh sample because Betaflight's
+  integer 312 µs period drifts against the 312.5 µs chip between EXTI skew
+  corrections).
 * **Serial passthrough / 4-way ESC interface** – would block the FC forever;
   `serialPassthrough()` is a no-op.
-* **Blackbox, LED strip, VTX control, transponder, camera control, telemetry
-  protocols, serial RX protocols, ESC sensor (serial telemetry)** – not built
-  (no flash/SD, RC comes from `bf_set_rc`).
-* **Extended DShot telemetry** (EDT temperature/voltage/current) and DShot
-  telemetry error statistics – not emulated; only eRPM.
+* **LED strip, VTX control (SmartAudio / Tramp / MSP VTX, VTX tables),
+  transponder, camera control, telemetry protocols, serial RX protocols, ESC
+  sensor (serial telemetry)** – not built (RC comes from `bf_set_rc`).
+  Blackbox logs to a serial port only (no flash / SD card emulation).
+* **Extended DShot telemetry** (EDT temperature/voltage/current) – not
+  emulated; eRPM only (with lag and rare corrupt frames, see above). DShot
+  telemetry quality statistics (`USE_DSHOT_TELEMETRY_STATS`) are not built.
 * **Font upload** (MSP/CMS) is accepted and ignored: the host owns the font.
 * **Servos** – outputs ignored.
-* `SIMULATOR_BUILD` side effects inherited from upstream: accelerometer counts as
-  calibrated, gyro overflow check and yaw-spin recovery are compiled out, MSP
-  arming is not blocked.
+* `SIMULATOR_BUILD` side effects still inherited from upstream: MSP arming is
+  not blocked.
 * Betaflight's `bootgrace` still applies: arming is refused for the first
   seconds after boot, as on hardware.

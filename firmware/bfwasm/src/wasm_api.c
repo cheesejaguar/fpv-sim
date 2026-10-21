@@ -43,6 +43,7 @@
 #include "drivers/accgyro/accgyro.h"
 #include "drivers/accgyro/accgyro_virtual.h"
 #include "drivers/barometer/barometer_virtual.h"
+#include "drivers/system.h"
 #include "drivers/time.h"
 
 #include "fc/init.h"
@@ -53,8 +54,11 @@
 
 #include "flight/imu.h"
 
+#include "io/gps.h"
+
 #include "scheduler/scheduler.h"
 
+#include "sensors/acceleration.h"
 #include "sensors/gyro.h"
 
 #include "wasm_internal.h"
@@ -110,10 +114,33 @@ static uint32_t fnv1a(const uint8_t *p, size_t n)
     return h;
 }
 
+// sequence number of the IMU sample last handed to the virtual devices; a
+// static, so a reboot (RAM snapshot restore) re-applies the current sample once
+static uint32_t appliedImuSeq;
+
+uint16_t bfwasmGyroRateHz(void)
+{
+    return bfwasmPersist.gyroRateHz ? bfwasmPersist.gyroRateHz : 8000;
+}
+
+// Hand a NEW host IMU sample to the virtual gyro/acc (data-ready). Called once
+// per gyro slice after the clock advanced: a sample the host did not refresh
+// is never read twice, exactly like a chip whose ODR is slower than the loop.
 static void applySensors(void)
 {
+    if (appliedImuSeq == bfwasmPersist.imuSeq) {
+        return;
+    }
+    appliedImuSeq = bfwasmPersist.imuSeq;
     if (virtualGyroDev) {
         virtualGyroSet(virtualGyroDev, bfwasmPersist.gyroCounts[0], bfwasmPersist.gyroCounts[1], bfwasmPersist.gyroCounts[2]);
+        if (bfwasmGyroRateHz() < 8000) {
+            // data-ready interrupt: the scheduler locks the gyro task onto
+            // the chip's sample timing (as with a real EXTI line)
+            virtualGyroDev->gyroModeSPI = GYRO_EXTI_INT;
+            virtualGyroDev->detectedEXTI++;
+            virtualGyroDev->gyroLastEXTI = virtualGyroDev->gyroSyncEXTI = getCycleCounter();
+        }
     }
     if (virtualAccDev) {
         virtualAccSet(virtualAccDev, bfwasmPersist.accCounts[0], bfwasmPersist.accCounts[1], bfwasmPersist.accCounts[2]);
@@ -281,10 +308,18 @@ EMSCRIPTEN_KEEPALIVE void bf_set_gyro_acc(float gx, float gy, float gz, float ax
     bfwasmPersist.accCounts[1] = toCounts(-ay * BF_ACC_LSB_PER_MS2);
     bfwasmPersist.accCounts[2] = toCounts(-az * BF_ACC_LSB_PER_MS2);
     bfwasmPersist.imuValid = true;
+    // a fresh sample: applied at the start of the next gyro slice (bf_step),
+    // once the virtual clock has reached the sample time
+    bfwasmPersist.imuSeq++;
+}
 
-    if (initialised) {
-        applySensors();
-    }
+// Output data rate of the simulated gyro chip (Hz): 8000 (ICM-42688-P, MPU6000,
+// default), 6400 / 6664, or 3200 (BMI270 with the default hardware LPF).
+// Stored with the host state (survives reboots); takes effect at the next
+// boot, where gyroSetSampleRate() picks it up (patch 0010).
+EMSCRIPTEN_KEEPALIVE void bf_set_gyro_rate(int hz)
+{
+    bfwasmPersist.gyroRateHz = (hz > 0 && hz < 8000) ? (uint16_t)hz : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void bf_set_rc(const uint16_t *ch16)
@@ -480,6 +515,81 @@ EMSCRIPTEN_KEEPALIVE void bf_get_debug(int16_t *out8)
     for (int i = 0; i < 8; i++) {
         out8[i] = i < DEBUG16_VALUE_COUNT ? debug[i] : 0;
     }
+}
+
+// ---- accelerometer calibration ------------------------------------------------
+
+// Start Betaflight's level calibration (as the Configurator "Calibrate
+// Accelerometer" button / CMS / stick command): ~400 acc samples are averaged
+// while the quad sits level and still, then saved (saveConfigAndNotify(), so
+// bf_eeprom_dirty() fires). Returns 1.
+EMSCRIPTEN_KEEPALIVE int bf_calibrate_acc(void)
+{
+    accStartCalibration();
+    return 1;
+}
+
+// 1 once the stored config holds an accelerometer calibration (acc_calibration
+// 4th value). Without it Betaflight refuses to arm while an acc mode (angle,
+// horizon, GPS rescue) is configured: ARMING_DISABLED_ACC_CALIBRATION.
+EMSCRIPTEN_KEEPALIVE int bf_acc_calibrated(void)
+{
+    return accHasBeenCalibrated() ? 1 : 0;
+}
+
+// 1 while a calibration started by bf_calibrate_acc() is still averaging.
+EMSCRIPTEN_KEEPALIVE int bf_acc_calibrating(void)
+{
+    return accIsCalibrationComplete() ? 0 : 1;
+}
+
+// ---- beeper / DShot beacon -----------------------------------------------------
+
+// 1 while the FC's buzzer output is driven (Betaflight's own beeper sequences:
+// arming, RX loss, BEEPER switch, low battery, ...).
+EMSCRIPTEN_KEEPALIVE int bf_get_beeper(void)
+{
+    return bfwasmBeeperOn() ? 1 : 0;
+}
+
+// 1 while the ESCs play a DShot beacon tone (~250 ms after a DSHOT_CMD_BEACONx
+// frame went out on the wire): the motors themselves beep.
+EMSCRIPTEN_KEEPALIVE int bf_get_beacon(void)
+{
+    return bfwasmBeaconActive() ? 1 : 0;
+}
+
+// 1 while yaw spin recovery is active (gyro yaw rate above yaw_spin_threshold).
+EMSCRIPTEN_KEEPALIVE int bf_yaw_spin_detected(void)
+{
+    return gyroYawSpinDetected() ? 1 : 0;
+}
+
+// Betaflight's CPU load in percent (emulated task execution times, see
+// cpu_load.c), as shown by `status`, MSP and the OSD warning.
+EMSCRIPTEN_KEEPALIVE int bf_cpu_load(void)
+{
+    return getAverageSystemLoadPercent();
+}
+
+// GPS solution as Betaflight sees it: out[0] state (gpsData.state, 5 =
+// receiving data), [1] 3D fix (1/0), [2] numSat, [3] lat 1e-7 deg, [4] lon
+// 1e-7 deg, [5] altitude cm, [6] ground speed cm/s, [7] course deg*10,
+// [8] home fix (1/0), [9] distance to home m, [10] direction to home deg.
+EMSCRIPTEN_KEEPALIVE int bf_gps_info(int32_t *out11)
+{
+    out11[0] = gpsData.state;
+    out11[1] = STATE(GPS_FIX) ? 1 : 0;
+    out11[2] = gpsSol.numSat;
+    out11[3] = gpsSol.llh.lat;
+    out11[4] = gpsSol.llh.lon;
+    out11[5] = gpsSol.llh.altCm;
+    out11[6] = gpsSol.groundSpeed;
+    out11[7] = gpsSol.groundCourse;
+    out11[8] = STATE(GPS_FIX_HOME) ? 1 : 0;
+    out11[9] = GPS_distanceToHome;
+    out11[10] = GPS_directionToHome;
+    return 11;
 }
 
 // Extra helpers (not part of the core contract, useful for tooling)

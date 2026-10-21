@@ -56,6 +56,11 @@ typedef struct bfwasmPersist_s {
     bool eepromProvided;    // host loaded eepromData before bf_init
     uint32_t bootCount;
     uint32_t eepromHash;    // for bf_eeprom_dirty()
+
+    // IMU: sequence number of the last bf_set_gyro_acc() call (fresh-sample detection)
+    uint32_t imuSeq;
+    // virtual gyro output data rate in Hz (bf_set_gyro_rate; 0 = 8 kHz default)
+    uint16_t gyroRateHz;
 } bfwasmPersist_t;
 
 extern bfwasmPersist_t bfwasmPersist;
@@ -84,6 +89,16 @@ void bfwasmRxDebug(void);
 // motor_sim.c
 int bfwasmMotorGet(uint16_t *out, int count);
 bool bfwasmMotorReversed(void);
+bool bfwasmBeaconActive(void);      // ESCs playing a DShot beacon tone
+
+// beeper_sim.c
+bool bfwasmBeeperOn(void);
+
+// cpu_load.c (scheduler patch): emulated execution time of one task run, us
+uint32_t bfwasmTaskCostUs(int taskId);
+
+// gyro_sync.c patch: virtual gyro output data rate
+uint16_t bfwasmGyroRateHz(void);
 
 // battery_sim.c
 void bfwasmBatteryApply(void);

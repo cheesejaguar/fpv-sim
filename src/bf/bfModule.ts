@@ -17,14 +17,14 @@ export interface BfAxisMap {
 export const DEFAULT_AXIS_MAP: BfAxisMap = { gyro: [1, -1, -1], acc: [1, -1, -1] };
 
 type EmModule = {
-  HEAPU8: Uint8Array; HEAPU16: Uint16Array; HEAP16: Int16Array; HEAPF32: Float32Array;
+  HEAPU8: Uint8Array; HEAPU16: Uint16Array; HEAP16: Int16Array; HEAP32: Int32Array; HEAPF32: Float32Array;
   _malloc(n: number): number; _free(p: number): void;
   [k: `_bf_${string}`]: ((...a: number[]) => number) | undefined;
 };
 
 export class Betaflight {
   private m: EmModule;
-  private pRc: number; private pMot: number; private pErpm: number; private pSer: number; private pAtt: number; private pDbg: number;
+  private pRc: number; private pMot: number; private pErpm: number; private pSer: number; private pAtt: number; private pDbg: number; private pGps: number;
   axis: BfAxisMap = DEFAULT_AXIS_MAP;
   readonly version: string;
 
@@ -37,6 +37,7 @@ export class Betaflight {
     this.pSer = m._malloc(4096);
     this.pAtt = m._malloc(12);
     this.pDbg = m._malloc(16);
+    this.pGps = m._malloc(64);
   }
 
   /** Instantiate from an already-imported Emscripten factory (Node tests). */
@@ -179,13 +180,54 @@ export class Betaflight {
     const h = this.m.HEAP16, b = this.pDbg >> 1;
     return Array.from(h.subarray(b, b + 8));
   }
+
+  // ---- realism extras (older firmware builds lack them: every wrapper degrades gracefully) ----
+  /**
+   * Output data rate of the simulated gyro chip (8000, 6400, 6664 or 3200 Hz). Takes effect at the
+   * next boot, so call it before init(). Below 8 kHz, call setImu() only on steps where the chip
+   * latched a fresh sample: Betaflight's gyro task then locks onto that timing (virtual EXTI).
+   */
+  setGyroRate(hz: number): void { if (this.has('bf_set_gyro_rate')) this.f('bf_set_gyro_rate')(Math.round(hz)); }
+  /** Start Betaflight's accelerometer level calibration (~0.4 s, quad level and still; saves itself). */
+  calibrateAcc(): boolean { if (!this.has('bf_calibrate_acc')) return false; this.f('bf_calibrate_acc')(); return true; }
+  /** The stored config holds an accelerometer calibration (true on builds without the check). */
+  accCalibrated(): boolean { return this.has('bf_acc_calibrated') ? this.f('bf_acc_calibrated')() !== 0 : true; }
+  /** A calibration started by calibrateAcc() is still averaging. */
+  accCalibrating(): boolean { return this.has('bf_acc_calibrating') ? this.f('bf_acc_calibrating')() !== 0 : false; }
+  /** The FC's buzzer output is on (Betaflight's own beeper sequences). */
+  beeper(): boolean { return this.has('bf_get_beeper') ? this.f('bf_get_beeper')() !== 0 : false; }
+  /** The ESCs are playing a DShot beacon tone (motors beeping). */
+  beacon(): boolean { return this.has('bf_get_beacon') ? this.f('bf_get_beacon')() !== 0 : false; }
+  /** Yaw spin recovery active (gyro yaw rate above yaw_spin_threshold). */
+  yawSpinDetected(): boolean { return this.has('bf_yaw_spin_detected') ? this.f('bf_yaw_spin_detected')() !== 0 : false; }
+  /** Betaflight's CPU load in % (emulated F7 task timings); 0 on older builds. */
+  cpuLoad(): number { return this.has('bf_cpu_load') ? this.f('bf_cpu_load')() : 0; }
+  /** GPS as the FC sees it, or null on builds without GPS. */
+  gpsInfo(): BfGpsInfo | null {
+    if (!this.has('bf_gps_info')) return null;
+    this.f('bf_gps_info')(this.pGps);
+    const h = this.m.HEAP32, b = this.pGps >> 2;
+    return {
+      state: h[b], fix: h[b + 1] !== 0, numSat: h[b + 2], lat: h[b + 3] / 1e7, lon: h[b + 4] / 1e7, altM: h[b + 5] / 100,
+      groundSpeed: h[b + 6] / 100, courseDeg: h[b + 7] / 10, homeFix: h[b + 8] !== 0, homeDistM: h[b + 9], homeDirDeg: h[b + 10],
+    };
+  }
 }
 
-/** Betaflight 4.5 armingDisableFlags_e names, bit order. */
+/** Betaflight's GPS solution (bf_gps_info). state 5 = GPS_STATE_RECEIVING_DATA. */
+export interface BfGpsInfo {
+  state: number; fix: boolean; numSat: number; lat: number; lon: number; altM: number;
+  groundSpeed: number; courseDeg: number; homeFix: boolean; homeDistM: number; homeDirDeg: number;
+}
+
+/** Host serial port index (UARTn = n - 1) of the simulator's default port assignment. */
+export const BF_PORT = { cli: 0, blackbox: 1, gps: 2 } as const;
+
+/** Betaflight 4.5 armingDisableFlags_e names, bit order (fc/runtime_config.h). */
 export const ARMING_FLAG_NAMES = [
-  'NO_GYRO', 'FAILSAFE', 'RX_FAILSAFE', 'BAD_RX_RECOVERY', 'BOXFAILSAFE', 'RUNAWAY_TAKEOFF', 'CRASH_DETECTED', 'THROTTLE',
+  'NO_GYRO', 'FAILSAFE', 'RX_FAILSAFE', 'NOT_DISARMED', 'BOXFAILSAFE', 'RUNAWAY_TAKEOFF', 'CRASH_DETECTED', 'THROTTLE',
   'ANGLE', 'BOOT_GRACE_TIME', 'NOPREARM', 'LOAD', 'CALIBRATING', 'CLI', 'CMS_MENU', 'BST', 'MSP', 'PARALYZE', 'GPS',
-  'RESC', 'RPMFILTER', 'REBOOT_REQUIRED', 'DSHOT_BITBANG', 'ACC_CALIBRATION', 'MOTOR_PROTOCOL', 'ARM_SWITCH',
+  'RESC', 'DSHOT_TELEM', 'REBOOT_REQUIRED', 'DSHOT_BITBANG', 'ACC_CALIBRATION', 'MOTOR_PROTOCOL', 'ARM_SWITCH',
 ];
 
 export function armingFlagNames(flags: number): string[] {

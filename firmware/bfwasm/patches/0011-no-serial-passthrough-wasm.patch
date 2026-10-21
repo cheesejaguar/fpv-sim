@@ -1,0 +1,14 @@
+diff --git a/src/main/io/serial.c b/src/main/io/serial.c
+--- a/src/main/io/serial.c
++++ b/src/main/io/serial.c
+@@ -614,7 +614,9 @@
+     };
+ }
+ 
+-#if defined(USE_GPS) || defined(USE_SERIAL_PASSTHROUGH)
++// fpv-sim: a passthrough would block the single-threaded WASM firmware forever
++// (gpspassthrough / serialpassthrough); wasm_stubs.c provides a no-op.
++#if (defined(USE_GPS) || defined(USE_SERIAL_PASSTHROUGH)) && !defined(WASM_BUILD)
+ // Default data consumer for serialPassThrough.
+ static void nopConsumer(uint8_t data)
+ {

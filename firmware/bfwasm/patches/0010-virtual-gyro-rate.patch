@@ -1,0 +1,50 @@
+diff --git a/src/main/drivers/accgyro/gyro_sync.c b/src/main/drivers/accgyro/gyro_sync.c
+--- a/src/main/drivers/accgyro/gyro_sync.c
++++ b/src/main/drivers/accgyro/gyro_sync.c
+@@ -47,10 +47,46 @@
+     return ret;
+ }
+ 
++#if defined(WASM_BUILD)
++uint16_t bfwasmGyroRateHz(void);    // firmware/bfwasm/src/wasm_api.c (bf_set_gyro_rate)
++#endif
++
+ uint16_t gyroSetSampleRate(gyroDev_t *gyro)
+ {
+     uint16_t gyroSampleRateHz;
+     uint16_t accSampleRateHz;
++
++#if defined(WASM_BUILD)
++    // fpv-sim: the virtual gyro runs at the output data rate of the simulated
++    // chip (e.g. 3.2 kHz for a BMI270), like the hardware driver would set
++    if (gyro->gyroHardware == GYRO_VIRTUAL) {
++        switch (bfwasmGyroRateHz()) {
++        case 3200:
++            gyro->gyroRateKHz = GYRO_RATE_3200_Hz;
++            gyroSampleRateHz = 3200;
++            accSampleRateHz = 800;
++            break;
++        case 6400:
++            gyro->gyroRateKHz = GYRO_RATE_6400_Hz;
++            gyroSampleRateHz = 6400;
++            accSampleRateHz = 800;
++            break;
++        case 6664:
++            gyro->gyroRateKHz = GYRO_RATE_6664_Hz;
++            gyroSampleRateHz = 6664;
++            accSampleRateHz = 833;
++            break;
++        default:
++            gyro->gyroRateKHz = GYRO_RATE_8_kHz;
++            gyroSampleRateHz = 8000;
++            accSampleRateHz = 1000;
++            break;
++        }
++        gyro->mpuDividerDrops = 0;
++        gyro->accSampleRateHz = accSampleRateHz;
++        return gyroSampleRateHz;
++    }
++#endif
+ 
+     switch (gyro->mpuDetectionResult.sensor) {
+         case BMI_160_SPI:
