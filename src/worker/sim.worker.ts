@@ -50,6 +50,10 @@ const rcBuf = new Float32Array(16).fill(1500);
 let armed = false;
 let crashMsg: string | null = null;
 let crashMsgUntil = 0;
+let impactMsg = '', damageMsg = '';
+// A crash worth flagging: ~4 m/s into something (a whoop rarely reaches the old 6 m/s threshold),
+// or anything that actually damaged the quad.
+const CRASH_MIN_MPS = 4;
 let impactPeak = 0, impactLastT = -1;
 let stepCostUs = 0;
 let simRate = 1;
@@ -276,9 +280,27 @@ function physicsStep(dt: number) {
     impactLastT = simT;
     if (v > impactPeak) {
       impactPeak = v;
-      if (v > 6) { crashMsg = `Impact ${v.toFixed(1)} m/s`; crashMsgUntil = simT + 2; }
+      if (v > CRASH_MIN_MPS) { impactMsg = `Impact ${v.toFixed(1)} m/s`; damageMsg = ''; crashMsgUntil = simT + 2; }
     }
   }
+  // damage from this crash (rolled by the quad once per impact event): name it on the banner
+  // (the worker consumes the log, so a rebuilt quad with a restarted clock can't confuse it)
+  if (quad.damageLog.length) {
+    const fresh = quad.damageLog.splice(0);
+    const n = (part: string) => fresh.filter((d) => d.part === part).length;
+    const bits = [
+      n('break') && `${n('break') > 1 ? n('break') + ' props' : 'prop'} broken`,
+      n('chip') && `${n('chip') > 1 ? n('chip') + ' props' : 'prop'} chipped`,
+      n('shaft') && `motor shaft bent`,
+      n('arm') && `arm bent`,
+    ].filter(Boolean);
+    if (bits.length) {
+      damageMsg = bits.join(' · ');
+      if (simT >= crashMsgUntil) impactMsg = 'Crash';
+      crashMsgUntil = simT + 3;
+    }
+  }
+  crashMsg = impactMsg ? (damageMsg ? `${impactMsg} · ${damageMsg}` : impactMsg) : null;
 }
 
 function sampleSpectrum(dt: number) {
