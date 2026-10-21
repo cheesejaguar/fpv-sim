@@ -1,7 +1,7 @@
 // Simulation + presentation settings.
 import { filesFromDrop, filesFromList, loadLocalMap } from '../maps/localMaps';
-import { MapFormatError } from '../maps/mapFormat';
-import { MAP_LIST, MapEntry } from '../maps/maps';
+import { MapFormatError } from '../maps/mapError';
+import { MAP_LIST, MapEntry, MAPS } from '../maps/maps';
 import type { TimeOfDay } from '../render/sky';
 import { SimSettings } from '../worker/shared';
 import { checkbox, el, onUnmount, section, select, slider } from './dom';
@@ -45,20 +45,45 @@ export function glassToGlass(targetMs: number, displayMs: number): { addedMs: nu
   return { addedMs, effectiveMs: addedMs + displayMs, displayBound: displayMs > targetMs };
 }
 
+/** A map's drill courses (MapDef.courses) for the Course select; built once per map, none when it isn't loaded.
+ *  isDefault: the course that is the map's own gates (flown with courseId ''). */
+const courseCache = new Map<string, { id: string; name: string; isDefault: boolean }[]>();
+function coursesOf(id: string): { id: string; name: string; isDefault: boolean }[] {
+  let c = courseCache.get(id);
+  if (!c) {
+    try { const m = MAPS[id]?.(); c = (m?.courses ?? []).map((x) => ({ id: x.id, name: x.name, isDefault: x.gates === m!.gates })); } catch { return []; } // not preloaded yet
+    courseCache.set(id, c);
+  }
+  return c;
+}
+
 export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void, latency?: LatencySource): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
   const lat = latencyReadout(v, latency);
   const pushS = () => onSim(structuredClone(s)), pushV = () => { onView(structuredClone(v)); lat.update(); };
   const credit = el('p', { class: 'note' }, MAP_LIST[s.mapId]?.credit ?? '');
   const mapLabel = (m: MapEntry) => (m.community ? `${m.name} — ${m.community.local ? 'from disk' : `${m.community.author}, ${m.community.license}`}` : m.name);
-  const mapSelect = () => select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: mapLabel(m) })), s.mapId, (x) => { s.mapId = x; credit.textContent = MAP_LIST[x]?.credit ?? ''; pushS(); });
+  // a map with drill courses (the practice field): which one is timed; the default course is its own gates
+  const courseSelect = () => {
+    const cs = coursesOf(s.mapId);
+    if (!cs.length) return el('div', { hidden: '' });
+    const def = cs.find((c) => c.isDefault);
+    return select('Course', [{ value: '', label: def?.name ?? 'Default course' }, ...cs.filter((c) => !c.isDefault).map((c) => ({ value: c.id, label: c.name }))], s.courseId ?? '', (x) => { s.courseId = x; pushS(); });
+  };
+  let courseRow = courseSelect();
+  const mapChanged = (id: string) => {
+    s.mapId = id; s.courseId = ''; credit.textContent = MAP_LIST[id]?.credit ?? '';
+    const c = courseSelect(); courseRow.replaceWith(c); courseRow = c;
+  };
+  const mapSelect = () => select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: mapLabel(m) })), s.mapId, (x) => { mapChanged(x); pushS(); });
   let mapRow = mapSelect();
-  const setMap = (id: string) => { s.mapId = id; credit.textContent = MAP_LIST[id]?.credit ?? ''; const r = mapSelect(); mapRow.replaceWith(r); mapRow = r; pushS(); };
+  const setMap = (id: string) => { mapChanged(id); const r = mapSelect(); mapRow.replaceWith(r); mapRow = r; pushS(); };
   return el('div', { class: 'panel settings' },
     el('div', { class: 'cols' },
       el('div', { class: 'col' },
         section('World',
           mapRow,
+          courseRow,
           credit,
           el('details', { class: 'note' }, el('summary', {}, 'Credits & licenses'),
             ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),

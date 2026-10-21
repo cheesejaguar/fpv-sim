@@ -18,8 +18,8 @@ import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
-import { hasMap, MAPS, preloadMap } from './maps/maps';
-import { PrimitiveWorld } from './maps/world';
+import { hasMap, MAP_LIST, MAPS, preloadMap } from './maps/maps';
+import { PrimitiveWorld, withCourse } from './maps/world';
 import { MultiplayerClient } from './net/multiplayer';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
@@ -38,6 +38,10 @@ import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
 import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { settingsPanel, ViewSettings } from './ui/settingsPanel';
 import { createShared, newestTime, R, REC, sampleRing, SimSettings } from './worker/shared';
+
+// debugging handle window.__fpv (installed at the end): in dev builds, with ?debug in the URL, or
+// after localStorage.setItem('fpv-debug', '1'). Read now: joining an invite link rewrites the URL.
+const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
 
 // ---------------------------------------------------------------------------------------------
 // saved settings are versioned and validated (src/app/persist.ts)
@@ -80,7 +84,7 @@ renderer.domElement.addEventListener('webglcontextlost', () => {
 
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 await preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; });
-const map0 = MAPS[sim0.mapId]();
+const map0 = withCourse(MAPS[sim0.mapId](), sim0.courseId);
 const build0 = buildDrone(spec0);
 const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })), b.info.cgMm);
 
@@ -153,13 +157,13 @@ function rebuildScene() {
 }
 /** Rebuild the rendered world for a map that is loaded (preloaded or built in). */
 function showMap(id: string) {
-  ctx.map = MAPS[id](); ctx.world = new PrimitiveWorld(ctx.map);
+  ctx.map = withCourse(MAPS[id](), ctx.sim.courseId); ctx.world = new PrimitiveWorld(ctx.map);
   rebuildScene();
   resetLaps(ctx);
 }
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
-  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId;
+  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '');
   ctx.sim = s; store(KEYS.sim, s);
   // loading is async (Quake maps fetch their sources): remember now whether the room asked for it
   const fromRoom = applyingRoomMap;
@@ -248,9 +252,9 @@ document.addEventListener('visibilitychange', () => {
 ctx.mp.onMap = (m) => {
   if (!hasMap(m) || m === ctx.sim.mapId) return;
   applyingRoomMap = true;
-  applySim({ ...ctx.sim, mapId: m });
+  applySim({ ...ctx.sim, mapId: m, courseId: '' }); // the room shares the map; everyone flies its default course
   applyingRoomMap = false;
-  ctx.log(`Room switched the map to ${MAPS[m]().name}`);
+  ctx.log(`Room switched the map to ${MAP_LIST[m]?.name ?? m}`);
 };
 /** room: name / visibility, used if we are the first pilot in (the host) */
 function joinRoom(code: string, room?: { name: string; public: boolean }) {
@@ -340,9 +344,7 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 gameMenu.open('title');
 bootDone();
 
-// debugging handle (inspect from devtools): in dev builds, or with ?debug in the URL, or after
-// localStorage.setItem('fpv-debug', '1') in the console
-const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
+// debugging handle (inspect from devtools), see `debug` above
 if (debug) (window as any).__fpv = {
   ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime,
   teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); },

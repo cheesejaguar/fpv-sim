@@ -242,6 +242,8 @@ export function newestTime(sh: Shared): number {
 // ---------- worker messages ----------
 export interface SimSettings {
   mapId: string;
+  /** a drill course of the map (MapDef.courses) timed instead of its default gates; '' = default */
+  courseId?: string;
   physicsHz: number;
   timeScale: number;
   damage: boolean;
@@ -256,7 +258,7 @@ export interface SimSettings {
 }
 
 export const DEFAULT_SETTINGS: SimSettings = {
-  mapId: 'field', physicsHz: 8000, timeScale: 1, damage: true,
+  mapId: 'gym', courseId: '', physicsHz: 8000, timeScale: 1, damage: true, // new pilots: the whoop in a windless hall
   wind: { speed: 2.5, direction: 240, turbulence: 1, gusts: 2 },
   propwash: 1, rcLinkHz: 250, rcTxPowerMw: 250, ambientC: 20, paused: false, autoRate: true,
 };

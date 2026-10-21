@@ -12,7 +12,10 @@ import { doomMapDef } from './doomMap';
 import { buildGatePrims, type MapEntry } from './maps';
 import { quakeMapDef } from './quakeMap';
 import { BoxPrim, BrushPrim, fbm, GateDef, MapDef, Material, MAX_MAP_LIGHTS, MeshInstance, Prim } from './world';
+import { MapFormatError } from './mapError';
 import { inflate } from './zip';
+
+export { MapFormatError };
 
 export const FORMAT = 'fpvsim-map';
 export const FORMAT_VERSION = 1;
@@ -104,11 +107,6 @@ export interface MapDocV1 {
   geometry?: GeometryDoc[];
 }
 
-export class MapFormatError extends Error {
-  constructor(readonly errors: string[], readonly warnings: string[] = []) {
-    super(`invalid map package:\n  - ${errors.join('\n  - ')}`);
-  }
-}
 
 // ---------------------------------------------------------------------------------------------
 // Structural validation
