@@ -32,6 +32,17 @@ PIDs, filters, RPM filter, dynamic notch, TPA, anti-gravity, and so on.
 ## Controller
 
 The simulator uses the browser Gamepad API, so any USB or Bluetooth controller with sticks works.
+
+**Supported out of the box:**
+- **Xbox** (Series / One / 360) and **PlayStation 5 DualSense**: recognised automatically. Buttons
+  are labelled per controller (A/B/X/Y or ✕○□△), and crashes rumble the pad in Chrome and Edge.
+- **DJI FPV Remote Controller 3**: connect its USB-C port and it appears as "DJI Virtual Joystick"
+  (USB 2ca3:1021). Run the **stick & switch setup** once. DJI doesn't document the axis order, so
+  the wizard detects each stick, its direction, and the arm / flight-mode switches. Many radios
+  report switches as axes, which is supported, including 3-position mode switches.
+- **Other RC radios** (EdgeTX / OpenTX in USB-joystick mode) and **HID joysticks**: same wizard.
+- **2026 Steam Controller**: driven directly over WebHID (see below).
+
 The Controller tab offers:
 - Presets.
 - Per-channel "move the stick to detect".

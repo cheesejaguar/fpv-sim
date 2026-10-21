@@ -1,6 +1,8 @@
 // Device-agnostic controller input -> 16 RC channels (µs, AETR + AUX), like a radio's mixer.
 // Works with any HID gamepad/joystick the browser exposes via the Gamepad API (USB or Bluetooth):
-// Steam Controller (through Steam Input as XInput), Xbox, DualSense, generic HID joysticks.
+// Xbox and PlayStation 5 DualSense pads (W3C "standard" mapping), the 2026 Steam Controller
+// (direct WebHID driver), RC radios in USB-joystick mode such as the DJI FPV Remote Controller 3
+// ("DJI Virtual Joystick", USB 2ca3:1021), and generic HID joysticks.
 
 import { SteamHidController } from './steamHid';
 
@@ -15,7 +17,16 @@ export interface AxisBind {
   expo: number;      // 0..1 radio-side expo (normally 0; Betaflight rates do the shaping)
 }
 
-export interface ButtonBind { index: number; mode: 'toggle' | 'hold' | 'cycle3' }
+/**
+ * A control bound to an action. Gamepads use buttons; RC radios often report their switches as
+ * axes, so a binding can also read an axis (active when value > 0.5, or < -0.5 when inverted).
+ *  toggle  : momentary button flips the state      hold    : active while pressed / switch on
+ *  cycle3  : each press steps acro -> horizon -> angle
+ *  switch3 : a 3-position switch on an axis selects acro / horizon / angle directly
+ */
+export interface ButtonBind { index: number; mode: 'toggle' | 'hold' | 'cycle3' | 'switch3'; src?: 'button' | 'axis'; invert?: boolean }
+
+export type ControllerKind = 'xbox' | 'playstation' | 'steam' | 'dji' | 'generic';
 
 export interface InputProfile {
   id: string;            // gamepad.id this profile was made for ('' = default)
@@ -25,6 +36,8 @@ export interface InputProfile {
   arm: ButtonBind | null; mode: ButtonBind | null; turtle: ButtonBind | null; beeper: ButtonBind | null;
   reset: number | null;  // respawn button
   menu: number | null;
+  kind?: ControllerKind;
+  needsSetup?: boolean;  // stick order unknown: prompt the radio setup wizard
 }
 
 const ax = (index: number, invert = false): AxisBind => ({ src: 'axis', index, invert, min: -1, center: 0, max: 1, deadzone: 0.02, expo: 0 });
@@ -52,6 +65,31 @@ export function steamControllerProfile(id = ''): InputProfile {
   return p;
 }
 
+export function xboxProfile(id = ''): InputProfile {
+  return { ...standardProfile(id, 'Xbox controller (Mode 2)'), kind: 'xbox' };
+}
+
+export function ps5Profile(id = ''): InputProfile {
+  // DualSense in Chrome/Edge uses the standard mapping: ✕ 0, ○ 1, □ 2, △ 3, L1 4, R1 5, L2 6, R2 7
+  return { ...standardProfile(id, 'PlayStation 5 DualSense (Mode 2)'), kind: 'playstation' };
+}
+
+/**
+ * DJI FPV Remote Controller 3 in USB-joystick mode ("DJI Virtual Joystick"). Its axis order is not
+ * documented, so start from the usual radio AETR order and flag the setup wizard, which detects
+ * each stick, its direction and the arm / mode switches. Gimbals have no centre slop: no deadzone.
+ */
+export function djiRc3Profile(id = ''): InputProfile {
+  const a = (i: number, inv = false): AxisBind => ({ ...ax(i, inv), deadzone: 0 });
+  return {
+    id, name: 'DJI FPV Remote Controller 3', kind: 'dji', needsSetup: true,
+    roll: a(0), pitch: a(1, true), throttle: a(2, true), yaw: a(3),
+    throttleMode: 'full',
+    arm: { index: 0, mode: 'toggle' }, mode: { index: 1, mode: 'cycle3' }, turtle: null, beeper: null,
+    reset: null, menu: null,
+  };
+}
+
 export function triggerThrottleProfile(id = ''): InputProfile {
   const p = standardProfile(id, 'Gamepad, right-trigger throttle');
   p.throttleMode = 'trigger';
@@ -64,14 +102,46 @@ export function genericJoystickProfile(id = ''): InputProfile {
   return { ...standardProfile(id, 'Generic HID joystick (AETR axes)'), roll: ax(0), pitch: ax(1, true), throttle: ax(2, true), yaw: ax(3), throttleMode: 'full' };
 }
 
-export const PRESET_PROFILES = { standard: standardProfile, steam: steamControllerProfile, trigger: triggerThrottleProfile, joystick: genericJoystickProfile };
+export const PRESET_PROFILES = { xbox: xboxProfile, ps5: ps5Profile, dji: djiRc3Profile, standard: standardProfile, steam: steamControllerProfile, trigger: triggerThrottleProfile, joystick: genericJoystickProfile };
+
+/** Identify the controller family from the browser's gamepad id string (name + USB vendor/product). */
+export function controllerKind(pad: { id: string }): ControllerKind {
+  const id = pad.id.toLowerCase();
+  if (id.includes('2ca3') || id.includes('dji')) return 'dji';
+  if (id.includes('webhid') || id.includes('steam') || id.includes('valve') || id.includes('28de')) return 'steam';
+  if (id.includes('054c') || id.includes('dualsense') || id.includes('dualshock') || id.includes('playstation') || id.startsWith('wireless controller')) return 'playstation';
+  if (id.includes('045e') || id.includes('xbox') || id.includes('xinput')) return 'xbox';
+  return 'generic';
+}
 
 export function guessProfile(pad: Gamepad): InputProfile {
-  const id = pad.id.toLowerCase();
-  if (id.includes('webhid')) return standardProfile(pad.id, 'Steam Controller 2026 via WebHID (Mode 2)'); // real sticks
-  if (id.includes('steam') || id.includes('valve') || id.includes('28de')) return steamControllerProfile(pad.id);
+  switch (controllerKind(pad)) {
+    case 'dji': return djiRc3Profile(pad.id);
+    case 'xbox': return xboxProfile(pad.id);
+    case 'playstation': return ps5Profile(pad.id);
+    case 'steam':
+      if (pad.id.toLowerCase().includes('webhid')) return { ...standardProfile(pad.id, 'Steam Controller 2026 via WebHID (Mode 2)'), kind: 'steam' }; // real sticks
+      return { ...steamControllerProfile(pad.id), kind: 'steam' };
+  }
   if (pad.mapping === 'standard') return standardProfile(pad.id);
-  return genericJoystickProfile(pad.id);
+  return { ...genericJoystickProfile(pad.id), needsSetup: true };
+}
+
+const STD_NAMES = ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'View', 'Menu', 'LS', 'RS', 'D-up', 'D-down', 'D-left', 'D-right', 'Guide'];
+const PS_NAMES = ['✕', '○', '□', '△', 'L1', 'R1', 'L2', 'R2', 'Create', 'Options', 'L3', 'R3', 'D-up', 'D-down', 'D-left', 'D-right', 'PS', 'Touchpad'];
+const STEAM_NAMES = [...STD_NAMES.slice(0, 16), 'Steam', 'QAM', 'L4', 'R4', 'L5', 'R5', 'L-pad click', 'R-pad click'];
+
+/** Human name for a button index on this controller family. */
+export function buttonName(kind: ControllerKind | undefined, i: number): string {
+  const n = kind === 'playstation' ? PS_NAMES[i] : kind === 'steam' ? STEAM_NAMES[i] : kind === 'xbox' ? STD_NAMES[i] : undefined;
+  return n ? `${n} (${i})` : `button ${i}`;
+}
+
+/** Is a bound control currently active (button pressed, or switch axis past half travel)? */
+export function bindActive(pad: Gamepad, b: ButtonBind): boolean {
+  if (b.src === 'axis') { const v = (pad.axes[b.index] ?? 0) * (b.invert ? -1 : 1); return v > 0.5; }
+  const btn = pad.buttons[b.index];
+  return !!btn && (btn.pressed || btn.value > 0.5);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -157,16 +227,39 @@ export class InputManager {
     return ch;
   }
 
+  private prevBind: Record<string, boolean> = {};
   private buttons(pad: Gamepad, p: InputProfile) {
     const pressed = pad.buttons.map((b) => b.pressed || b.value > 0.5);
     const edge = (i: number | null | undefined) => i != null && pressed[i] && !this.prevButtons[i];
-    if (p.arm) { if (p.arm.mode === 'toggle') { if (edge(p.arm.index)) this.armed = !this.armed; } else this.armed = !!pressed[p.arm.index]; }
-    if (p.mode && edge(p.mode.index)) this.modeIdx = (this.modeIdx + 1) % 3;
-    if (p.turtle) { if (p.turtle.mode === 'toggle') { if (edge(p.turtle.index)) this.turtle = !this.turtle; } else this.turtle = !!pressed[p.turtle.index]; }
-    if (p.beeper) this.beeper = !!pressed[p.beeper.index];
+    const act = (key: string, b: ButtonBind | null) => {
+      if (!b) return { on: false, rise: false };
+      const on = bindActive(pad, b), rise = on && !this.prevBind[key];
+      this.prevBind[key] = on;
+      return { on, rise };
+    };
+    const arm = act('arm', p.arm), mode = act('mode', p.mode), turtle = act('turtle', p.turtle), beep = act('beeper', p.beeper);
+    if (p.arm) { if (p.arm.mode === 'toggle') { if (arm.rise) this.armed = !this.armed; } else this.armed = arm.on; }
+    if (p.mode) {
+      if (p.mode.mode === 'switch3' && p.mode.src === 'axis') {
+        const v = (pad.axes[p.mode.index] ?? 0) * (p.mode.invert ? -1 : 1);
+        this.modeIdx = v < -0.33 ? 0 : v > 0.33 ? 2 : 1;
+      } else if (p.mode.mode === 'hold') this.modeIdx = mode.on ? 2 : 0;
+      else if (mode.rise) this.modeIdx = (this.modeIdx + 1) % 3;
+    }
+    if (p.turtle) { if (p.turtle.mode === 'toggle') { if (turtle.rise) this.turtle = !this.turtle; } else this.turtle = turtle.on; }
+    if (p.beeper) this.beeper = beep.on;
     if (edge(p.reset)) { this.armed = false; this.turtle = false; this.onReset?.(); }
     if (edge(p.menu)) this.onMenu?.();
     this.prevButtons = pressed;
+  }
+
+  /** Haptic feedback on pads that support it (Xbox, DualSense in Chrome/Edge). */
+  rumbleEnabled = (() => { try { return localStorage.getItem('fpv-rumble') !== '0'; } catch { return true; } })();
+  setRumble(on: boolean) { this.rumbleEnabled = on; try { localStorage.setItem('fpv-rumble', on ? '1' : '0'); } catch { /* ignore */ } }
+  rumble(strong: number, weak: number, ms: number) {
+    if (!this.rumbleEnabled) return;
+    const act = (this.active as any)?.vibrationActuator;
+    act?.playEffect?.('dual-rumble', { duration: ms, strongMagnitude: Math.min(1, strong), weakMagnitude: Math.min(1, weak) })?.catch?.(() => {});
   }
 
   disarm() { this.armed = false; this.keyboard.armed = false; }

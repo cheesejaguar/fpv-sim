@@ -178,12 +178,17 @@ specCanvas.style.display = 'none';
 const hidStatus = el('div', { class: 'hid-status' });
 const padBox = el('div', { class: 'pad-warn' },
   el('b', {}, 'No game controller detected — keyboard fallback is active.'),
-  el('div', {}, 'Steam Controller (2026): it is not a standard gamepad, so browsers cannot see it. Quit Steam completely (tray icon → Exit), connect the controller by USB cable or its wireless puck, then click:'),
+  el('div', {}, 'Xbox, PS5 DualSense, DJI FPV Remote Controller 3 (USB-C) or other USB joystick: connect it, click this page, then press a button or move a stick — browsers only reveal a controller after its first input.'),
+  el('div', {}, 'Steam Controller (2026): browsers can’t see it as a gamepad. Quit Steam completely (tray icon → Exit), connect it by cable or its wireless puck, then click:'),
   el('button', { class: 'primary', onclick: () => void input.steamHid.request() }, 'Connect Steam Controller'),
-  el('div', { class: 'note' }, 'Pick "Steam Controller" in the browser\'s device list (for the puck, choose every entry it shows). Other controllers (Xbox, DualSense, HID joysticks): press a button with this page focused.'),
   hidStatus,
 );
-hud.append(status, padBox, telBox, sticks, lapBox, crashBox, specCanvas, helpBox);
+// Radios / HID joysticks with an unknown stick layout: point at the setup wizard.
+const setupBox = el('div', { class: 'pad-warn' },
+  el('b', {}, 'New controller: run the stick & switch setup once.'),
+  el('div', {}, 'Press Esc → Controller → “Start stick & switch setup”. It detects your sticks, their directions and your arm / flight-mode switches.'),
+);
+hud.append(status, padBox, setupBox, telBox, sticks, lapBox, crashBox, specCanvas, helpBox);
 app.append(hud);
 
 function drawSticks() {
@@ -258,10 +263,12 @@ function drawSpectrum() {
 }
 
 const rec = new Float64Array(REC);
+let lastCrash: string | null = null;
 function updateHud() {
   status.textContent = fwStatus;
   status.style.display = fwStatus ? 'block' : 'none';
   padBox.style.display = input.active ? 'none' : 'block';
+  setupBox.style.display = input.active && input.profileFor(input.active).needsSetup && !menuOpen ? 'block' : 'none';
   hidStatus.textContent = input.steamHid.status;
   if (view.telemetry && tel) {
     const b = tel.battery;
@@ -289,6 +296,13 @@ function updateHud() {
   } else { telBox.style.display = 'none'; sticks.style.display = 'none'; }
   lapBox.textContent = map.gates.length ? `Lap ${lapCount}  last ${lastLap ? lastLap.toFixed(2) : '--'} s  best ${bestLap < Infinity ? bestLap.toFixed(2) : '--'} s  next gate ${(gateTimes.length % map.gates.length) + 1}/${map.gates.length}` : '';
   crashBox.textContent = tel?.crash ?? '';
+  // haptic thump on a new crash, scaled by impact speed ("Impact 12.3 m/s")
+  const crash = tel?.crash ?? null;
+  if (crash && crash !== lastCrash) {
+    const v = parseFloat(crash.replace(/[^\d.]/g, '')) || 8;
+    input.rumble(Math.min(1, v / 15), Math.min(1, v / 25), 180 + Math.min(320, v * 15));
+  }
+  lastCrash = crash;
   if (drill.on) {
     const head = newestTime(sh);
     sampleRing(sh, head, rec);
