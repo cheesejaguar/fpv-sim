@@ -43,10 +43,10 @@
         <h2>In your browser</h2>
         <p>FPV Sim saves your preferences on your own device so they are there next time. Nothing here is sent anywhere.</p>
         <ul>
-          <li><b>Local storage</b> (keys starting with <code>fpv-</code>): drone build, simulation and video settings, new-game choices, controller profiles and rumble, pilot callsign and colour, a custom multiplayer server address, and which guide chapters you finished. Also your personal best laps, the initials you last entered, the ids of the leaderboard entries you posted, and a random leaderboard token (see below).</li>
+          <li><b>Local storage</b> (keys starting with <code>fpv-</code>): drone build, simulation and video settings, new-game choices, controller profiles and rumble, pilot callsign and colour, a custom multiplayer server address, and which guide chapters you finished. Also your personal best laps, the initials you last entered, the ids of the leaderboard entries you posted, a random leaderboard token (see below), and the colours you last picked for share cards.</li>
           <li><b>IndexedDB</b> (database <code>fpv-sim</code>): the Betaflight flight controller's EEPROM, so your CLI changes and tune survive a reload.</li>
           <li><b>IndexedDB</b> (database <code>fpv-sim-replays</code>): the replay of your personal best on each leaderboard track and drone class (see below), so you can watch it later and post it.</li>
-          <li>Maps you load from disk, blackbox recordings and the replay of your last lap stay in memory. They are gone when you close the tab, unless you download them yourself.</li>
+          <li>Maps you load from disk, blackbox recordings, the replay of your last lap and the picture of your view taken when you set a personal best (for share cards) stay in memory. They are gone when you close the tab, unless you download them yourself.</li>
         </ul>
       </section>
 
@@ -76,6 +76,11 @@
         <p>An entry and its replay stay until a faster lap of yours replaces them, the entry drops out of the board's top 100, or it is removed on request. To have an entry removed, <a href="https://github.com/cheesejaguar/fpv-sim/issues" rel="noopener">open an issue</a> with the map, drone class, initials, lap time and date. You don't need to say anything else about yourself. A removed replay can still be served from caches (the edge and browsers) for up to a day, and anyone who already downloaded it keeps their copy.</p>
       </section>
 
+      <section>
+        <h2>Sharing a lap</h2>
+        <p>Share cards (the 9:16 images for Instagram Stories) are drawn in your browser, on your device. Nothing is uploaded when you make one. The image leaves your device only when you share it through your device's share sheet, download it or copy it, and then it goes only where you send it.</p>
+        <p><b>Send to my phone</b> shows a QR code, made on your device (no QR service is asked). It is a link to this site with the id of your lap's leaderboard entry. A phone that opens it asks the relay for that entry, which is already public: initials, lap time, drone summary, date, its rank and the board's top 5. The phone draws the cards itself. The link also carries your gate times after the "#": browsers never send that part to a server, but anyone you give the link to can read them.</p>
+      </section>
       <section>
         <h2>Web hosting</h2>
         <p>The site is hosted on Vercel. Like any web host, Vercel logs requests (IP address, user agent, the page requested) to run and protect the service. See <a href="https://vercel.com/legal/privacy-policy" rel="noopener">Vercel's privacy policy</a>. FPV Sim adds no tracking of its own: no cookies, no analytics, no fingerprinting, no third-party scripts or fonts.</p>

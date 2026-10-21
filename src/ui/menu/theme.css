@@ -248,6 +248,8 @@ a.gm-btn { text-decoration: none; }
 .lb-rank.r2 { background: linear-gradient(135deg, #e2e8f0, #94a3b8); color: #0f172a; }
 .lb-rank.r3 { background: linear-gradient(135deg, #fdba74, #c2410c); color: #1c0a00; }
 .lb-ini-cell { font-family: var(--gm-font-display); font-size: 20px; letter-spacing: 0.18em; margin-right: 10px; }
+.gm-btn.lb-share { min-height: 32px; padding: 0 10px; margin-left: 8px; gap: 6px; font-size: 13px; vertical-align: middle; }
+.gm-btn.lb-share svg { width: 16px; height: 16px; }
 .lb-time { font-family: var(--gm-font-display); font-size: 18px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 .lb-drone { color: #cbd5e1; }
 .gm-table.lb .lb-date { color: var(--gm-fg-muted); font-size: 14px; }

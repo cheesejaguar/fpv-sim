@@ -51,6 +51,8 @@ export class HudController {
   private postNotice: HTMLElement;
   /** Open the initials entry for the pending personal best (wired by the app). */
   onPostLap: (() => void) | null = null;
+  /** Open the share sheet for the pending personal best (wired by the app). */
+  onShareLap: (() => void) | null = null;
   private lostSince = -1;
   private armedSince = -1;
   private layoutAt = 0;
@@ -61,6 +63,7 @@ export class HudController {
     this.hud = new Hud(sticks.canvas, spectrum.canvas);
     this.postNotice = el('div', { class: 'card notice pb' }, this.postTitle, this.postText, this.postHow,
       el('button', { onmousedown: (e: MouseEvent) => e.preventDefault(), onclick: () => this.onPostLap?.() }, 'Post to leaderboard'),
+      el('button', { class: 'ghost', onmousedown: (e: MouseEvent) => e.preventDefault(), onclick: () => this.onShareLap?.() }, 'Share'),
       el('button', { class: 'ghost', onmousedown: (e: MouseEvent) => e.preventDefault(), onclick: () => ctx.lb.skip() }, 'Not now'));
     const k = (t: string) => el('kbd', {}, t);
     this.padNotice = el('div', { class: 'card notice warn' },

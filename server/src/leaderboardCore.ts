@@ -225,3 +225,24 @@ export function parseQuery(p: URLSearchParams): { map: string; course: string; c
   if (!hasTrack(map, course) || (cls !== 'all' && !hasClass(cls))) return null;
   return { map, course, cls };
 }
+
+// ---------------------------------------------------------------------------------------------
+// One entry (share links)
+
+export const ENTRY_TOP = 5; // board rows sent with an entry (a share card's top 5)
+
+/** What GET /leaderboard/entry/:id shows: the public entry with its track, its rank on its class board, and that board's top. */
+export interface EntryView {
+  entry: PublicEntry & { map: string; course: string };
+  rank: number | null;
+  total: number;
+  top: PublicEntry[];
+}
+
+/** Entry `id` among `rows` (its track's entries, any classes), ranked on its own class board; null if it isn't there. */
+export function entryView(rows: Entry[], id: number): EntryView | null {
+  const e = rows.find((r) => r.id === id);
+  if (!e) return null;
+  const list = ranked(rows, e.cls);
+  return { entry: { ...toPublic(e), map: e.map, course: e.course }, rank: rankOf(list, id), total: list.length, top: list.slice(0, ENTRY_TOP).map(toPublic) };
+}

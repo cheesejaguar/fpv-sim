@@ -130,6 +130,14 @@ const COMPONENTS = [
     source: 'https://uupm.cc, https://github.com/nextlevelbuilder/ui-ux-pro-max-skill',
     text: 'UI UX Pro Max',
   },
+  {
+    name: 'QR Code generator library (the "send to my phone" QR encoder follows its algorithm and tables)',
+    files: 'the share sheet (src/share/qr.ts)',
+    copyright: 'Copyright (c) Project Nayuki',
+    license: 'MIT',
+    source: 'https://www.nayuki.io/page/qr-code-generator-library, https://github.com/nayuki/QR-Code-generator',
+    text: 'QR Code generator',
+  },
 ];
 
 const TEXTS = {
@@ -147,6 +155,7 @@ const TEXTS = {
   'Freedoom (in LibreQuake)': ['Freedoom license as shipped with LibreQuake (BSD-3-Clause), for LibreQuake textures derived from Freedoom', () => read('public/maps/quake/textures/LICENSE-Freedoom.adoc')],
   Freedoom: ['Freedoom license (BSD-3-Clause)', () => read('public/maps/freedoom/COPYING.txt')],
   'UI UX Pro Max': ['UI UX Pro Max license (MIT)', () => read('scripts/licenses/ui-ux-pro-max-MIT.txt')],
+  'QR Code generator': ['QR Code generator library license (MIT)', () => read('scripts/licenses/nayuki-qr-MIT.txt')],
 };
 
 const NOTICE = `FPV Sim: third-party notices

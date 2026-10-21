@@ -497,6 +497,8 @@ export class FpvCamera {
   /** Where the last presented video frame, its OSD grid and the goggle overlay's text blocks (none
    *  when it is off) sit on screen (CSS px, top-left origin). */
   layout: { frame: Rect; osd: Rect; goggle: Rect[] } = { frame: { x: 0, y: 0, w: 0, h: 0 }, osd: { x: 0, y: 0, w: 0, h: 0 }, goggle: [] };
+  /** Called right after a frame is presented, while the canvas still holds it (share cards grab a personal best's frame). */
+  onPresent: (() => void) | null = null;
 
   constructor(private renderer: THREE.WebGLRenderer, cubeSize = 768) {
     this.cubeRT = this.makeCubeRT(cubeSize);
@@ -834,6 +836,7 @@ export class FpvCamera {
     this.quad.material = this.postMat;
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
+    this.onPresent?.();
   }
 
   dispose() {

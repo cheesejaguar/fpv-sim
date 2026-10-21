@@ -2,6 +2,7 @@
 //   GET /room/:CODE  (WebSocket upgrade)  -> Durable Object "Room" named by the code
 //   GET /rooms                             -> public room directory (server browser), JSON, CORS
 //   GET /leaderboard?map=&course=&class=   -> a global lap leaderboard, JSON, CORS
+//   GET /leaderboard/entry/:id             -> one entry, its track, rank and board top 5 (share links), JSON, CORS
 //   POST /leaderboard                      -> submit a lap with its replay (allowed origins only)
 //   GET /leaderboard/:id/replay            -> an entry's replay (.fpvreplay), CORS, cached
 //   DELETE /leaderboard/:id                -> remove an entry (Authorization: Bearer ADMIN_TOKEN)
@@ -13,7 +14,7 @@
 // the heartbeat. Lap leaderboards live in one "Leaderboard" Durable Object (SQLite). The relay,
 // directory and leaderboard logic live in roomCore.ts, lobbyCore.ts and leaderboardCore.ts
 // (platform-independent, unit-tested).
-import { decide, Entry, MAX_BODY_BYTES, MAX_POST_BYTES, packLap, parseQuery, parseSubmission, rankOf, ranked, SubmitLimiter, toPublic, trackKey, unpackLap } from './leaderboardCore';
+import { decide, Entry, entryView, MAX_BODY_BYTES, MAX_POST_BYTES, packLap, parseQuery, parseSubmission, rankOf, ranked, SubmitLimiter, toPublic, trackKey, unpackLap } from './leaderboardCore';
 import { HEARTBEAT_MS, LobbyCore, RoomListing } from './lobbyCore';
 import { checkReplay } from './replayCheck';
 import { MAX_REPLAY_BYTES, REPLAY_MIME } from './replayFormat';
@@ -99,6 +100,25 @@ function boardJson(env: Env, q: { map: string; course: string; cls: string }): P
   return hit.body;
 }
 
+// GET /leaderboard/entry/:id (share links): the same 10 s isolate cache, dropped whenever a lap is posted
+const ENTRY_CACHE_MAX = 500;
+const entryCache = new Map<number, { at: number; body: Promise<{ status: number; text: string }> }>();
+function entryJson(env: Env, id: number): Promise<{ status: number; text: string }> {
+  const now = Date.now();
+  let hit = entryCache.get(id);
+  if (!hit || now - hit.at > BOARD_CACHE_MS) {
+    if (entryCache.size >= ENTRY_CACHE_MAX) entryCache.clear();
+    const body = boardStub(env).fetch(`https://board/entry?id=${id}`).then(async (r) => {
+      if (!r.ok && r.status !== 404) throw new Error(`board ${r.status}`);
+      return { status: r.status, text: await r.text() };
+    });
+    const entry = { at: now, body };
+    entryCache.set(id, (hit = entry));
+    body.catch(() => { if (entryCache.get(id) === entry) entryCache.delete(id); });
+  }
+  return hit.body;
+}
+
 /** Bearer token check that doesn't leak the token's length or prefix through timing. */
 async function adminOk(req: Request, env: Env): Promise<boolean> {
   const token = env.ADMIN_TOKEN, got = /^Bearer (.+)$/.exec(req.headers.get('Authorization') ?? '')?.[1];
@@ -160,12 +180,22 @@ async function leaderboard(req: Request, env: Env, url: URL, ctx?: ExecutionCont
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...c, 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' } });
   const rp = /^\/leaderboard\/(\d{1,12})\/replay$/.exec(url.pathname);
   if (rp) return replay(req, env, Number(rp[1]), ctx);
+  const one = /^\/leaderboard\/entry\/(\d{1,12})$/.exec(url.pathname);
+  if (one) {
+    if (req.method !== 'GET') return new Response('method not allowed', { status: 405, headers: c });
+    try {
+      const r = await entryJson(env, Number(one[1]));
+      return json(r.text, r.status, { 'Cache-Control': r.status === 200 ? `public, max-age=${BOARD_CACHE_MS / 1000}` : 'no-store', ...c });
+    } catch {
+      return json({ error: 'leaderboard unavailable' }, 503, { 'Cache-Control': 'no-store', ...c });
+    }
+  }
   const del = /^\/leaderboard\/(\d{1,12})$/.exec(url.pathname);
   if (del) {
     if (req.method !== 'DELETE' || !(await adminOk(req, env))) return new Response('not found', { status: 404 });
     const id = Number(del[1]);
     const r = await boardStub(env).fetch('https://board/delete', { method: 'POST', body: JSON.stringify({ id }) });
-    boardCache.clear();
+    boardCache.clear(); entryCache.clear();
     await edgeCache()?.delete(replayKey(id)).catch(() => false);
     return json(await r.text(), r.status, { 'Cache-Control': 'no-store' });
   }
@@ -207,6 +237,7 @@ async function leaderboard(req: Request, env: Env, url: URL, ctx?: ExecutionCont
   const r = await boardStub(env).fetch('https://board/submit', { method: 'POST', body: packBoard({ raw, owner, net }, lap.replay) });
   const track = trackKey(p.sub.map, p.sub.course);
   for (const k of boardCache.keys()) if (k.startsWith(`${track}|`)) boardCache.delete(k);
+  entryCache.clear(); // ranks on that board may have moved
   // entries this lap replaced or pushed off the board: their replays leave this data centre's cache now
   let text = await r.text();
   try {
@@ -498,6 +529,12 @@ export class Leaderboard implements DurableObject {
       const row = Number.isInteger(id) ? this.sql.exec('SELECT data FROM replays WHERE lap_id = ?', id).toArray()[0] : undefined;
       if (!row) return new Response('no replay', { status: 404 });
       return new Response(row.data as ArrayBuffer, { headers: { 'Content-Type': REPLAY_MIME } });
+    }
+    if (url.pathname === '/entry') {
+      const id = Number(url.searchParams.get('id'));
+      const at = Number.isInteger(id) && id > 0 ? this.sql.exec('SELECT map, course FROM laps WHERE id = ?', id).toArray()[0] : undefined;
+      const view = at ? entryView(this.track(String(at.map), String(at.course)), id) : null;
+      return view ? out(view) : out({ error: 'not found' }, 404);
     }
     if (req.method !== 'POST') return out({ ok: false, error: 'bad request' }, 400);
     // JSON, or the lap envelope (packBoard): JSON plus the replay

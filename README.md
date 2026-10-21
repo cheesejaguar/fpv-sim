@@ -496,6 +496,44 @@ player feeds the recording to the frame loop as its pose source (`ctx.replay`, `
 `src/ui/replay/player.ts`), so it renders with the same code as live flight. It loads the first
 time a replay is opened.
 
+## Sharing your lap (Instagram Stories)
+
+A personal best can be shared as a 1080 × 1920 card, drawn in the browser
+(`src/share/`):
+- **Where:** the post-your-lap card on the HUD (Share), the pause menu (Share your lap), the
+  posted-lap screen, and your own rows and Your best card on the leaderboard.
+- **Card styles**, in a carousel with live previews (LB / RB or Q / E switch them):
+  - **Stats:** lap time, initials, track, drone, rank, gap to the record, fastest sector.
+  - **Drone:** a studio render of your build (the sim's own model, rendered offscreen).
+  - **FPV moment:** your goggle view with its OSD, grabbed as the lap finished. Only for bests
+    set in this session (the picture stays in memory).
+  - **Track map:** the course from above with your gate splits.
+  - **Leaderboard:** the board's top 5 with your row highlighted, once the lap is posted.
+- **Colours:** Neon (the menu's), Ember or Ice.
+- **Safe area:** everything important sits in the middle 1080 × 1420. Instagram covers the top and
+  bottom 250 px of a Story.
+
+There is no web API that posts to Instagram Stories, so sharing goes through the system:
+- **Phones** (iOS Safari, Android Chrome) offer **Share to Instagram**. It hands the PNG to the
+  Web Share API (`navigator.share({ files })`), and the share sheet has Instagram, then Story.
+- **Desktops** offer Download PNG and Copy image, plus Share… where the browser has a share sheet
+  (Safari, Chrome / Edge on Windows). There's no Instagram Stories target on a desktop, so:
+- **Send to my phone** shows a QR code (encoded on the device by `src/share/qr.ts`, no QR
+  service) for `/share.html?e=<entry id>&c=<card>#s=<splits>`.
+  - On the phone, that small page (no simulator, no firmware) loads the public entry from
+    `GET /leaderboard/entry/:id` and draws the same cards there, with the Instagram button.
+  - It needs the lap on the board. The gate splits ride after the `#`, which browsers never send
+    to a server.
+
+The share button calls `navigator.share` straight from the click with a PNG made beforehand,
+since browsers allow it only during a click, tap or key press. A controller's A button doesn't
+count, so the sheet says to press Enter or click.
+
+**Server.** `GET /leaderboard/entry/:id` returns the entry with its map and course, its rank on its
+class board and that board's top 5. It's CORS-enabled and cached for 10 s like the boards, and
+tested in `tests/shareEntry.test.ts`. Card layout, share links, the share decision and the QR
+encoder are tested in `tests/share.test.ts`. Deploy the relay before a site that links to it.
+
 ## Tests
 
 ```bash

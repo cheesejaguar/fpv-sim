@@ -61,6 +61,8 @@ export default defineConfig({
     // never inline fonts as data: URIs: the Content-Security-Policy (vercel.json) allows font-src 'self' only
     assetsInlineLimit: (file: string) => (/\.(woff2?|ttf|otf)$/i.test(file) ? false : undefined),
     rolldownOptions: {
+      // the simulator, and the phone page behind "Send to my phone" (src/share/page.ts: no simulator)
+      input: { main: root('index.html'), share: root('share.html') },
       output: {
         // three.js core changes far less often than the app: its own long-cached chunk
         codeSplitting: { groups: [{ name: 'three', test: /node_modules[\\/]three[\\/]build[\\/]/ }] },

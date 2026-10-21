@@ -10,6 +10,8 @@ import { MAP_LIST, MAPS, preloadMap } from '../../maps/maps';
 import { formatLap } from '../../net/leaderboard';
 import { fetchRooms, RoomListing } from '../../net/lobby';
 import { MultiplayerClient, randomRoomCode } from '../../net/multiplayer';
+import type { PbShots } from '../../share/capture';
+import type { ShareTarget } from '../../share/sheet';
 import type { SimSettings } from '../../worker/shared';
 import { cancelTopModal, confirmDialog, dirtyGuard, el, runUnmounts, topModal, touchOnly } from '../dom';
 import { loadPilot, savePilot } from '../multiplayerPanel';
@@ -24,9 +26,13 @@ import { focusEl, focusables, MenuNav, NavOverlay } from './nav';
 type BoardModule = typeof import('./leaderboard');
 let boardModule: Promise<BoardModule> | undefined;
 const loadBoard = () => (boardModule ??= import('./leaderboard').catch((e) => { boardModule = undefined; throw e; }));
+// ... and so does sharing a lap (src/share/: card drawing, QR codes)
+type ShareModule = typeof import('../../share/sheet');
+let shareModule: Promise<ShareModule> | undefined;
+const loadShare = () => (shareModule ??= import('../../share/sheet').catch((e) => { shareModule = undefined; throw e; }));
 
 export type GameMode = 'free' | 'race' | 'drill';
-type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about' | 'leaderboard' | 'initials';
+type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about' | 'leaderboard' | 'initials' | 'share';
 type JoinFrom = 'host' | 'code' | 'browser';
 
 export interface SettingsTab { id: string; label: string; icon: IconName; render: () => HTMLElement }
@@ -53,6 +59,8 @@ export interface MenuHost {
   lastLap(): { lapMs: number; replay: Promise<Uint8Array | null> } | null;
   /** open the replay player (loaded the first time) over the menu; throws with a message for the pilot */
   watch(bytes: Uint8Array, label: ReplayLabel, ui: ReplayUi): Promise<{ close(): void }>;
+  /** this session's personal bests: the newest one, and the view when each was set (share cards) */
+  shots: PbShots;
 }
 
 /** Where a replay came from (its title in the player): a board entry, the pilot's best, the last lap, a file. */
@@ -94,7 +102,7 @@ const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s) || sameSpe
 function loadMine(): DroneSpec | null { return load(MINE_KEY, parseSpec); }
 function keepMine(s: DroneSpec) { if (!isPreset(s)) save(MINE_KEY, s); }
 
-const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About', leaderboard: 'Leaderboard', initials: 'Post your lap' };
+const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About', leaderboard: 'Leaderboard', initials: 'Post your lap', share: 'Share your lap' };
 
 /**
  * Does a map have race gates? Known for the built-in maps; map packages (community, from disk) are
@@ -239,7 +247,7 @@ export class GameMenu {
     const scrollY = soft ? this.screenEl?.scrollTop ?? 0 : 0;
     const scr = el('section', { class: soft ? 'gm-screen gm-static' : 'gm-screen enter', 'aria-label': SCREEN_NAMES[s] });
     this.ini = null;
-    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about(), leaderboard: () => this.leaderboard(), initials: () => this.initials() }[s];
+    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about(), leaderboard: () => this.leaderboard(), initials: () => this.initials(), share: () => this.share() }[s];
     scr.append(build());
     runUnmounts(this.screenEl); // panels on the old screen drop their listeners (CLI output …)
     this.main.replaceChildren(scr);
@@ -288,7 +296,7 @@ export class GameMenu {
     const hint = (glyph: HTMLElement, text: string) => el('span', { class: 'gm-hint' }, glyph, text);
     const kids: HTMLElement[] = [hint(pad ? g('a', 'A') : g('key', 'Enter'), 'Select')];
     if (this.stack.length > 1 || s === 'pause') kids.push(el('button', { class: 'gm-hint gm-hint-btn', tabindex: '-1', onclick: () => this.back() }, pad ? g('b', 'B') : g('key', 'Esc'), s === 'pause' ? 'Resume' : 'Back'));
-    if (this.tabs) kids.push(hint(pad ? g('key', 'LB · RB') : g('key', 'Q · E'), s === 'guide' ? 'Chapter' : s === 'leaderboard' ? 'Drone class' : 'Switch tab'));
+    if (this.tabs) kids.push(hint(pad ? g('key', 'LB · RB') : g('key', 'Q · E'), s === 'guide' ? 'Chapter' : s === 'leaderboard' ? 'Drone class' : s === 'share' ? 'Card' : 'Switch tab'));
     kids.push(hint(pad ? g('key', 'D-pad') : g('key', '↑↓←→'), 'Move'));
     if (pad) kids.push(hint(g('key', 'R-stick'), 'Scroll'));
     const fs = !!fsElement();
@@ -350,6 +358,7 @@ export class GameMenu {
         this.item({ icon: 'play', title: 'Resume', sub: 'Back to the quad', primary: true, autofocus: true, onClick: () => this.close() }),
         ...(this.host.board.pending ? [this.item({ icon: 'trophy', title: 'Post your lap', sub: `New personal best ${formatLap(this.host.board.pending.lapMs)}: add your initials to the leaderboard`, onClick: () => this.openInitials() })] : []),
         ...(last ? [this.item({ icon: 'video', title: 'Replay last lap', sub: `${formatLap(last.lapMs)}: watch it in FPV, chase, line of sight or orbit`, onClick: () => this.watch(() => last.replay.then((b) => b ?? { error: 'That lap couldn’t be recorded (the simulator was paused or stalled during it).' }), { source: 'last' }) })] : []),
+        ...(this.host.shots.last ? [this.item({ icon: 'share', title: 'Share your lap', sub: `Personal best ${formatLap(this.host.shots.last.lapMs)} as a card for your Instagram Story`, onClick: () => this.openShare(this.host.shots.last!) })] : []),
         this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.activeMode); this.close(); } }),
         this.item({ icon: 'trophy', title: 'Leaderboard', sub: 'Fastest laps worldwide, by track and drone', onClick: () => this.go('leaderboard') }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
@@ -735,10 +744,10 @@ export class GameMenu {
     else if (this.stack[this.stack.length - 1] !== 'initials') { this.iniReturn = 'back'; this.go('initials'); }
   }
 
-  /** A screen from leaderboard.ts: drawn once its module has loaded (at once after the first time). */
-  private lazy(build: (m: BoardModule) => HTMLElement): HTMLElement {
+  /** A screen from leaderboard.ts (or another lazy module): drawn once its module has loaded (at once after the first time). */
+  private lazy<M = BoardModule>(build: (m: M) => HTMLElement, load: () => Promise<M> = loadBoard as unknown as () => Promise<M>, what = 'The leaderboard'): HTMLElement {
     const box = el('div', { 'aria-busy': 'true' }, this.backBar());
-    void loadBoard().then((m) => {
+    void load().then((m) => {
       if (!box.isConnected) return; // left meanwhile
       box.replaceChildren(build(m));
       box.removeAttribute('aria-busy');
@@ -746,7 +755,7 @@ export class GameMenu {
       const pref = box.querySelector<HTMLElement>('[data-autofocus]') ?? focusables(box)[0];
       if (pref) { if (this.nav.usingPad) focusEl(pref); else pref.focus({ preventScroll: true }); }
     }, (e) => {
-      if (box.isConnected) box.replaceChildren(this.backBar(), el('div', { class: 'gm-empty' }, icon('wifiOff'), el('h4', {}, 'The leaderboard didn’t load'), el('p', {}, `${(e as Error)?.message ?? e}. Check the connection and try again.`)));
+      if (box.isConnected) box.replaceChildren(this.backBar(), el('div', { class: 'gm-empty' }, icon('wifiOff'), el('h4', {}, `${what} didn’t load`), el('p', {}, `${(e as Error)?.message ?? e}. Check the connection and try again.`)));
     });
     return box;
   }
@@ -759,6 +768,7 @@ export class GameMenu {
       setTabs: (t) => { this.tabs = t; },
       post: (map, course, cls) => { if (this.host.board.offer(map, course, cls)) { this.iniReturn = 'back'; this.go('initials'); } },
       watch: (get, label) => void this.watch(get, label),
+      share: (map, course, cls, entry) => this.openShare({ map, course, cls, entry }),
     }));
   }
 
@@ -772,6 +782,7 @@ export class GameMenu {
         callsign: loadPilot().name,
         usingPad: () => this.nav.usingPad,
         open: (o) => this.nav.open(o),
+        share: () => this.openShare({ map: p.map, course: p.course, cls: p.cls }),
         done: (board) => {
           this.ini = null;
           m.boardChanged(p.map, p.course);
@@ -825,6 +836,31 @@ export class GameMenu {
       if (!this.player) this.watching = false;
     }
     if (fail) await confirmDialog({ title: 'Can’t play this replay', body: fail.charAt(0).toUpperCase() + fail.slice(1), ok: 'OK', cancel: 'Close' });
+  }
+
+  // Sharing a lap as a 9:16 card (Instagram Stories; screen in src/share/sheet.ts)
+  private shareTarget: ShareTarget | null = null;
+
+  /** Share a personal best (track + drone class), or one of the pilot's board entries. From the HUD card, the pause menu, the board. */
+  openShare(t: ShareTarget) {
+    this.shareTarget = t;
+    if (!this.openState) { this.inFlight = true; this.open('share'); }
+    else if (this.stack[this.stack.length - 1] === 'share') this.render();
+    else this.go('share');
+  }
+
+  private share(): HTMLElement {
+    const t = this.shareTarget;
+    if (!t) { queueMicrotask(() => this.back()); return el('div'); }
+    return this.lazy((m: ShareModule) => m.shareScreen({
+      board: this.host.board, target: t, shots: this.host.shots,
+      build: () => this.host.build(), mine: loadMine,
+      callsign: () => loadPilot().name,
+      usingPad: () => this.nav.usingPad,
+      backBar: () => this.backBar(),
+      setTabs: (x) => { this.tabs = x; },
+      post: (map, course, cls) => { if (this.host.board.offer(map, course, cls)) { this.iniReturn = 'back'; this.go('initials'); } },
+    }), loadShare, 'Sharing');
   }
 
   // -------------------------------------------------------------------------------------------
