@@ -1,4 +1,4 @@
-// The launch maps: a World Cup stadium race course and an abandoned industrial
+// The launch maps: a Grand Prix stadium race course and an abandoned industrial
 // "bando" for freestyle (procedural but deterministic), plus classic id Software Quake levels built
 // from their GPL'd .map sources (see public/maps/quake/ATTRIBUTION.md), and a Freedoom level
 // (BSD-3-Clause; see public/maps/freedoom/ATTRIBUTION.md).
@@ -13,7 +13,7 @@ import { worldCupMap } from './worldCup';
 const deg = Math.PI / 180;
 
 // Gate builders live in ./gates (shared with the worker's pass detection); the race course map is
-// the World Cup stadium in ./worldCup (id 'field' so saved settings keep pointing at it).
+// the Grand Prix stadium in ./worldCup (id 'field' so saved settings keep pointing at it).
 export { buildGatePrims } from './gates';
 export const fieldMap = worldCupMap;
 
@@ -122,7 +122,7 @@ export interface MapEntry {
 const QUAKE_CREDIT = "id Software's original map source (GPL, released by John Romero 2006); textures: LibreQuake (BSD-3-Clause). Not affiliated with or endorsed by id Software or the LibreQuake project.";
 
 export const MAP_LIST: Record<string, MapEntry> = {
-  field: { name: 'FPV World Cup Stadium', credit: 'Original (this project, GPL-3.0-or-later); course sized from FAI F9 / MultiGP gate specs', build: fieldMap },
+  field: { name: 'FPV Grand Prix Stadium', credit: 'Original (this project, GPL-3.0-or-later); course sized from FAI F9 / MultiGP gate specs', build: fieldMap },
   // fpvsim-map package (public/maps/bando/), generated from bandoMap() above and verified identical by tests/mapFormat.test.ts
   bando: { ...packageEntry('bando', { name: 'Bando — Abandoned Industrial', author: 'fpv-sim', license: 'GPL-3.0-or-later' }, () => httpSource(publicBase() + 'maps/bando/')), credit: 'Original (this project, GPL-3.0-or-later)', community: undefined },
   'quake-e1m1': {
