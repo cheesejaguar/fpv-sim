@@ -115,4 +115,7 @@ export class RemoteQuads {
   }
 
   clear(): void { for (const r of this.remotes.values()) { r.group.removeFromParent(); r.tag.removeFromParent(); r.dispose(); } this.remotes.clear(); }
+
+  /** Hide every remote quad until the next update() (a lap replay is shown in the same scene). */
+  hide(): void { for (const r of this.remotes.values()) r.group.visible = r.tag.visible = false; }
 }

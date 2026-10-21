@@ -113,8 +113,9 @@ The sim opens on a title screen, with your quad orbiting on the launch pad behin
   Stadium, the Whoop Gym, the Practice Field, Night Session, Ridgeline, or a community race map);
   maps without gates can't be picked for it.
 - **Server browser**: public rooms.
-- **Leaderboard**: the fastest laps worldwide, by track and drone class (see
-  [Global leaderboard](#global-leaderboard)). Also in the pause menu.
+- **Leaderboard**: the fastest laps worldwide, by track and drone class, each one watchable as a
+  replay (see [Global leaderboard](#global-leaderboard) and [Lap replays](#lap-replays)). Also in
+  the pause menu, which also has **Replay last lap**.
 - **Settings**: Simulation, Controller, Betaflight (tuning, CLI, `diff all` import), Drone builder,
   Multiplayer relay and Blackbox.
 - **Betaflight quick start**: a nine-chapter guide covering arming, flight modes, rates (with a
@@ -412,6 +413,7 @@ Stadium, Quarry Loop, the Whoop Gym, Ridgeline, the Night Session and each Pract
 - **The board** (title screen or pause menu → Leaderboard):
   - filter by track, and by drone class or *All drones* (LB / RB or Q / E switch the class);
   - shows rank, initials, lap time (m:ss.mmm), drone and date, with your own entries marked;
+  - **Watch** plays a lap's replay (entries posted before replays existed show *No replay*);
   - one entry per pilot per board, top 100.
   - The race HUD shows your personal best and the board's record for your class.
 
@@ -420,10 +422,19 @@ board. `server/src/leaderboardCore.ts` holds the logic, unit-tested in `tests/le
 with a real SQLite database, and the client side in `tests/lapBoard.test.ts`.
 - `GET /leaderboard?map=field&class=all` (and `&course=slalom` for a course) is CORS-enabled and
   edge-cached for 10 s.
-- `POST /leaderboard` only accepts the site's own origins, bodies up to 2 KB, three letters A–Z
-  (minus a blocklist), a built-in track (never maps loaded from disk) and a known class, time
-  scale 1, one split per gate adding up to the lap, and a lap no faster than the class can fly
-  that track (the track's gate-to-gate length at a generous top speed for the class).
+- `POST /leaderboard` only accepts the site's own origins. The body (`application/vnd.fpv-sim.lap`)
+  is `FPVL`, the length of the lap's JSON (u32, little-endian), the JSON (up to 2 KB), then the
+  lap's replay (up to 256 KB). The relay checks:
+  - three letters A–Z (minus a blocklist), a built-in track (never maps loaded from disk) and a
+    known class;
+  - time scale 1, one split per gate adding up to the lap, and a lap no faster than the class can
+    fly that track (the track's gate-to-gate length at a generous top speed for the class);
+  - the replay: it must fly that lap (see [the replay check](docs/REPLAY_FORMAT.md#the-relays-check)).
+  Clients from before replays (submission `v: 1`) are told to reload.
+- The replay is stored with the entry (a `replays` table in the same object). A faster lap
+  replaces the pilot's entry with a new one (a new id); a replaced, evicted or deleted entry's
+  replay goes with it. `GET /leaderboard/<id>/replay` serves it, CORS-enabled and cached for a day
+  (an id's replay never changes).
 - It stores salted hashes (`IP_SALT`) of the client's IP and of a random per-browser token, never
   the raw values:
   - one entry per pilot (the token) per board;
@@ -434,8 +445,56 @@ with a real SQLite database, and the client side in `tests/lapBoard.test.ts`.
   removes an entry, for removal requests (`privacy.html`) and moderation.
 
 The sim runs in the pilot's browser, so these are plausibility and abuse limits, not proof that a
-lap was flown. A modified client can still post a plausible fake lap. Deploy the relay (with its
-`v3` migration) before a site that uses it.
+lap was flown. A modified client can still post a fake lap, but it now needs a whole trajectory
+that flies the track within the class's physics, and that trajectory is public. Deploy the relay
+(with its `v3` migration; replays add a table, created on start, with nothing to migrate) before a
+site that uses it.
+
+## Lap replays
+
+Every timed lap is recorded as it is flown, from just before gate 0 to just after the finish:
+- where the quad was and how it was turned;
+- its motor speeds (props and motor sound);
+- the sticks Betaflight received, and whether it was armed and in which flight mode;
+- battery voltage and current;
+- each gate's pass time;
+- Betaflight's OSD.
+
+The header has the drone build, the map and course, the lap, the date and the app version. The
+replay of your personal best on each board is kept in your browser, and it is posted with the lap.
+- **Watch** a lap from the leaderboard, your own best from the board's *Your best* card (also
+  offline, posted or not), or the last lap you flew (pause menu → **Replay last lap**, counted or not).
+- **Open replay** on the leaderboard plays a `.fpvreplay` file; **Download** in the player saves one.
+
+The player covers the menu. The live sim stays paused behind it and resumes exactly as it was.
+It doesn't run Betaflight or the physics: it plays the recording on the replay's own map, course
+and drone, without touching your saved build or settings.
+- **Transport**: play / pause, a timeline with every gate's split to click or drag, speed from
+  0.1× to 4×, frame step, restart and loop, and the elapsed and lap time.
+- **Cameras**: FPV (the real camera pipeline: fisheye, rolling shutter, exposure, the recorded
+  OSD; no latency; the video link's breakup is optional), chase, line of sight from the pilot spot,
+  and an orbit camera to drag around and zoom.
+- **Overlays** (each can be switched off): sticks, throttle and flight mode; speed and altitude;
+  the lap clock and splits; battery.
+- **Sound**: the motors at 1×, silent at other speeds.
+
+| | Keyboard | Controller |
+| --- | --- | --- |
+| Play / pause | Space (or K) | A |
+| Seek 1 s (5 s) | ← → (with Shift) | D-pad ← → |
+| Frame step | , . or ↑ ↓ | D-pad ↑ ↓ |
+| Speed | [ ] | LB / RB |
+| Camera | C (or 1–4) | X |
+| Overlays | O | Y |
+| Loop / restart | L / Home | — |
+| Orbit | drag, mouse wheel | right stick, LT / RT |
+| Exit | Esc | B |
+
+The file format, and what the relay checks, are in [docs/REPLAY_FORMAT.md](docs/REPLAY_FORMAT.md).
+The recorder samples the worker's 1 kHz state ring at 100 Hz (`src/app/replayRecorder.ts`). The
+player feeds the recording to the frame loop as its pose source (`ctx.replay`, `src/app/replaySession.ts`,
+`src/ui/replay/player.ts`), so it renders with the same code as live flight. It loads the first
+time a replay is opened.
 
 ## Tests
 

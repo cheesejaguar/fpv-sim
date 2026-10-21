@@ -2,7 +2,8 @@
 //   GET /room/:CODE  (WebSocket upgrade)  -> Durable Object "Room" named by the code
 //   GET /rooms                             -> public room directory (server browser), JSON, CORS
 //   GET /leaderboard?map=&course=&class=   -> a global lap leaderboard, JSON, CORS
-//   POST /leaderboard                      -> submit a lap (allowed origins only)
+//   POST /leaderboard                      -> submit a lap with its replay (allowed origins only)
+//   GET /leaderboard/:id/replay            -> an entry's replay (.fpvreplay), CORS, cached
 //   DELETE /leaderboard/:id                -> remove an entry (Authorization: Bearer ADMIN_TOKEN)
 //   GET /health                            -> "ok"
 // Each room is one Durable Object instance using the WebSocket Hibernation API, so idle rooms cost
@@ -12,8 +13,10 @@
 // the heartbeat. Lap leaderboards live in one "Leaderboard" Durable Object (SQLite). The relay,
 // directory and leaderboard logic live in roomCore.ts, lobbyCore.ts and leaderboardCore.ts
 // (platform-independent, unit-tested).
-import { decide, Entry, MAX_BODY_BYTES, parseQuery, parseSubmission, rankOf, ranked, SubmitLimiter, toPublic, trackKey } from './leaderboardCore';
+import { decide, Entry, MAX_BODY_BYTES, MAX_POST_BYTES, packLap, parseQuery, parseSubmission, rankOf, ranked, SubmitLimiter, toPublic, trackKey, unpackLap } from './leaderboardCore';
 import { HEARTBEAT_MS, LobbyCore, RoomListing } from './lobbyCore';
+import { checkReplay } from './replayCheck';
+import { MAX_REPLAY_BYTES, REPLAY_MIME } from './replayFormat';
 import { MAP_RE, MAX_MSG_BYTES, originAllowed, PING, PONG, RoomCore, Sock, SockState, validMeta } from './roomCore';
 
 export interface Env {
@@ -107,14 +110,63 @@ async function adminOk(req: Request, env: Env): Promise<boolean> {
   return d === 0;
 }
 
-async function leaderboard(req: Request, env: Env, url: URL): Promise<Response> {
+/** Worker -> Leaderboard object: { raw, owner, net } and the replay, in the same envelope as a posted lap. */
+const packBoard = (o: { raw: unknown; owner: string; net: string }, replay: Uint8Array) => packLap(JSON.stringify(o), replay);
+
+/** The request body, or null once it grows past `max` bytes (a missing or false Content-Length can't get around it). */
+async function readBody(req: Request, max: number): Promise<Uint8Array | null> {
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader(), parts: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { await reader.cancel(); return null; }
+    parts.push(value);
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+// GET /leaderboard/:id/replay: an entry's replay never changes (a faster lap is a new entry, with a
+// new id), so browsers and the edge cache keep it for a day. Removed entries (DELETE, a full board)
+// stop being served once that day is over; the edge copy in the deleting data centre goes at once.
+const REPLAY_CACHE_S = 86_400;
+const replayKey = (id: number) => new Request(`https://replay-cache.fpv-sim/${id}`);
+const edgeCache = (): Cache | null => (typeof caches !== 'undefined' ? (caches as unknown as { default: Cache }).default : null);
+
+async function replay(req: Request, env: Env, id: number, ctx?: ExecutionContext): Promise<Response> {
+  const c = cors(req, env);
+  if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('method not allowed', { status: 405, headers: c });
+  const cache = edgeCache(), key = replayKey(id);
+  let hit = await cache?.match(key).catch(() => undefined);
+  if (!hit) {
+    const r = await boardStub(env).fetch(`https://board/replay?id=${id}`);
+    if (r.status === 404) return new Response('no replay', { status: 404, headers: { 'Cache-Control': 'public, max-age=60', ...c } });
+    if (!r.ok) return new Response('leaderboard unavailable', { status: 503, headers: { 'Cache-Control': 'no-store', ...c } });
+    hit = new Response(await r.arrayBuffer(), { headers: { 'Content-Type': REPLAY_MIME, 'Cache-Control': `public, max-age=${REPLAY_CACHE_S}` } });
+    if (cache) { const put = cache.put(key, hit.clone()).catch(() => {}); if (ctx) ctx.waitUntil(put); else await put; }
+  }
+  const h = new Headers(hit.headers);
+  for (const [k, v] of Object.entries(c)) h.set(k, v);
+  return new Response(req.method === 'HEAD' ? null : hit.body, { status: 200, headers: h });
+}
+
+async function leaderboard(req: Request, env: Env, url: URL, ctx?: ExecutionContext): Promise<Response> {
   const c = cors(req, env);
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...c, 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' } });
+  const rp = /^\/leaderboard\/(\d{1,12})\/replay$/.exec(url.pathname);
+  if (rp) return replay(req, env, Number(rp[1]), ctx);
   const del = /^\/leaderboard\/(\d{1,12})$/.exec(url.pathname);
   if (del) {
     if (req.method !== 'DELETE' || !(await adminOk(req, env))) return new Response('not found', { status: 404 });
-    const r = await boardStub(env).fetch('https://board/delete', { method: 'POST', body: JSON.stringify({ id: Number(del[1]) }) });
+    const id = Number(del[1]);
+    const r = await boardStub(env).fetch('https://board/delete', { method: 'POST', body: JSON.stringify({ id }) });
     boardCache.clear();
+    await edgeCache()?.delete(replayKey(id)).catch(() => false);
     return json(await r.text(), r.status, { 'Cache-Control': 'no-store' });
   }
   if (url.pathname !== '/leaderboard') return new Response('not found', { status: 404 });
@@ -130,32 +182,49 @@ async function leaderboard(req: Request, env: Env, url: URL): Promise<Response> 
   if (req.method !== 'POST') return new Response('method not allowed', { status: 405, headers: c });
   const reply = (body: unknown, status: number) => json(body, status, { 'Cache-Control': 'no-store', ...c });
   if (!originAllowed(req.headers.get('Origin'), allowList(env))) return reply({ ok: false, error: 'origin not allowed' }, 403);
-  if (Number(req.headers.get('Content-Length') ?? 0) > MAX_BODY_BYTES) return reply({ ok: false, error: 'too big' }, 413);
-  const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) return reply({ ok: false, error: 'too big' }, 413);
+  if (Number(req.headers.get('Content-Length') ?? 0) > MAX_POST_BYTES) return reply({ ok: false, error: 'too big' }, 413);
+  // the lap's JSON and its replay (packLap); a body without the envelope is a bare JSON lap
+  const body = await readBody(req, MAX_POST_BYTES);
+  const lap = body && unpackLap(body);
+  if (!body || (!lap && body.length > MAX_BODY_BYTES)) return reply({ ok: false, error: 'too big' }, 413);
   let raw: unknown;
-  try { raw = JSON.parse(text); } catch { return reply({ ok: false, error: 'bad json' }, 400); }
+  try { raw = JSON.parse(lap ? lap.json : new TextDecoder().decode(body)); } catch { return reply({ ok: false, error: 'bad json' }, 400); }
   const p = parseSubmission(raw);
   if (!p.ok) return reply({ ok: false, error: p.error }, 400);
+  if (!lap?.replay.length) return reply({ ok: false, error: 'a lap is posted with its replay' }, 400);
+  if (lap.replay.length > MAX_REPLAY_BYTES) return reply({ ok: false, error: 'replay too big' }, 413);
   const ip = req.headers.get('CF-Connecting-IP') ?? '';
   if (env.RATE_LIMITER && ip) {
     try { if (!(await env.RATE_LIMITER.limit({ key: `lb:${ip}` })).success) return reply({ ok: false, error: 'too many submissions, try again in a minute' }, 429); } catch { /* limiter unavailable: allow */ }
   }
   if (env.DENYLIST && ip && (await denied(env.DENYLIST, [`ip:${ip}`]))) return reply({ ok: false, error: 'forbidden' }, 403);
+  // the replay must fly the lap it came with (gates in order at the splits, plausible for the class)
+  const check = await checkReplay(lap.replay, p.sub);
+  if (!check.ok) return reply({ ok: false, error: check.error }, 400);
   // the board stores hashes only: of the client's random token (one entry per pilot per board) and
   // of its IP (entries per network), both salted
   const [owner, net] = await Promise.all([hashIp(`client|${p.sub.client}`, env.IP_SALT), ip ? hashIp(ip, env.IP_SALT) : Promise.resolve('')]);
-  const r = await boardStub(env).fetch('https://board/submit', { method: 'POST', body: JSON.stringify({ raw, owner, net }) });
+  const r = await boardStub(env).fetch('https://board/submit', { method: 'POST', body: packBoard({ raw, owner, net }, lap.replay) });
   const track = trackKey(p.sub.map, p.sub.course);
   for (const k of boardCache.keys()) if (k.startsWith(`${track}|`)) boardCache.delete(k);
-  return reply(await r.text(), r.status);
+  // entries this lap replaced or pushed off the board: their replays leave this data centre's cache now
+  let text = await r.text();
+  try {
+    const j = JSON.parse(text);
+    if (Array.isArray(j?.removed)) {
+      const cache = edgeCache();
+      if (cache) await Promise.all(j.removed.map((id: number) => cache.delete(replayKey(id)).catch(() => false)));
+      delete j.removed; text = JSON.stringify(j);
+    }
+  } catch { /* not JSON: pass it on */ }
+  return reply(text, r.status);
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
-    if (url.pathname === '/leaderboard' || url.pathname.startsWith('/leaderboard/')) return leaderboard(req, env, url);
+    if (url.pathname === '/leaderboard' || url.pathname.startsWith('/leaderboard/')) return leaderboard(req, env, url, ctx);
     if (url.pathname === '/rooms') {
       if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors(req, env), 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Max-Age': '86400' } });
       if (req.method !== 'GET') return new Response('method not allowed', { status: 405 });
@@ -381,13 +450,18 @@ const SCHEMA = [
     initials TEXT NOT NULL, lap_ms INTEGER NOT NULL, splits TEXT NOT NULL, summary TEXT NOT NULL, at INTEGER NOT NULL
   )`,
   'CREATE INDEX IF NOT EXISTS laps_track ON laps (map, course, lap_ms)',
+  // an entry's replay (.fpvreplay, ≤ MAX_REPLAY_BYTES), deleted with its entry. Entries posted before
+  // replays existed simply have no row here: nothing to migrate.
+  'CREATE TABLE IF NOT EXISTS replays (lap_id INTEGER PRIMARY KEY, data BLOB NOT NULL, bytes INTEGER NOT NULL)',
 ];
 
 /**
  * Every lap leaderboard, in one SQLite-backed object: a board holds at most BOARD_SIZE entries per
- * track and class and each pilot (hashed client token) at most once, so the table stays small
- * (tracks x classes x 100 rows). Reached only through the Worker, which validates and hashes first;
- * submissions are checked again here.
+ * track and class and each pilot (hashed client token) at most once, so the tables stay small
+ * (tracks x classes x 100 rows, each with a replay of typically 20-100 KB: well within the object's
+ * storage). Reached only through the Worker, which validates, checks the replay and hashes first;
+ * submissions are checked again here. A faster lap replaces the pilot's entry with a new one (new
+ * id), so an id's replay never changes.
  */
 export class Leaderboard implements DurableObject {
   private sql: Sql;
@@ -398,10 +472,17 @@ export class Leaderboard implements DurableObject {
   }
 
   private track(map: string, course: string): Entry[] {
-    return this.sql.exec('SELECT id, map, course, cls, owner, net, initials, lap_ms, splits, summary, at FROM laps WHERE map = ? AND course = ?', map, course).toArray().map((r) => ({
+    return this.sql.exec('SELECT id, map, course, cls, owner, net, initials, lap_ms, splits, summary, at, EXISTS (SELECT 1 FROM replays WHERE lap_id = laps.id) AS has_replay FROM laps WHERE map = ? AND course = ?', map, course).toArray().map((r) => ({
       id: Number(r.id), map: String(r.map), course: String(r.course), cls: String(r.cls), owner: String(r.owner), net: String(r.net),
       initials: String(r.initials), lapMs: Number(r.lap_ms), splitsMs: JSON.parse(String(r.splits)) as number[], summary: String(r.summary), at: Number(r.at),
+      replay: Number(r.has_replay) === 1,
     }));
+  }
+
+  /** Delete an entry and its replay; returns whether it existed. */
+  private remove(id: number): boolean {
+    this.sql.exec('DELETE FROM replays WHERE lap_id = ?', id);
+    return this.sql.exec('DELETE FROM laps WHERE id = ? RETURNING id', id).toArray().length > 0;
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -412,12 +493,23 @@ export class Leaderboard implements DurableObject {
       if (!q) return out({ entries: [], error: 'unknown board' }, 400);
       return out({ map: q.map, course: q.course, class: q.cls, entries: ranked(this.track(q.map, q.course), q.cls).map(toPublic), now: Date.now() });
     }
+    if (url.pathname === '/replay') {
+      const id = Number(url.searchParams.get('id'));
+      const row = Number.isInteger(id) ? this.sql.exec('SELECT data FROM replays WHERE lap_id = ?', id).toArray()[0] : undefined;
+      if (!row) return new Response('no replay', { status: 404 });
+      return new Response(row.data as ArrayBuffer, { headers: { 'Content-Type': REPLAY_MIME } });
+    }
     if (req.method !== 'POST') return out({ ok: false, error: 'bad request' }, 400);
-    let body: any;
-    try { body = await req.json(); } catch { return out({ ok: false, error: 'bad json' }, 400); }
+    // JSON, or the lap envelope (packBoard): JSON plus the replay
+    let body: any, replay: Uint8Array | null = null;
+    try {
+      const buf = new Uint8Array(await req.arrayBuffer()), lap = unpackLap(buf, 4 * MAX_BODY_BYTES);
+      body = JSON.parse(lap ? lap.json : new TextDecoder().decode(buf));
+      if (lap?.replay.length) replay = lap.replay;
+    } catch { return out({ ok: false, error: 'bad json' }, 400); }
     if (url.pathname === '/delete') {
       const id = Number(body?.id);
-      const n = Number.isInteger(id) ? this.sql.exec('DELETE FROM laps WHERE id = ? RETURNING id', id).toArray().length : 0;
+      const n = Number.isInteger(id) && this.remove(id) ? 1 : 0;
       return out({ ok: n > 0, deleted: n }, n ? 200 : 404);
     }
     if (url.pathname !== '/submit') return out({ ok: false, error: 'not found' }, 404);
@@ -436,17 +528,16 @@ export class Leaderboard implements DurableObject {
       return out({ ok: true, stored: false, reason: 'slower', id: d.best.id, rank: rankOf(list, d.best.id), entries: list.map(toPublic) });
     }
     // (no await from here on: the writes and the read-back are one atomic step for the object)
-    const values = [s.initials, s.lapMs, JSON.stringify(s.splitsMs), s.summary, now, net];
-    let id: number;
-    if (d.update !== null) {
-      this.sql.exec('UPDATE laps SET initials = ?, lap_ms = ?, splits = ?, summary = ?, at = ?, net = ? WHERE id = ?', ...values, d.update);
-      id = d.update;
-    } else {
-      id = Number(this.sql.exec('INSERT INTO laps (initials, lap_ms, splits, summary, at, net, map, course, cls, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
-        ...values, s.map, s.course, s.cls, owner).toArray()[0].id);
-    }
-    for (const e of d.evict) this.sql.exec('DELETE FROM laps WHERE id = ?', e);
+    // the pilot's slower entry (and its replay) makes way for the new one: a new id, never reused
+    // (AUTOINCREMENT), so GET /leaderboard/:id/replay can be cached
+    if (d.update !== null) this.remove(d.update);
+    const id = Number(this.sql.exec('INSERT INTO laps (initials, lap_ms, splits, summary, at, net, map, course, cls, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+      s.initials, s.lapMs, JSON.stringify(s.splitsMs), s.summary, now, net, s.map, s.course, s.cls, owner).toArray()[0].id);
+    // (a BLOB is bound as an ArrayBuffer of exactly its bytes)
+    if (replay) this.sql.exec('INSERT OR REPLACE INTO replays (lap_id, data, bytes) VALUES (?, ?, ?)', id, replay.slice().buffer, replay.length);
+    for (const e of d.evict) this.remove(e);
     const list = ranked(this.track(s.map, s.course), s.cls);
-    return out({ ok: true, stored: true, id, rank: rankOf(list, id), entries: list.map(toPublic) });
+    // removed: for the Worker (it drops their replays from the edge cache), never sent to clients
+    return out({ ok: true, stored: true, id, rank: rankOf(list, id), entries: list.map(toPublic), removed: [...(d.update !== null ? [d.update] : []), ...d.evict] });
   }
 }

@@ -240,6 +240,7 @@ a.gm-btn { text-decoration: none; }
 /* ---------- leaderboard ---------- */
 .lb-filter { margin: 0; min-width: min(280px, 100%); }
 .gm-table.lb .gm-row { cursor: default; }
+.gm-table.lb .gm-row.has-replay { cursor: pointer; }
 .gm-table.lb th:first-child, .gm-table.lb td:first-child { width: 64px; }
 .gm-table.lb td:last-child, .gm-table.lb th:last-child { text-align: right; color: var(--gm-fg-muted); font-size: 14px; }
 .lb-rank { display: inline-grid; place-items: center; min-width: 34px; height: 34px; border-radius: 50%; font-family: var(--gm-font-display); font-size: 16px; background: var(--gm-muted); font-variant-numeric: tabular-nums; }
@@ -249,6 +250,12 @@ a.gm-btn { text-decoration: none; }
 .lb-ini-cell { font-family: var(--gm-font-display); font-size: 20px; letter-spacing: 0.18em; margin-right: 10px; }
 .lb-time { font-family: var(--gm-font-display); font-size: 18px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 .lb-drone { color: #cbd5e1; }
+.gm-table.lb .lb-date { color: var(--gm-fg-muted); font-size: 14px; }
+.gm-table.lb td.lb-watch { padding-top: 8px; padding-bottom: 8px; }
+.lb-watch-btn { min-height: 40px; padding: 0 14px; font-size: 14px; }
+.lb-watch-btn svg { width: 16px; height: 16px; }
+.lb-noreplay { font-size: 13px; color: var(--gm-fg-muted); white-space: nowrap; }
+.gm-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .lb-row.me td { background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.55); }
 .lb-row.me td:first-child { box-shadow: -4px 0 0 var(--gm-ok); }
 .lb-mine { margin: 0 0 6px; }
@@ -392,3 +399,16 @@ a.gm-btn { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   .gm *, .gm *::before, .gm *::after { animation-duration: 1ms !important; animation-delay: 0ms !important; transition-duration: 1ms !important; }
 }
+
+/* ---------- lap replays (the player itself: src/ui/replay/player.css, loaded with it) ---------- */
+/* the menu steps aside while a replay plays: no scrim, no screens, just the player */
+.gm.gm-replaying { background: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.gm.gm-replaying::before { display: none; }
+.gm.gm-replaying > .gm-top, .gm.gm-replaying > .gm-main, .gm.gm-replaying > .gm-foot { display: none; }
+
+/* the menu's loading card while a replay is fetched and its world built */
+.rp-loading { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: rgba(15, 15, 35, 0.55); }
+.rp-loading .gm-card { display: flex; align-items: center; gap: 14px; font-size: 16px; }
+.rp-spinner { width: 22px; height: 22px; border-radius: 50%; border: 3px solid rgba(167, 139, 250, 0.3); border-top-color: var(--gm-secondary); animation: rp-spin 0.8s linear infinite; }
+@keyframes rp-spin { to { transform: rotate(360deg); } }
+

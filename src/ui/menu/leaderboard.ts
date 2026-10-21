@@ -1,12 +1,15 @@
 // Game menu screens for the global lap leaderboard: the board itself (filtered by track and drone
-// class, LB / RB or Q / E switch the class) and the arcade initials entry for a new personal best.
-// Hosted by GameMenu (gameMenu.ts), in its design language (theme.css).
+// class, LB / RB or Q / E switch the class; every lap with a replay can be watched) and the arcade
+// initials entry for a new personal best. Hosted by GameMenu (gameMenu.ts), in its design language
+// (theme.css).
 import { CUSTOM, TRACKS } from '../../../server/src/leaderboardCore';
 import { defaultInitials, LapBoard, onBoard, PendingPb } from '../../app/leaderboard';
 import { CLASS_IDS, className } from '../../builder/droneClass';
 import { MAP_LIST, MAPS } from '../../maps/maps';
-import { BoardEntry, BoardResult, formatLap, SubmitResult } from '../../net/leaderboard';
+import { MAX_REPLAY_BYTES, REPLAY_EXT } from '../../../server/src/replayFormat';
+import { BoardEntry, BoardResult, fetchReplay, formatLap, SubmitResult } from '../../net/leaderboard';
 import { el } from '../dom';
+import type { ReplayLabel } from './gameMenu';
 import { icon } from './icons';
 import { InitialsEntry } from './initials';
 import type { NavOverlay } from './nav';
@@ -51,6 +54,23 @@ export interface BoardScreenHost {
   setTabs(t: { count: number; go: (d: -1 | 1) => void }): void;
   /** post a saved personal best (opens the initials entry) */
   post(map: string, course: string, cls: string): void;
+  /** play a replay (fetched / read by get) */
+  watch(get: () => Promise<Uint8Array | { error: string }>, label: ReplayLabel): void;
+}
+
+/** Pick a .fpvreplay file from disk (resolves null when none was picked). */
+function pickReplayFile(): Promise<Uint8Array | { error: string } | null> {
+  return new Promise((resolve) => {
+    const input = el('input', { type: 'file', accept: `${REPLAY_EXT},application/octet-stream` }) as HTMLInputElement;
+    input.addEventListener('change', async () => {
+      const f = input.files?.[0];
+      if (!f) { resolve(null); return; }
+      if (f.size > MAX_REPLAY_BYTES * 4) { resolve({ error: `${f.name} is too big to be an FPV Sim replay.` }); return; }
+      resolve(new Uint8Array(await f.arrayBuffer()));
+    });
+    input.addEventListener('cancel', () => resolve(null));
+    input.click();
+  });
 }
 
 const CLASS_FILTERS = ['all', ...CLASS_IDS];
@@ -87,7 +107,7 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
     refresh.disabled = state.loading;
     drawMine(t, r);
     if (state.loading && !r?.entries.length) {
-      tbody.replaceChildren(...[0, 1, 2, 3].map(() => el('tr', { class: 'gm-row gm-skel' }, ...[0, 1, 2, 3, 4].map(() => el('td', {}, el('span', {}, '.'))))));
+      tbody.replaceChildren(...[0, 1, 2, 3].map(() => el('tr', { class: 'gm-row gm-skel' }, ...[0, 1, 2, 3, 4, 5].map(() => el('td', {}, el('span', {}, '.'))))));
       empty.replaceChildren();
       return;
     }
@@ -100,12 +120,22 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
     else empty.replaceChildren();
   };
 
-  const row = (e: BoardEntry, rank: number, me: boolean) => el('tr', { class: `gm-row lb-row${me ? ' me' : ''}`, tabindex: '0', 'aria-label': `Rank ${rank}: ${e.initials}, ${formatLap(e.lapMs)}, ${e.summary}${me ? ' (you)' : ''}` },
+  const watchEntry = (e: BoardEntry, rank: number) => h.watch(() => fetchReplay(e.id).then((x) => ('bytes' in x ? x.bytes : x)), { source: 'board', pilot: e.initials, rank });
+  // a row with a replay plays it (A / Enter / click on the row, or its Watch button)
+  const row = (e: BoardEntry, rank: number, me: boolean) => el('tr', {
+    class: `gm-row lb-row${me ? ' me' : ''}${e.replay ? ' has-replay' : ''}`, tabindex: '0',
+    'aria-label': `Rank ${rank}: ${e.initials}, ${formatLap(e.lapMs)}, ${e.summary}${me ? ' (you)' : ''}${e.replay ? '. Has a replay' : ''}`,
+    onclick: (ev: Event) => { if (e.replay && !(ev.target as Element).closest('button')) watchEntry(e, rank); },
+    onkeydown: (ev: KeyboardEvent) => { if (e.replay && ev.key === 'Enter' && ev.target === ev.currentTarget) { ev.preventDefault(); watchEntry(e, rank); } },
+  },
     el('td', {}, el('span', { class: `lb-rank${rank <= 3 ? ` r${rank}` : ''}` }, String(rank))),
     el('td', {}, el('span', { class: 'lb-ini-cell' }, e.initials), me ? el('span', { class: 'gm-badge green' }, 'YOU') : null),
     el('td', { class: 'lb-time' }, formatLap(e.lapMs)),
     el('td', { class: 'lb-drone' }, e.summary),
-    el('td', { class: 'lb-date' }, shortDate(e.at)));
+    el('td', { class: 'lb-date' }, shortDate(e.at)),
+    el('td', { class: 'lb-watch' }, e.replay
+      ? el('button', { class: 'gm-btn lb-watch-btn', tabindex: '-1', 'data-key': `lb-watch-${e.id}`, 'aria-label': `Watch the replay of ${e.initials}’s ${formatLap(e.lapMs)}`, onclick: () => watchEntry(e, rank) }, icon('play'), 'Watch')
+      : el('span', { class: 'lb-noreplay', title: 'Posted before replays existed' }, 'No replay')));
 
   // the pilot's own best on the selected board: posted (and where), or a button to post it
   const drawMine = (t: Track | undefined, r: BoardResult | null) => {
@@ -115,9 +145,17 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
     const rank = pb.submitted ? (r?.entries.findIndex((e) => e.id === pb.submitted!.id) ?? -1) + 1 : 0;
     const status = pb.submitted ? (rank > 0 ? `#${rank} on the board` : `posted ${shortDate(pb.submitted.at)}`) : 'not posted yet';
     const postable = !pb.submitted && pb.splitsMs.length > 0;
+    // its replay, if this browser kept one (looked up once per board shown)
+    const watch = el('span');
+    const cls = f.cls;
+    void h.board.localReplay(t.map, t.course, cls).then((bytes) => {
+      if (!bytes || !watch.isConnected) return;
+      watch.replaceWith(el('button', { class: 'gm-btn', 'data-key': 'lb-watch-mine', onclick: () => h.watch(async () => bytes, { source: 'best' }) }, icon('play'), 'Watch'));
+    });
     mine.replaceChildren(el('div', { class: 'gm-card lb-mine' },
       el('div', {}, el('h3', {}, 'Your best'), el('p', {}, el('b', { class: 'lb-time' }, formatLap(pb.lapMs)), ` · ${shortDate(pb.at)} · ${status}`)),
-      postable ? el('button', { class: 'gm-btn primary', 'data-key': 'lb-post', onclick: () => h.post(t.map, t.course, f.cls) }, icon('trophy'), 'Post to leaderboard') : null));
+      el('div', { class: 'gm-actions' }, watch,
+        postable ? el('button', { class: 'gm-btn primary', 'data-key': 'lb-post', onclick: () => h.post(t.map, t.course, f.cls) }, icon('trophy'), 'Post to leaderboard') : null)));
   };
 
   const load = async (force = false) => {
@@ -145,16 +183,17 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
   } });
   draw();
   void load();
+  const openFile = el('button', { class: 'gm-btn', 'data-key': 'lb-open', title: `Watch a replay file (${REPLAY_EXT})`, onclick: () => void pickReplayFile().then((r) => { if (r) h.watch(async () => r, { source: 'file' }); }) }, icon('upload'), 'Open replay');
   return el('div', {},
     h.backBar(), el('h1', { class: 'gm-h1' }, 'Leaderboard'),
-    el('p', { class: 'gm-lead' }, 'The fastest laps worldwide, one per pilot, by track and drone class. Laps count when every gate is passed in order, in real time at time scale 1. The board keeps the top 100.'),
+    el('p', { class: 'gm-lead' }, 'The fastest laps worldwide, one per pilot, by track and drone class. Laps count when every gate is passed in order, in real time at time scale 1. The board keeps the top 100, and every lap posted with its replay can be watched.'),
     el('div', { class: 'gm-toolbar' },
       el('label', { class: 'gm-field lb-filter' }, el('span', {}, 'Track'), mapSel),
       el('label', { class: 'gm-field lb-filter' }, el('span', {}, 'Drone class'), clsSel),
-      el('span', { class: 'gm-spacer', style: { flex: '1' } }), meta, refresh),
+      el('span', { class: 'gm-spacer', style: { flex: '1' } }), meta, refresh, openFile),
     mine,
     tracks.length ? el('table', { class: 'gm-table lb' },
-      el('thead', {}, el('tr', {}, el('th', {}, '#'), el('th', {}, 'Pilot'), el('th', {}, 'Lap'), el('th', {}, 'Drone'), el('th', {}, 'Date'))),
+      el('thead', {}, el('tr', {}, el('th', {}, '#'), el('th', {}, 'Pilot'), el('th', {}, 'Lap'), el('th', {}, 'Drone'), el('th', {}, 'Date'), el('th', {}, el('span', { class: 'gm-sr' }, 'Replay')))),
       tbody) : el('div', { class: 'gm-empty' }, icon('map'), el('h4', {}, 'No leaderboard tracks in this version')),
     empty);
 }

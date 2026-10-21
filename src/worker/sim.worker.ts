@@ -554,6 +554,7 @@ function writeRing() {
   r[o + R.crashFlip] = bf?.motorsReversed() ? 1 : 0;
   r[o + R.simRate] = simRate;
   r[o + R.damage] = quad.aero.reduce((a, x) => a + (1 - x.damage.thrustFactor) + (x.damage.broken ? 1 : 0), 0);
+  r[o + R.rc0] = rcBuf[0]; r[o + R.rc1] = rcBuf[1]; r[o + R.rc2] = rcBuf[2]; r[o + R.rc3] = rcBuf[3];
   Atomics.store(sh.ctrl, 1, head + 1);
   Atomics.store(sh.ctrl, 5, armed ? 1 : 0);
   // live buzzer / DShot beacon bits for sample-accurate audio: bit 0 beeper, bit 1 beacon

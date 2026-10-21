@@ -116,7 +116,7 @@ export class OsdRenderer {
   setHd(on: boolean) { if (on !== this.hd) { this.hd = on; this.lastSeq = -1; } }
 
   /** Redraw if Betaflight published a new frame (or blink phase changed). Returns true if redrawn. */
-  update(sh: Shared, now: number): boolean {
+  update(sh: Pick<Shared, 'ctrl' | 'osd'>, now: number): boolean {
     const seq = Atomics.load(sh.ctrl, 2);
     const blinkPhase = Math.floor(now / 250) % 2 === 0;
     const blinkChanged = blinkPhase !== this.blinkOn && now - this.lastBlink > 200;

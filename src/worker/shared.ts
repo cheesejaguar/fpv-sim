@@ -11,7 +11,7 @@
 
 export const RING_N = 2048;           // 2.048 s of history at 1 kHz
 export const RING_DT = 0.001;         // s between records
-export const REC = 40;                // float64 per record
+export const REC = 44;                // float64 per record
 
 // record field offsets
 export const R = {
@@ -20,6 +20,8 @@ export const R = {
   vbus: 18, ibus: 19, mah: 20, armed: 21, gx: 22, gy: 23, gz: 24,
   thr: 25, soc: 26, battTemp: 27, motorTemp: 28, vrs: 29, touching: 30, impact: 31,
   m0: 32, m1: 33, m2: 34, m3: 35, cellV: 36, crashFlip: 37, simRate: 38, damage: 39,
+  // the RC channels Betaflight last received (roll, pitch, throttle, yaw; µs), for lap replays
+  rc0: 40, rc1: 41, rc2: 42, rc3: 43,
 } as const;
 
 export const OSD_MAX_COLS = 64, OSD_MAX_ROWS = 32;

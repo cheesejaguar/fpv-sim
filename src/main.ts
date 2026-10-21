@@ -13,6 +13,7 @@ import { SpectrumView, SticksView } from './app/instruments';
 import { courseOf, LapBoard } from './app/leaderboard';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
+import { LapRecorder } from './app/replayRecorder';
 import { simHardwareCli } from './bf/defaults';
 import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
 import { droneClass } from './builder/droneClass';
@@ -98,7 +99,7 @@ const ctx: AppCtx = {
   input: new InputManager(), mp: new MultiplayerClient(), remotes: new RemoteQuads(), blackbox: new Blackbox(),
   tel: null, fwStatus: 'Loading Betaflight firmware…', menuOpen: false,
   rec: new Float64Array(REC), pilot: { x: 0, y: 0, z: 1.6 },
-  race: newRace(), drill: newDrill(), lb: new LapBoard(), logLines, log: makeLog(logLines),
+  race: newRace(), drill: newDrill(), lb: new LapBoard(), replays: new LapRecorder(), replay: null, logLines, log: makeLog(logLines),
 };
 ctx.scene.scene.add(ctx.drone.root);
 ctx.fpv.setVideo(ctx.build.info.components.video, ctx.view.renderScale);
@@ -139,6 +140,7 @@ bridge.onMessage = (m) => {
 function sendReset(fullBattery = false) { ctx.input.disarm(); onRespawn(ctx); ctx.send({ type: 'reset', repair: true, fullBattery }); }
 
 function applySpec(s: DroneSpec) {
+  ctx.replay?.close(); // a replay on screen puts the live quad back first
   ctx.spec = s; store(KEYS.spec, s);
   ctx.build = buildDrone(s);
   ctx.scene.scene.remove(ctx.drone.root); ctx.drone.dispose();
@@ -152,6 +154,7 @@ function applySpec(s: DroneSpec) {
 let applyingRoomMap = false;
 /** Rebuild the rendered scene of the current map (new map, or the time of day changed). */
 function rebuildScene() {
+  ctx.replay?.close();
   ctx.scene.scene.remove(ctx.drone.root); ctx.scene.dispose();
   ctx.scene = buildScene(ctx.map, { timeOfDay: ctx.view.timeOfDay }); ctx.scene.scene.add(ctx.drone.root);
 }
@@ -329,6 +332,9 @@ const gameMenu = new GameMenu({
   },
   board: ctx.lb,
   track: () => ({ map: ctx.map.id, course: courseOf(ctx.map), cls: droneClass(ctx.spec) }),
+  lastLap: () => { const l = ctx.replays.last; return l ? { lapMs: l.lap.meta.lapMs, replay: l.replay } : null; },
+  // the replay player (and its scene swap) load the first time a replay is opened
+  watch: async (bytes, label, ui) => (await import('./ui/replay/player')).openPlayer(ctx, bytes, label, ui),
 });
 appEl.append(gameMenu.root);
 
@@ -346,7 +352,7 @@ bootDone();
 
 // debugging handle (inspect from devtools), see `debug` above
 if (debug) (window as any).__fpv = {
-  ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime,
+  ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime, replays: ctx.replays,
   teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); },
   osdCells: () => hudCtl.osdCells(), frameRect: () => ctx.fpv.layout.frame,
   get scene() { return ctx.scene.scene; }, get tel() { return ctx.tel; }, get spectrum() { return spectrum.data; },
