@@ -197,6 +197,8 @@ export function goggleItems(i: GoggleInfo): { left: string[]; right: string[]; b
 export class GoggleOverlay {
   canvas = document.createElement('canvas');
   texture: THREE.CanvasTexture;
+  /** What it covers (fractions of the frame, top-left origin): the left and right text blocks. */
+  boxes: { x: number; y: number; w: number; h: number }[] = [];
   private key = '';
   private at = -1e9;
 
@@ -236,6 +238,7 @@ export class GoggleOverlay {
     x += fs * 0.5;
     g.fillStyle = '#ffffff';
     for (const s of it.left) { g.fillText(s, x, y); x += g.measureText(s).width + fs * 0.7; }
+    this.boxes = [{ x: 0, y: 0, w: Math.min(1, (x - fs * 0.7 + pad / 2) / w), h: GOGGLE_BAND }];
     let xr = w - pad;
     for (const s of [...it.right].reverse()) {
       const tw = g.measureText(s).width;
@@ -247,6 +250,7 @@ export class GoggleOverlay {
       else g.fillText(s.replace('●', ' '), xr, y);
       xr -= fs * 0.7;
     }
+    if (it.right.length) this.boxes.push({ x: Math.max(0, (xr + fs * 0.7 - pad / 2) / w), y: 0, w: Math.min(1, 1 - (xr + fs * 0.7 - pad / 2) / w), h: GOGGLE_BAND });
     this.texture.needsUpdate = true;
     return true;
   }

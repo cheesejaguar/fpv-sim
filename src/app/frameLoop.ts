@@ -229,7 +229,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
       // the picture only changes with a camera frame (link artefacts, noise and fields step at that
       // rate too), the OSD or the overlay: on a 144 Hz display most refreshes have nothing to draw
       if (tick || osdChanged || gogChanged || presentDue) {
-        fpv.present(osd.texture, (osd.cols * 12) / (osd.rows * 18) * (v.kind === 'analog' ? 0.9 : 1), now / 1000, link.state, view.osd && osd.hasContent, gogOn ? gog.texture : null);
+        fpv.present(osd.texture, (osd.cols * 12) / (osd.rows * 18) * (v.kind === 'analog' ? 0.9 : 1), now / 1000, link.state, view.osd && osd.hasContent, gogOn ? gog : null);
         presentDue = false;
       }
     } else {

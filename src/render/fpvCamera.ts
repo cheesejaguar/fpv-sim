@@ -15,7 +15,6 @@
 //     the goggles' own overlay.
 import * as THREE from 'three';
 import type { VideoSpec } from '../data/catalog';
-import { GOGGLE_BAND } from './osdRenderer';
 
 // ---------------------------------------------------------------------------------------------
 // Camera maths shared by the shaders and the frame loop (plain numbers: unit-tested)
@@ -451,6 +450,7 @@ void main() {
 const SUN_LO = 4.0, SUN_HI = 20.0;
 
 interface Face { i: number; vp: THREE.Vector4 }
+type Rect = { x: number; y: number; w: number; h: number };
 
 export class FpvCamera {
   cubeRT: THREE.WebGLCubeRenderTarget;
@@ -494,9 +494,9 @@ export class FpvCamera {
   sunColor = new THREE.Color(1, 1, 1);
   /** Camera orientation through the frame (see setMotion) and mount vibration (see setVibration). */
   private rotTab = new Float32Array(ROT_N * 3);
-  /** Where the last presented video frame, its OSD grid and the goggle overlay's strip (h 0 when
-   *  off) sit on screen (CSS px, top-left origin). */
-  layout = { frame: { x: 0, y: 0, w: 0, h: 0 }, osd: { x: 0, y: 0, w: 0, h: 0 }, goggle: { x: 0, y: 0, w: 0, h: 0 } };
+  /** Where the last presented video frame, its OSD grid and the goggle overlay's text blocks (none
+   *  when it is off) sit on screen (CSS px, top-left origin). */
+  layout: { frame: Rect; osd: Rect; goggle: Rect[] } = { frame: { x: 0, y: 0, w: 0, h: 0 }, osd: { x: 0, y: 0, w: 0, h: 0 }, goggle: [] };
 
   constructor(private renderer: THREE.WebGLRenderer, cubeSize = 768) {
     this.cubeRT = this.makeCubeRT(cubeSize);
@@ -801,7 +801,8 @@ export class FpvCamera {
   }
 
   /** Composite to the screen with link artefacts, OSD and the goggles' overlay. */
-  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean, gogTex: THREE.Texture | null = null) {
+  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean, gog: { texture: THREE.Texture; boxes: Rect[] } | null = null) {
+    const gogTex = gog?.texture ?? null;
     const r = this.renderer;
     const u = this.postMat.uniforms;
     u.frame.value = this.frameRT.texture; u.prevFrame.value = this.prevRT.texture; u.expTex.value = this.expRT[this.expIdx].texture;
@@ -829,7 +830,7 @@ export class FpvCamera {
     const fw = u.screenFit.value.x * cw, fh = u.screenFit.value.y * ch;
     const f = this.layout.frame; f.x = (cw - fw) / 2; f.y = (ch - fh) / 2; f.w = fw; f.h = fh;
     const o = this.layout.osd; o.w = ow * fw; o.h = oh * fh; o.x = f.x + (0.5 - ow / 2) * fw; o.y = f.y + (0.5 - oh / 2) * fh;
-    const g = this.layout.goggle; g.x = f.x; g.y = f.y; g.w = fw; g.h = gogTex ? GOGGLE_BAND * fh : 0;
+    this.layout.goggle = (gog?.boxes ?? []).map((b) => ({ x: f.x + b.x * fw, y: f.y + b.y * fh, w: b.w * fw, h: b.h * fh }));
     this.quad.material = this.postMat;
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
