@@ -9,6 +9,10 @@
 //   plain: ~1.25 ms poll writes timestamped samples (Gamepad.timestamp) to the stick ring; each
 //          packet takes the newest sample at least STICK_LATENCY_MS older than its slot.
 //   new:   plain + StickSampler's mixer-sync offset (what the worker does).
+// Slow inputs (a radio in BLE joystick mode, 40-90 Hz reports, the browser stamping each report on
+// arrival and showing it at its next 4 ms gamepad poll, a few missed connection events):
+//   stair: the newest sample per packet (StickSampler without interpolation, the code before)
+//   interp: StickSampler's reconstruction between reports (what the worker does)
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, test } from 'vitest';
@@ -134,4 +138,92 @@ describe.skipIf(!have)('stick path: setpoint and feedforward through the real Be
     expect(res.new1000.ff).toBeLessThan(res.old1000.ff * 0.8);
     expect(res.new1000.sp).toBeLessThan(res.old1000.sp * 0.6);
   }, 300000);
+
+  test('radio in BLE joystick mode (40-90 Hz reports): no staircase, no feedforward spikes', async () => {
+    const nPk = Math.ceil(T_RUN / PKT), k0 = Math.round(T_SKIP / PKT);
+    const rows: string[] = [];
+    for (const padHz of [90, 60, 40]) {
+      const res: Record<string, { dups: number; ff: number; spikes: number; sp: number; lat: number }> = {};
+      let inputMs = 0;
+      for (const mode of ['stair', 'interp'] as const) {
+        const acc = { dups: 0, ff: 0, spikes: 0, sp: 0, lat: 0 }, seeds = [11, 22, 33];
+        for (const seed of seeds) {
+          const pk = blePackets(padHz, seed, mode === 'interp');
+          if (mode === 'interp') inputMs = pk.inputMs;
+          const latMs = fitLatency(pk.v);
+          const ideal = await runBf(Array.from({ length: nPk }, (_, k) => WAVE(k * PKT - latMs / 1000)));
+          const got = await runBf(pk.v);
+          // packets that repeat the previous value while the stick is moving (Betaflight: duplicates)
+          let dups = 0; for (let k = k0; k < nPk; k++) if (pk.v[k] === pk.v[k - 1]) dups++;
+          // feedforward spikes: PID loops whose feedforward is off by more than half its peak
+          const ffPeak = Math.max(...ideal.ff.slice(i0).map(Math.abs));
+          let spikes = 0; for (let i = i0; i < got.ff.length; i++) if (Math.abs(got.ff[i] - ideal.ff[i]) > 0.5 * ffPeak) spikes++;
+          acc.dups += dups / (nPk - k0); acc.ff += rmsDiff(got.ff, ideal.ff) / rms(ideal.ff);
+          acc.spikes += spikes / (got.ff.length - i0);
+          acc.sp += rmsDiff(got.sp, ideal.sp); acc.lat += latMs;
+        }
+        for (const k of Object.keys(acc) as (keyof typeof acc)[]) acc[k] /= seeds.length;
+        res[mode] = acc;
+        rows.push(`${mode.padEnd(6)} pad ${padHz} Hz: duplicate packets ${(100 * acc.dups).toFixed(0).padStart(2)} %, feedforward error ${(100 * acc.ff).toFixed(0).padStart(3)} % (spikes > half its peak in ${(100 * acc.spikes).toFixed(1).padStart(4)} % of PID loops), setpoint error ${acc.sp.toFixed(1).padStart(4)} deg/s RMS, stick->packet latency ${acc.lat.toFixed(1)} ms`);
+      }
+      const { stair, interp } = res;
+      // the staircase: most packets duplicates, feedforward spikes at the input rate
+      expect(stair.dups).toBeGreaterThan(0.5);
+      expect(stair.spikes).toBeGreaterThan(0.1);
+      // reconstructed: duplicates and spikes only around missed reports
+      expect(interp.dups).toBeLessThan(0.05);
+      expect(interp.spikes).toBeLessThan(0.25 * stair.spikes);
+      expect(interp.ff).toBeLessThan(0.7 * stair.ff);
+      expect(interp.sp).toBeLessThan(0.5 * stair.sp);
+      // the price: well under one input interval of extra latency (the staircase averaged half an
+      // interval plus the mixer-sync offset)
+      expect(interp.lat - stair.lat).toBeLessThan(0.5 * inputMs + 2);
+      expect(inputMs).toBeGreaterThan(0.85 * 1000 / padHz); expect(inputMs).toBeLessThan(1.25 * 1000 / padHz);
+    }
+    console.log(rows.join('\n'));
+  }, 600000);
 });
+
+/**
+ * A radio in BLE joystick mode: a report every connection event (1/padHz, ±0.5 ms), 3 % of the
+ * events missed, stamped by the browser on arrival and visible at its next 4 ms gamepad poll; the
+ * main thread polls every ~1.25 ms into the stick ring, the worker wakes every ~4 ms.
+ */
+function blePackets(padHz: number, seed: number, interp: boolean, miss = 0.03): { v: number[]; inputMs: number } {
+  const r = rng(seed);
+  const reports: { t: number; vis: number }[] = [];
+  const phase = r() * 0.004;
+  for (let t = r() / padHz; t < T_RUN + 0.2; t += 1 / padHz) {
+    if (r() < miss) continue;
+    const rt = t + (r() - 0.5) * 0.001;
+    reports.push({ t: rt, vis: Math.ceil((rt - phase) / 0.004) * 0.004 + phase });
+  }
+  const sh = createShared(), ch = new Float32Array(16).fill(1500), got = new Float32Array(16);
+  const toMs = (t: number) => 1.7e12 + t * 1000;
+  const sampler = new StickSampler(L_MS);
+  if (!interp) sampler.maxInterpMs = 0;
+  const wakes: number[] = [];
+  for (let w = r() * 0.004; w < T_RUN + 0.1; w += 0.004 + (r() - 0.5) * 0.002) wakes.push(w);
+  let wi = 0, ri = -1, p = r() * 0.00125;
+  const v: number[] = [];
+  for (let k = 0; k < Math.ceil(T_RUN / PKT); k++) {
+    const tp = k * PKT; while (wakes[wi] < tp) wi++;
+    for (; p <= wakes[wi]; p += 0.00125 + (r() - 0.5) * 0.0006) {
+      while (ri + 1 < reports.length && reports[ri + 1].vis <= p) ri++;
+      const rt = ri >= 0 ? reports[ri].t : 0; ch[0] = WAVE(rt); writeStick(sh, toMs(rt), ch);
+    }
+    sampler.sample(sh, toMs(tp), got);
+    v.push(got[0]);
+  }
+  return { v, inputMs: sampler.inputMs };
+}
+
+/** Latency (ms) that best explains the packet values as the stick wave delayed. */
+function fitLatency(v: number[]): number {
+  let best = 0, bestE = Infinity;
+  for (let d = 0; d <= 60; d += 0.1) {
+    let e = 0; for (let k = Math.round(T_SKIP / PKT); k < v.length; k++) e += (v[k] - WAVE(k * PKT - d / 1000)) ** 2;
+    if (e < bestE) { bestE = e; best = d; }
+  }
+  return best;
+}

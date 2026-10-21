@@ -349,8 +349,10 @@ function fcInputs(dt: number, held: boolean) {
     rcAcc -= 1 / settings.rcLinkHz;
     // a lost packet is really lost: Betaflight sees no new frame (and fails safe if it persists)
     if (rcLink.packet()) {
-      // the newest stick sample taken a fixed latency before this packet's slot (timestamped by the
-      // main thread); outside real-time stepping (boot, CLI batches) simply the newest poll
+      // the stick sample taken a fixed latency before this packet's slot (timestamped by the main
+      // thread; a slow input such as a BLE radio is interpolated between its reports, see
+      // StickSampler); outside real-time stepping (boot, CLI batches) simply the newest poll
+      sticks.packetMs = 1000 / settings.rcLinkHz;
       if (!(realtime && sticks.sample(sh, wallAt(simT), rcBuf))) for (let i = 0; i < 16; i++) rcBuf[i] = sh.rc[i];
       for (let i = 0; i < 16; i++) if (!(rcBuf[i] >= 800 && rcBuf[i] <= 2200)) rcBuf[i] = 1500;
       bf.setRc(rcBuf);
