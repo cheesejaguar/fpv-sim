@@ -2,7 +2,7 @@
 // class, LB / RB or Q / E switch the class) and the arcade initials entry for a new personal best.
 // Hosted by GameMenu (gameMenu.ts), in its design language (theme.css).
 import { CUSTOM, TRACKS } from '../../../server/src/leaderboardCore';
-import { courseOf, defaultInitials, LapBoard, onBoard, PendingPb } from '../../app/leaderboard';
+import { defaultInitials, LapBoard, onBoard, PendingPb } from '../../app/leaderboard';
 import { CLASS_IDS, className } from '../../builder/droneClass';
 import { MAP_LIST, MAPS } from '../../maps/maps';
 import { BoardEntry, BoardResult, formatLap, SubmitResult } from '../../net/leaderboard';
@@ -20,7 +20,7 @@ function courseName(map: string, course: string): string {
   let n = courseNames.get(k);
   if (n === undefined) {
     const e = MAP_LIST[map];
-    try { if (e && !e.source && !e.prepare) n = (MAPS[map]() as { courses?: { id: string; name: string }[] }).courses?.find((c) => c.id === course)?.name; } catch { /* unbuildable: the id */ }
+    try { if (e && !e.source && !e.prepare) n = MAPS[map]().courses?.find((c) => c.id === course)?.name; } catch { /* unbuildable: the id */ }
     n ??= course.replace(/[-_]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
     courseNames.set(k, n);
   }
@@ -80,7 +80,7 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
   let seq = 0;
 
   const draw = () => {
-    const t = track(), r = state.r, own = h.board.ownIds();
+    const t = track(), r = state.r;
     meta.className = `gm-chip ${state.loading ? 'warn' : r?.error ? 'err' : 'ok'}`;
     meta.lastChild!.textContent = state.loading ? 'Loading…' : r?.error ? 'Offline' : `${r?.entries.length ?? 0} lap${r?.entries.length === 1 ? '' : 's'}`;
     refresh.disabled = state.loading;
@@ -91,7 +91,7 @@ export function boardScreen(h: BoardScreenHost): HTMLElement {
       return;
     }
     const list = r?.entries ?? [];
-    tbody.replaceChildren(...list.map((e, i) => row(e, i + 1, own.has(e.id))));
+    tbody.replaceChildren(...list.map((e, i) => row(e, i + 1, h.board.isMine(e.id))));
     if (r?.error) empty.replaceChildren(el('div', { class: 'gm-empty' }, icon('wifiOff'), el('h4', {}, 'Can’t reach the leaderboard'), el('p', {}, r.error),
       el('p', {}, 'Your personal bests are saved on this computer: post them here once you are back online.')));
     else if (!list.length) empty.replaceChildren(el('div', { class: 'gm-empty' }, icon('trophy'), el('h4', {}, 'No laps on this board yet'),
@@ -251,4 +251,3 @@ function result(r: SubmitResult, p: PendingPb): HTMLElement {
 export function trackLabelOf(map: string, course: string): string {
   return boardTracks().find((t) => t.map === map && t.course === course)?.label ?? MAP_LIST[map]?.name.split(' — ')[0] ?? map;
 }
-export { courseOf };

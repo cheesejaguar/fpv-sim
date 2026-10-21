@@ -113,7 +113,7 @@ export function raceInfo(ctx: AppCtx): RaceInfo | null {
     const map = ctx.map.id, course = courseOf(ctx.map), cls = droneClass(ctx.spec);
     const mine = ctx.lb.pb(map, course, cls), top = ctx.lb.record(map, course, cls);
     pb = mine ? mine.lapMs / 1000 : undefined;
-    if (top) record = { initials: top.initials, lap: top.lapMs / 1000, mine: top.id === mine?.submitted?.id };
+    if (top) record = { initials: top.initials, lap: top.lapMs / 1000, mine: ctx.lb.isMine(top.id) };
   }
   return { lap: r.lapCount, last: r.lastLap, best: r.bestLap, gate: r.nextGate + 1, gates, room: mp.connected ? mp.room ?? undefined : undefined, board, pb, record };
 }

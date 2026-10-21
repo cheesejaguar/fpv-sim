@@ -167,7 +167,9 @@ describe('personal bests and posting', () => {
     expect(sent.url).toBe('https://fpv-sim-rooms.newsanjose.workers.dev/leaderboard');
     expect(parseSubmission(sent.body).ok).toBe(true);
     expect(lb.pending).toBeNull();
-    expect(lb.ownIds().has(42)).toBe(true);
+    expect(lb.isMine(42)).toBe(true);
+    lb.onLap(lap(23_000), 10_000); // a newer best, not posted (yet): the entry on the board is still the pilot's
+    expect(new LapBoard(kv).isMine(42)).toBe(true);
     expect(lb.initials).toBe('ACE');
     expect(lb.record('field', '', 'freestyle5')).toMatchObject({ initials: 'TOP' });
   });

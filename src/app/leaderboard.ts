@@ -6,7 +6,7 @@
 import { hasTrack, trackKey } from '../../server/src/leaderboardCore';
 import type { MapDef } from '../maps/world';
 import { BoardEntry, BoardResult, fetchBoard, submitLap, SubmitResult } from '../net/leaderboard';
-import { KEYS, KV, load, PbRecord, PbTable, save, validClientId, validInitials, validPbs } from './persist';
+import { KEYS, KV, load, PbRecord, PbTable, save, validClientId, validEntryIds, validInitials, validPbs } from './persist';
 
 /** A completed lap (all gates in order). invalid: why it doesn't count, or null. */
 export interface LapResult { map: string; course: string; cls: string; summary: string; lapMs: number; splitsMs: number[]; invalid: string | null }
@@ -21,9 +21,8 @@ const RECORD_TTL_MS = 60_000; // HUD record: refetched at most once a minute (an
 export const pbKey = (map: string, course: string, cls: string) => `${trackKey(map, course)}|${cls}`;
 
 /** The course a map is flying: the id of the course whose gates it flies (MapDef.courses, see withCourse), else ''. */
-export function courseOf(map: MapDef): string {
-  const courses = (map as { courses?: { id: string; gates: unknown }[] }).courses;
-  return courses?.find((c) => c.gates === map.gates)?.id ?? '';
+export function courseOf(map: Pick<MapDef, 'gates' | 'courses'>): string {
+  return map.courses?.find((c) => c.gates === map.gates)?.id ?? '';
 }
 
 /** Built-in tracks only: maps loaded from disk ("local-…") and maps without a board keep local bests. */
@@ -47,6 +46,8 @@ export class LapBoard {
   pending: PendingPb | null = null;
   note: LapNote | null = null;
   private client: string;
+  /** this browser's board entries (an entry keeps its id when the pilot improves on it) */
+  private own: Set<number>;
   private noted = new Set<string>(); // "doesn't count" reasons already shown this session
   /** HUD record per board: entry undefined = not known (yet), null = the board is empty */
   private records = new Map<string, { at: number; entry: BoardEntry | null | undefined; busy: boolean }>();
@@ -55,18 +56,15 @@ export class LapBoard {
     this.pbs = load(KEYS.pbs, validPbs, kv);
     this.client = load(KEYS.lbClient, validClientId, kv);
     if (!this.client) { this.client = randomClient(); save(KEYS.lbClient, this.client, kv); }
+    this.own = new Set(load(KEYS.lbMine, validEntryIds, kv));
   }
 
   get initials(): string { return load(KEYS.initials, validInitials, this.kv); }
 
   pb(map: string, course: string, cls: string): PbRecord | undefined { return this.pbs[pbKey(map, course, cls)]; }
 
-  /** Entry ids of the pilot's own submitted laps (to mark their rows). */
-  ownIds(): Set<number> {
-    const s = new Set<number>();
-    for (const pb of Object.values(this.pbs)) if (pb.submitted) s.add(pb.submitted.id);
-    return s;
-  }
+  /** Is this board entry the pilot's own (posted from this browser)? */
+  isMine(id: number): boolean { return this.own.has(id); }
 
   /** A lap was completed. Returns 'pb' (a new personal best), 'invalid' (faster, but it doesn't count) or null. */
   onLap(l: LapResult, now = performance.now(), date = Date.now()): 'pb' | 'invalid' | null {
@@ -107,6 +105,7 @@ export class LapBoard {
     if (r.ok && r.id) {
       const pb = this.pbs[p.key];
       if (pb && pb.lapMs === p.lapMs) { pb.submitted = { id: r.id, at: Date.now() }; save(KEYS.pbs, this.pbs, this.kv); }
+      if (!this.own.has(r.id)) { this.own.add(r.id); save(KEYS.lbMine, [...this.own], this.kv); }
     }
     if (r.ok) {
       if (this.pending === p) this.pending = null;

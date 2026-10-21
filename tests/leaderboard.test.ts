@@ -138,7 +138,7 @@ async function builtInMaps(): Promise<MapDef[]> {
 
 describe('tracks match the maps', async () => {
   const maps = await builtInMaps();
-  const courses = (m: MapDef) => (m as { courses?: { id: string; gates: GateDef[] }[] }).courses ?? [];
+  const courses = (m: MapDef) => m.courses ?? [];
 
   test('every built-in map with gates (and every course) has a board, with the right gates and length', () => {
     for (const m of maps) {

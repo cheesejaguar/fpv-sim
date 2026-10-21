@@ -112,6 +112,8 @@ The sim opens on a title screen, with your quad orbiting on the launch pad behin
   Modes are free flight, race and hover drill. Race needs a map with gates (the FPV World Cup
   Stadium, or a community race map); maps without gates can't be picked for it.
 - **Server browser**: public rooms.
+- **Leaderboard**: the fastest laps worldwide, by track and drone class (see
+  [Global leaderboard](#global-leaderboard)). Also in the pause menu.
 - **Settings**: Simulation, Controller, Betaflight (tuning, CLI, `diff all` import), Drone builder,
   Multiplayer relay and Blackbox.
 - **Betaflight quick start**: a nine-chapter guide covering arming, flight modes, rates (with a
@@ -378,6 +380,52 @@ npx wrangler deploy
 If you deploy your own relay, set `VITE_MP_URL=wss://fpv-sim-rooms.<subdomain>.workers.dev` in the Vercel project's
 environment variables and redeploy. Without it, the app uses the public relay `wss://fpv-sim-rooms.newsanjose.workers.dev` (`src/net/config.ts`).
 A relay URL can also be entered per browser in the Multiplayer tab.
+
+## Global leaderboard
+
+Every built-in track with timed gates has an arcade-style board per drone class: the Grand Prix
+Stadium, Quarry Loop, the Whoop Gym, Ridgeline, the Night Session and each Practice Field course.
+- **What counts.** A lap counts when it passes every gate in order (each gate's split time is
+  recorded), at time scale 1, and in real time: a pause, slow motion or a computer that can't keep
+  up during the lap rules it out (the HUD says why). Laps in multiplayer rooms count too.
+- **Personal bests** are kept per track and drone class in the browser. A new one shows a short
+  note on the HUD and never interrupts the flight. Posting it is optional: once disarmed, a card
+  offers **Post to leaderboard** (click it, or press **L**). The pause menu offers **Post your lap**.
+  The arcade initials entry works like this:
+  - controller: up / down change a letter, left / right move, A saves, B skips;
+  - keyboard: type the letters, then Enter;
+  - mouse: the arrows next to each letter.
+  It is prefilled with the last initials used. A best that wasn't posted (offline, or skipped) can
+  be posted later from the leaderboard.
+- **Drone class**: the preset you fly (a renamed preset, or one with another camera angle, still
+  counts as that preset), or *Custom*, shown with a summary like `Custom · 5" · 2207 1950KV · 6S`.
+- **The board** (title screen or pause menu → Leaderboard):
+  - filter by track, and by drone class or *All drones* (LB / RB or Q / E switch the class);
+  - shows rank, initials, lap time (m:ss.mmm), drone and date, with your own entries marked;
+  - one entry per pilot per board, top 100.
+  - The race HUD shows your personal best and the board's record for your class.
+
+**Server.** A `Leaderboard` Durable Object (SQLite, migration `v3`) on the same relay holds every
+board. `server/src/leaderboardCore.ts` holds the logic, unit-tested in `tests/leaderboard.test.ts`
+with a real SQLite database, and the client side in `tests/lapBoard.test.ts`.
+- `GET /leaderboard?map=field&class=all` (and `&course=slalom` for a course) is CORS-enabled and
+  edge-cached for 10 s.
+- `POST /leaderboard` only accepts the site's own origins, bodies up to 2 KB, three letters A–Z
+  (minus a blocklist), a built-in track (never maps loaded from disk) and a known class, time
+  scale 1, one split per gate adding up to the lap, and a lap no faster than the class can fly
+  that track (the track's gate-to-gate length at a generous top speed for the class).
+- It stores salted hashes (`IP_SALT`) of the client's IP and of a random per-browser token, never
+  the raw values:
+  - one entry per pilot (the token) per board;
+  - at most 3 entries per network (the IP) per board;
+  - 20 submissions per network every 10 minutes;
+  - plus the optional `RATE_LIMITER` and `DENYLIST` bindings.
+- With an `ADMIN_TOKEN` secret, `DELETE /leaderboard/<id>` (`Authorization: Bearer <token>`)
+  removes an entry, for removal requests (`privacy.html`) and moderation.
+
+The sim runs in the pilot's browser, so these are plausibility and abuse limits, not proof that a
+lap was flown. A modified client can still post a plausible fake lap. Deploy the relay (with its
+`v3` migration) before a site that uses it.
 
 ## Tests
 

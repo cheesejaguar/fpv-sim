@@ -17,8 +17,13 @@ import { APP_COMMIT, APP_VERSION, bugReportUrl, commitUrl, gpuRenderer, REPO_URL
 import { cachedStats, DroneStats, droneStats } from './droneStats';
 import { CHAPTERS, GuideAction, guideDone, markDone } from './guide';
 import { icon, IconName, logo } from './icons';
-import { boardChanged, boardScreen, InitialsScreen, initialsScreen, showBoard, trackLabelOf } from './leaderboard';
+import type { InitialsScreen } from './leaderboard';
 import { focusEl, focusables, MenuNav } from './nav';
+
+// The leaderboard screens (leaderboard.ts, initials.ts) load the first time one opens, not at startup.
+type BoardModule = typeof import('./leaderboard');
+let boardModule: Promise<BoardModule> | undefined;
+const loadBoard = () => (boardModule ??= import('./leaderboard').catch((e) => { boardModule = undefined; throw e; }));
 
 export type GameMode = 'free' | 'race' | 'drill';
 type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about' | 'leaderboard' | 'initials';
@@ -272,7 +277,7 @@ export class GameMenu {
     const hint = (glyph: HTMLElement, text: string) => el('span', { class: 'gm-hint' }, glyph, text);
     const kids: HTMLElement[] = [hint(pad ? g('a', 'A') : g('key', 'Enter'), 'Select')];
     if (this.stack.length > 1 || s === 'pause') kids.push(el('button', { class: 'gm-hint gm-hint-btn', tabindex: '-1', onclick: () => this.back() }, pad ? g('b', 'B') : g('key', 'Esc'), s === 'pause' ? 'Resume' : 'Back'));
-    if (this.tabs) kids.push(hint(pad ? g('key', 'LB · RB') : g('key', 'Q · E'), s === 'guide' ? 'Chapter' : 'Switch tab'));
+    if (this.tabs) kids.push(hint(pad ? g('key', 'LB · RB') : g('key', 'Q · E'), s === 'guide' ? 'Chapter' : s === 'leaderboard' ? 'Drone class' : 'Switch tab'));
     kids.push(hint(pad ? g('key', 'D-pad') : g('key', '↑↓←→'), 'Move'));
     if (pad) kids.push(hint(g('key', 'R-stick'), 'Scroll'));
     const fs = !!fsElement();
@@ -718,34 +723,58 @@ export class GameMenu {
     else if (this.stack[this.stack.length - 1] !== 'initials') { this.iniReturn = 'back'; this.go('initials'); }
   }
 
+  /** A screen from leaderboard.ts: drawn once its module has loaded (at once after the first time). */
+  private lazy(build: (m: BoardModule) => HTMLElement): HTMLElement {
+    const box = el('div', { 'aria-busy': 'true' }, this.backBar());
+    void loadBoard().then((m) => {
+      if (!box.isConnected) return; // left meanwhile
+      box.replaceChildren(build(m));
+      box.removeAttribute('aria-busy');
+      this.renderFoot(); // its tabs (LB / RB)
+      const pref = box.querySelector<HTMLElement>('[data-autofocus]') ?? focusables(box)[0];
+      if (pref) { if (this.nav.usingPad) focusEl(pref); else pref.focus({ preventScroll: true }); }
+    }, (e) => {
+      if (box.isConnected) box.replaceChildren(this.backBar(), el('div', { class: 'gm-empty' }, icon('wifiOff'), el('h4', {}, 'The leaderboard didn’t load'), el('p', {}, `${(e as Error)?.message ?? e}. Check the connection and try again.`)));
+    });
+    return box;
+  }
+
   private leaderboard(): HTMLElement {
-    return boardScreen({
+    return this.lazy((m) => m.boardScreen({
       board: this.host.board,
       current: () => this.host.track(),
       backBar: () => this.backBar(),
       setTabs: (t) => { this.tabs = t; },
       post: (map, course, cls) => { if (this.host.board.offer(map, course, cls)) { this.iniReturn = 'back'; this.go('initials'); } },
-    });
+    }));
   }
 
   private initials(): HTMLElement {
     const p = this.host.board.pending;
     if (!p) { queueMicrotask(() => this.back()); return el('div'); } // posted or dismissed meanwhile
-    this.ini = initialsScreen({
-      board: this.host.board, pending: p,
-      trackLabel: trackLabelOf(p.map, p.course),
-      callsign: loadPilot().name,
-      usingPad: () => this.nav.usingPad,
-      open: (o) => this.nav.open(o),
-      done: (board) => {
-        this.ini = null;
-        boardChanged(p.map, p.course);
-        if (board) { showBoard(p.map, p.course, p.cls); this.stack[this.stack.length - 1] = 'leaderboard'; this.render(); return; }
-        if (this.iniReturn === 'close') this.close();
-        else { this.stack.pop(); this.render(); }
-      },
+    return this.lazy((m) => {
+      this.ini = m.initialsScreen({
+        board: this.host.board, pending: p,
+        trackLabel: m.trackLabelOf(p.map, p.course),
+        callsign: loadPilot().name,
+        usingPad: () => this.nav.usingPad,
+        open: (o) => this.nav.open(o),
+        done: (board) => {
+          this.ini = null;
+          m.boardChanged(p.map, p.course);
+          if (board) {
+            m.showBoard(p.map, p.course, p.cls);
+            // posted from the leaderboard: back to it; else the board takes the entry's place
+            if (this.stack[this.stack.length - 2] === 'leaderboard') this.stack.pop(); else this.stack[this.stack.length - 1] = 'leaderboard';
+            this.render();
+            return;
+          }
+          if (this.iniReturn === 'close') this.close();
+          else { this.stack.pop(); this.render(); }
+        },
+      });
+      return el('div', {}, this.backBar(), this.ini.el);
     });
-    return el('div', {}, this.backBar(), this.ini.el);
   }
 
   // -------------------------------------------------------------------------------------------

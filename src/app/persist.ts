@@ -21,6 +21,8 @@ export const KEYS = {
   initials: 'fpv-initials',
   /** random token that keeps one leaderboard entry per board for this browser */
   lbClient: 'fpv-lb-client',
+  /** ids of this browser's leaderboard entries (its rows are marked) */
+  lbMine: 'fpv-lb-mine',
 } as const;
 
 /** Format of the { v, data } envelope. Bump it (and migrate in readStored) when a stored shape changes. */
@@ -235,3 +237,7 @@ export const validInitials = (raw: unknown): string => (typeof raw === 'string' 
 
 /** 32 hex digits, or '' (none yet). */
 export const validClientId = (raw: unknown): string => (typeof raw === 'string' && /^[0-9a-f]{32}$/.test(raw) ? raw : '');
+
+/** Leaderboard entry ids (positive integers), the newest 200. */
+export const validEntryIds = (raw: unknown): number[] =>
+  (Array.isArray(raw) ? raw.filter((x): x is number => Number.isInteger(x) && x > 0 && x < 1e12) : []).slice(-200);
