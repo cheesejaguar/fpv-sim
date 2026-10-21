@@ -5,6 +5,7 @@
 //  - contacts stay stable on small quads and at reduced physics rates
 //  - yaw tracks the stick smoothly, also through a radio that reports at 60 Hz
 // Firmware tests are skipped when the Betaflight WASM hasn't been built.
+import { existsSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { buildDrone, PRESETS } from '../src/builder/derive';
 import { GroundPlane, MATERIALS } from '../src/sim/contact';
@@ -12,9 +13,12 @@ import { qFromEuler } from '../src/sim/math';
 import { QuadEnv, QuadParams, QuadSim } from '../src/sim/quad';
 import { WakeField } from '../src/sim/wake';
 import { Wind, WindParams } from '../src/sim/wind';
+import { ACC_CAL_REV, accBoardKey } from '../src/worker/accCal';
 import { DEFAULT_SETTINGS } from '../src/worker/shared';
+import { applyDefaults, bfRig, BfRig, FW_URL } from './helpers/bfRig';
 import { CALM, DT } from './helpers/scenarios';
 
+const have = existsSync(FW_URL);
 const DEG = 180 / Math.PI;
 const WHOOP = PRESETS.find((p) => p.name.includes('65 mm'))!;
 /** The app's default wind (field map: grass). */
@@ -71,5 +75,75 @@ describe('on the pad', () => {
         expect(zMax, rows.at(-1)).toBeLessThan(h + 0.25);        // no bounce launching it into the air
       }
     }
+  }, 120000);
+});
+
+describe('accelerometer calibration bookkeeping', () => {
+  test('the stored trims are tied to the simulated board: another build is recalibrated, the same one is not', () => {
+    const key = (s: (typeof PRESETS)[number]) => accBoardKey(new QuadSim(buildDrone(s).params, 8000).imu);
+    expect(key(WHOOP)).toBe(key(WHOOP));
+    expect(key(WHOOP).startsWith(`${ACC_CAL_REV}:`)).toBe(true);
+    // same FC and frame, other parts: the per-build IMU errors differ, so the old trims don't fit
+    const a = PRESETS.find((p) => p.name === '5" Freestyle 6S')!, b = PRESETS.find((p) => p.name === '5" HDZero 6S')!;
+    expect(a.fc).toBe(b.fc); expect(a.frame).toBe(b.frame);
+    expect(key(a)).not.toBe(key(b));
+    expect(new Set(PRESETS.map(key)).size).toBe(PRESETS.length);
+  });
+});
+
+/** Arm in Angle (AUX2 high) or acro, climb to ~1.5 m and hold it with the throttle only (the pilot's
+ *  left thumb); roll / pitch / yaw sticks centred. Returns mean roll / pitch and drift speed over 4 s. */
+function handsOffHover(r: BfRig, angle: boolean) {
+  r.rc[5] = angle ? 2000 : 1000;
+  r.rc[4] = 1900; r.run(0.3);
+  const hov = r.hoverUs();
+  let trim = 0;
+  r.setOnPacket(() => {
+    const s = r.quad.s, e = 1.5 - s.pos.z;
+    trim = Math.max(-150, Math.min(150, trim + 0.4 * e)); // the pilot settles on the real hover throttle
+    r.rc[2] = Math.max(1000, Math.min(2000, hov + trim + 100 * e - 60 * s.vel.z));
+  });
+  r.run(4); // take off and settle
+  const p0 = { ...r.quad.s.pos };
+  let sr = 0, sp = 0, n = 0;
+  for (let i = 0; i < 40; i++) { r.run(0.1); const [ro, pi] = rollPitch(r.quad.s.q); sr += ro; sp += pi; n++; }
+  const p1 = r.quad.s.pos;
+  r.setOnPacket(null);
+  return { roll: sr / n, pitch: sp / n, speed: Math.hypot(p1.x - p0.x, p1.y - p0.y) / 4, side: (p1.y - p0.y) / 4, alt: p1.z };
+}
+
+describe.skipIf(!have)('hands-off hover (real Betaflight)', () => {
+  test('whoop, worker-style boot on the pad: Angle holds level, no sideways drift with the wind off', async () => {
+    const r = await bfRig(WHOOP);
+    r.run(2); // dropped onto the pad, settles
+    applyDefaults(r);
+    expect(r.calibrateAccLevelled()).toBe(true);
+    r.run(3);
+    expect(r.bf.armingDisableFlags()).toBe(0);
+    const a = handsOffHover(r, true);
+    console.log(`Angle hands-off: mean roll ${a.roll.toFixed(2)}°, pitch ${a.pitch.toFixed(2)}°, drift ${a.speed.toFixed(3)} m/s, alt ${a.alt.toFixed(2)} m`);
+    expect(Math.abs(a.roll)).toBeLessThan(1); expect(Math.abs(a.pitch)).toBeLessThan(1);
+    expect(a.speed).toBeLessThan(0.15);
+    expect(Math.abs(a.alt - 1.5)).toBeLessThan(0.5);
+  }, 120000);
+
+  test('whoop in acro: hands-off it keeps the attitude it took off with (level pad), little drift', async () => {
+    const r = await bfRig(WHOOP);
+    r.run(2); applyDefaults(r); r.calibrateAccLevelled(); r.run(3);
+    const a = handsOffHover(r, false);
+    console.log(`Acro hands-off: mean roll ${a.roll.toFixed(2)}°, pitch ${a.pitch.toFixed(2)}°, drift ${a.speed.toFixed(3)} m/s`);
+    expect(Math.abs(a.roll)).toBeLessThan(2); expect(Math.abs(a.pitch)).toBeLessThan(2);
+    expect(a.speed).toBeLessThan(0.3);
+  }, 120000);
+
+  test('control: calibrating where the old whoop lay (on one duct) gives the reported constant left roll', async () => {
+    const r = await bfRig(WHOOP, { params: oldWhoopPad });
+    r.run(3); applyDefaults(r);
+    r.bf.calibrateAcc(); for (let i = 0; i < 3 / DT && r.bf.accCalibrating(); i++) r.run(DT); // the old live calibration
+    r.run(3);
+    const a = handsOffHover(r, true);
+    console.log(`old pad + live calibration, Angle hands-off: mean roll ${a.roll.toFixed(1)}°, sideways ${a.side.toFixed(2)} m/s (+ = left)`);
+    expect(Math.abs(a.roll)).toBeGreaterThan(8);
+    expect(Math.abs(a.side)).toBeGreaterThan(1);
   }, 120000);
 });
