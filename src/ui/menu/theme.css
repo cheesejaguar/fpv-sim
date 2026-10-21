@@ -266,6 +266,8 @@
 .gm-settings button.primary { background: var(--gm-primary); border-color: transparent; color: #fff; }
 .gm-settings select { min-height: 36px; }
 .gm-settings input:not([type]), .gm-settings input[type=text], .gm-settings textarea { min-height: 36px; border-radius: 8px; background: rgba(15, 15, 35, 0.85); color: var(--gm-fg); border: 1px solid var(--gm-border-soft); }
+.gm-settings .builder-bar { background: #1e1c35; border-color: var(--gm-border); border-radius: var(--gm-radius); backdrop-filter: blur(10px); }
+.gm-settings .builder-bar button { min-height: 40px; }
 .gm-settings input[type=range] { accent-color: var(--gm-primary); }
 
 /* ---------- bottom hint bar ---------- */

@@ -43,9 +43,26 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
   const ov = (k: keyof Overrides, label: string, min: number, max: number, step: number, def: number, unit = '', hint = '') =>
     slider({ label, min, max, step, value: (spec.overrides[k] as number) ?? def, unit, hint, onInput: (v) => { (spec.overrides as any)[k] = v; refreshInfo(); } }).row;
 
+  // action bar pinned above the (long) builder, so Apply is reachable without scrolling
+  const dirtyTag = el('span', { class: 'builder-dirty' });
+  const updateDirty = () => {
+    const changed = JSON.stringify(spec) !== JSON.stringify(getSpec());
+    dirtyTag.textContent = changed ? '● Unapplied changes' : '✓ Matches the quad you are flying';
+    dirtyTag.classList.toggle('on', changed);
+  };
+  root.addEventListener('input', updateDirty);
+  root.addEventListener('change', updateDirty);
+
   const render = () => {
     const m = byId(MOTORS, spec.motor), pr = byId(PROPS, spec.prop), bt = byId(BATTERIES, spec.battery), esc = byId(ESCS, spec.esc);
     root.replaceChildren(
+      el('div', { class: 'builder-bar' },
+        el('b', {}, spec.name), dirtyTag,
+        el('span', { class: 'spacer' }),
+        el('button', { class: 'primary', onclick: () => apply(structuredClone(spec)) }, 'Apply & respawn'),
+        el('button', { onclick: () => { spec.overrides = {}; render(); } }, 'Reset overrides'),
+        el('button', { onclick: () => { const blob = new Blob([JSON.stringify(spec, null, 2)], { type: 'application/json' }); const a = el('a', { href: URL.createObjectURL(blob), download: `${spec.name.replace(/\W+/g, '_')}.json` }); a.click(); } }, 'Export JSON'),
+      ),
       el('div', { class: 'cols' },
         el('div', { class: 'col' },
           section('Preset',
@@ -75,16 +92,12 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
           section('Airframe', ov('massScale', 'Mass ×', 0.7, 1.5, 0.01, 1), ov('inertiaScale', 'Inertia ×', 0.6, 1.6, 0.01, 1), ov('cdAScale', 'Drag area ×', 0.5, 2, 0.01, 1), ov('frameFreqHz', 'Frame resonance', 60, 400, 1, 160, 'Hz'), ov('vibrationScale', 'Vibration coupling ×', 0, 4, 0.05, 1), ov('auxPowerW', 'Aux power (VTX/FC/cam)', 1, 20, 0.5, 6, 'W')),
         ),
         el('div', { class: 'col' }, info,
-          el('div', { class: 'actions' },
-            el('button', { class: 'primary', onclick: () => apply(structuredClone(spec)) }, 'Apply & respawn'),
-            el('button', { onclick: () => { spec.overrides = {}; render(); } }, 'Reset overrides'),
-            el('button', { onclick: () => { const blob = new Blob([JSON.stringify(spec, null, 2)], { type: 'application/json' }); const a = el('a', { href: URL.createObjectURL(blob), download: `${spec.name.replace(/\W+/g, '_')}.json` }); a.click(); } }, 'Export JSON'),
-          ),
           el('p', { class: 'note' }, 'Manufacturer data where published; winding resistance, rotor inertia, thermal constants and prop static calibration are engineering estimates. Override any value with the sliders.'),
         ),
       ),
     );
     refreshInfo();
+    updateDirty();
   };
   render();
   return root;
