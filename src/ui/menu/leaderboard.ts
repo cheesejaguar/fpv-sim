@@ -56,6 +56,8 @@ export interface BoardScreenHost {
 const CLASS_FILTERS = ['all', ...CLASS_IDS];
 const filterLabel = (c: string) => (c === 'all' ? 'All drones' : c === CUSTOM ? 'Custom builds' : className(c));
 let filter: { track: string; cls: string } | null = null; // kept for the session
+/** The board the screen opens on (unless a lap was just posted elsewhere): the FPV Grand Prix Stadium. */
+export const DEFAULT_TRACK = 'field';
 const cache = new Map<string, { at: number; r: BoardResult }>();
 const CACHE_MS = 30_000;
 
@@ -67,8 +69,7 @@ export function boardChanged(map: string, course: string) { const t = course ? `
 export function boardScreen(h: BoardScreenHost): HTMLElement {
   const tracks = boardTracks();
   if (!filter || !tracks.some((t) => t.key === filter!.track)) {
-    const c = h.current(), here = tracks.find((t) => t.map === c.map && t.course === c.course);
-    filter = { track: (here ?? tracks[0])?.key ?? '', cls: filter?.cls ?? c.cls };
+    filter = { track: (tracks.find((t) => t.key === DEFAULT_TRACK) ?? tracks[0])?.key ?? '', cls: filter?.cls ?? h.current().cls };
   }
   const f = filter;
   const track = () => tracks.find((t) => t.key === f.track) ?? tracks[0];
