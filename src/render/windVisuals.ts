@@ -71,11 +71,11 @@ export function windsockSpot(map: MapDef): { x: number; y: number; z: number } |
     return true;
   };
   // sideways first (left / right of the line to the course), then behind; never nearer the course
-  // than the pilot (that's where the quads fly: the sock is scenery, it doesn't collide)
+  // than the pilot nor next to the spawn (that's where quads fly: the sock is scenery, no collision)
   const angles = [90, -90, 120, -120, 150, -150, 180].map((d) => fwd + (d * Math.PI) / 180), dc = Math.hypot(c.x - pilot.x, c.y - pilot.y);
   for (const d of [3, 5, 8, 11, 14, 18, 24]) for (const a of angles) {
     const x = pilot.x + Math.cos(a) * d, y = pilot.y + Math.sin(a) * d;
-    if (Math.hypot(c.x - x, c.y - y) >= dc && clear(x, y)) return { x, y, z: map.terrain(x, y) };
+    if (Math.hypot(c.x - x, c.y - y) >= dc && Math.hypot(map.spawn.pos.x - x, map.spawn.pos.y - y) > 6 && clear(x, y)) return { x, y, z: map.terrain(x, y) };
   }
   return null;
 }

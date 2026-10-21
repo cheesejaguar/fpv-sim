@@ -273,7 +273,7 @@ export function buildClutter(map: MapDef, u: WorldUniforms, tuftTex: THREE.Textu
       const r = 0.025 + Math.pow(t.k, 3) * 0.12;
       q.setFromEuler(new THREE.Euler(rnd() * 0.4, rnd() * 6.3, rnd() * 0.4));
       im.setMatrixAt(i, m4.compose(p.set(t.x, map.terrain(t.x, t.y) - r * 0.2, -t.y), q, s.set(r * (0.8 + rnd() * 0.5), r, r * (0.8 + rnd() * 0.5))));
-      const g = 0.2 + rnd() * 0.22; // weathered stone: a little lighter than the soil, not white
+      const g = 0.07 + rnd() * 0.1; // linear albedo: weathered stone a little lighter than the soil (~0.16), not white
       im.setColorAt(i, col.setRGB(g * (1.05 + rnd() * 0.1), g, g * (0.88 + rnd() * 0.1)));
     });
   }

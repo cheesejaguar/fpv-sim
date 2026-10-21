@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { FLAG, isFlagBanner } from '../src/maps/gates';
-import { MAPS } from '../src/maps/maps';
+import { bandoMap, MAPS } from '../src/maps/maps';
 import { MapDef, PrimitiveWorld } from '../src/maps/world';
 import { buildCrowd, figureGeometry } from '../src/render/crowd';
 import { bladeLengths, propColor, PROP_COLORS } from '../src/render/droneMesh';
@@ -107,6 +107,9 @@ describe('wind', () => {
     expect(Math.hypot(s.x - pilot.x, s.y - pilot.y)).toBeLessThan(25);
     expect(s.y).toBeLessThan(-38); // outside the safety net, on the pilots' side
     expect(windsockSpot({ ...field, ground: false })).toBeNull();
+    // no course: beside the default pilot spot, but away from the spawn pad
+    const b = bandoMap(), sb = windsockSpot(b)!;
+    expect(Math.hypot(sb.x - b.spawn.pos.x, sb.y - b.spawn.pos.y)).toBeGreaterThan(6);
   });
 });
 
