@@ -2,7 +2,7 @@
 // the HUD summaries of both.
 import { spawnGroundZ } from '../maps/world';
 import type { DrillInfo, RaceInfo } from '../ui/hud/hud';
-import { loadPilot } from '../ui/multiplayerPanel';
+import { loadPilot, PilotPrefs } from '../ui/multiplayerPanel';
 import { R } from '../worker/shared';
 import type { AppCtx } from './context';
 
@@ -46,13 +46,26 @@ export function updateDrill(ctx: AppCtx, head: number, armed: boolean): DrillInf
   return { inBox: d < 1.5, offBy: Math.max(0, d - 1.5), elapsed, score, best: drill.best };
 }
 
-/** Lap panel data with the live room leaderboard (best lap first); null on maps without gates. */
+// The pilot's name / color for the leaderboard: read from storage at most every 2 s, not every frame
+// (it only changes in the menu, while the HUD is hidden).
+let pilotCache: { at: number; p: PilotPrefs } | null = null;
+export function cachedPilot(now = performance.now()): PilotPrefs {
+  if (!pilotCache || now - pilotCache.at > 2000) pilotCache = { at: now, p: loadPilot() };
+  return pilotCache.p;
+}
+
+/**
+ * Lap panel data with the live room leaderboard (best lap first). On maps without gates there are
+ * no laps: in a room it is just the roster (gates = 0), solo it is null.
+ */
 export function raceInfo(ctx: AppCtx): RaceInfo | null {
   const r = ctx.race, mp = ctx.mp, gates = ctx.map.gates.length;
-  if (!gates) return null;
-  const me = loadPilot();
-  const board = mp.connected
-    ? [{ name: me.name, color: me.color, lap: r.lapCount, best: r.bestLap, me: true }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, color: p.info.color, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity, me: false }))].sort((a, b) => a.best - b.best)
-    : undefined;
-  return { lap: r.lapCount, last: r.lastLap, best: r.bestLap, gate: r.nextGate + 1, gates, board };
+  if (!gates && !mp.connected) return null;
+  let board: RaceInfo['board'];
+  if (mp.connected) {
+    const me = cachedPilot();
+    board = [{ name: me.name, color: me.color, lap: r.lapCount, best: r.bestLap, me: true }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, color: p.info.color, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity, me: false }))];
+    if (gates) board.sort((a, b) => a.best - b.best);
+  }
+  return { lap: r.lapCount, last: r.lastLap, best: r.bestLap, gate: r.nextGate + 1, gates, room: mp.connected ? mp.room ?? undefined : undefined, board };
 }
