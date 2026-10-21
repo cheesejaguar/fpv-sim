@@ -8,12 +8,17 @@ import { SteamHidController } from './steamHid';
 
 export type ThrottleMode = 'full' | 'upper' | 'trigger';
 
+/** AUX2 flight mode index (Betaflight ranges here: 1000 acro, 1500 horizon, 2000 angle). */
+export const MODE_ACRO = 0, MODE_HORIZON = 1, MODE_ANGLE = 2;
+/** New pilots start self-levelling: Quick fly and the guide both say "arm in Angle". */
+export const FIRST_MODE = MODE_ANGLE;
+
 export interface AxisBind {
   src: 'axis' | 'button' | 'none';
   index: number;
   invert: boolean;
   min: number; center: number; max: number; // calibration (raw)
-  deadzone: number;  // fraction of half-range
+  deadzone: number;  // fraction of half-range (radial per stick on standard pads)
   expo: number;      // 0..1 radio-side expo (normally 0; Betaflight rates do the shaping)
 }
 
@@ -25,6 +30,16 @@ export interface AxisBind {
  *  switch3 : a 3-position switch on an axis selects acro / horizon / angle directly
  */
 export interface ButtonBind { index: number; mode: 'toggle' | 'hold' | 'cycle3' | 'switch3'; src?: 'button' | 'axis'; invert?: boolean }
+
+/**
+ * AUX5-AUX12 (CH9-16), for extra Betaflight modes (prearm, launch control, acro trainer, VTX pit
+ * mode …; the pilot assigns them in Betaflight with `aux` ranges).
+ *  hold / toggle : button, or 2-position switch on an axis -> 1000 / 2000 µs
+ *  switch3       : 3-position switch on an axis -> 1000 / 1500 / 2000
+ *  axis          : proportional (pot, slider, analog trigger) -> 1000..2000
+ */
+export interface AuxBind { src: 'button' | 'axis'; index: number; invert?: boolean; mode: 'hold' | 'toggle' | 'switch3' | 'axis' }
+export const AUX_EXTRA = 8; // AUX5..AUX12
 
 export type SimAction = 'battery' | 'camera' | 'telemetry' | 'drill' | 'spectrum';
 /** Buttons free in flight on every standard-mapping pad (Xbox / DualSense / Steam Input / WebHID). */
@@ -43,8 +58,16 @@ export interface InputProfile {
   /** Sim actions (standard gamepads: B new battery, D-pad camera / telemetry / drill / spectrum).
    *  Missing in profiles saved before they existed: the standard defaults apply. */
   actions?: Partial<Record<SimAction, number | null>>;
-  kind?: ControllerKind;
+  kind?: ControllerKind; // button layout family (names); 'generic' unless the browser reports the standard mapping
   needsSetup?: boolean;  // stick order unknown: prompt the radio setup wizard
+  /** Gamepad sticks move in a round gate, so full roll + full pitch together only reach ~0.7 each:
+   *  stretch the circle to the square a radio gimbal covers. Missing: on for standard pads, off for radios. */
+  circleToSquare?: boolean;
+  /** AUX5..AUX12 ([0] = AUX5 = CH9). Unbound channels stay centred (1500). */
+  aux?: (AuxBind | null)[];
+  /** RC transmitter in USB-joystick mode (EdgeTX / OpenTX): its axes already are the model's mixed
+   *  channels, so send axis i straight to CH i+1 (the radio's own switches, ranges and order). */
+  passthrough?: boolean;
 }
 
 const ax = (index: number, invert = false): AxisBind => ({ src: 'axis', index, invert, min: -1, center: 0, max: 1, deadzone: 0.02, expo: 0 });
@@ -54,7 +77,8 @@ export function standardProfile(id = '', name = 'Standard gamepad (Mode 2)'): In
   return {
     id, name,
     yaw: ax(0), throttle: ax(1, true), roll: ax(2), pitch: ax(3, true),
-    throttleMode: 'full',
+    // the throttle stick springs back to centre: centre = idle, so letting go never leaves 50 % (≈2× hover)
+    throttleMode: 'upper', circleToSquare: true,
     arm: { index: 5, mode: 'toggle' },      // RB / R1
     mode: { index: 4, mode: 'cycle3' },     // LB / L1: acro -> horizon -> angle
     turtle: { index: 2, mode: 'toggle' },   // X / Square
@@ -91,7 +115,7 @@ export function djiRc3Profile(id = ''): InputProfile {
   return {
     id, name: 'DJI FPV Remote Controller 3', kind: 'dji', needsSetup: true,
     roll: a(0), pitch: a(1, true), throttle: a(2, true), yaw: a(3),
-    throttleMode: 'full',
+    throttleMode: 'full', circleToSquare: false,
     arm: { index: 0, mode: 'toggle' }, mode: { index: 1, mode: 'cycle3' }, turtle: null, beeper: null,
     reset: null, menu: null,
   };
@@ -106,7 +130,7 @@ export function triggerThrottleProfile(id = ''): InputProfile {
 
 export function genericJoystickProfile(id = ''): InputProfile {
   // Typical USB HID joystick/RC-style controller exposing 4+ axes in AETR order
-  return { ...standardProfile(id, 'Generic HID joystick (AETR axes)'), roll: ax(0), pitch: ax(1, true), throttle: ax(2, true), yaw: ax(3), throttleMode: 'full' };
+  return { ...standardProfile(id, 'Generic HID joystick (AETR axes)'), roll: ax(0), pitch: ax(1, true), throttle: ax(2, true), yaw: ax(3), throttleMode: 'full', circleToSquare: false };
 }
 
 export const PRESET_PROFILES = { xbox: xboxProfile, ps5: ps5Profile, dji: djiRc3Profile, standard: standardProfile, steam: steamControllerProfile, trigger: triggerThrottleProfile, joystick: genericJoystickProfile };
@@ -121,17 +145,28 @@ export function controllerKind(pad: { id: string }): ControllerKind {
   return 'generic';
 }
 
+/** Button / axis indices follow the W3C standard layout (browser mapping, or our WebHID driver). */
+export const isStandard = (pad: { mapping: string }) => pad.mapping === 'standard';
+
 export function guessProfile(pad: Gamepad): InputProfile {
-  switch (controllerKind(pad)) {
-    case 'dji': return djiRc3Profile(pad.id);
+  const kind = controllerKind(pad);
+  if (kind === 'dji') return djiRc3Profile(pad.id);
+  // Vendor presets assume the standard layout. Without it (Firefox on Linux, some Safari mappings,
+  // radios, joysticks) indices are the driver's raw order: sticks would be mis-mapped, so start
+  // generic and ask for the stick setup. A known gamepad family keeps its self-centring throttle.
+  if (!isStandard(pad)) {
+    const p: InputProfile = { ...genericJoystickProfile(pad.id), kind: 'generic', needsSetup: true };
+    if (kind !== 'generic') { p.name = 'Gamepad, non-standard browser mapping'; p.throttleMode = 'upper'; }
+    return p;
+  }
+  switch (kind) {
     case 'xbox': return xboxProfile(pad.id);
     case 'playstation': return ps5Profile(pad.id);
     case 'steam':
       if (pad.id.toLowerCase().includes('webhid')) return { ...standardProfile(pad.id, 'Steam Controller 2026 via WebHID (Mode 2)'), kind: 'steam' }; // real sticks
       return { ...steamControllerProfile(pad.id), kind: 'steam' };
   }
-  if (pad.mapping === 'standard') return standardProfile(pad.id);
-  return { ...genericJoystickProfile(pad.id), needsSetup: true };
+  return standardProfile(pad.id);
 }
 
 const STD_NAMES = ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'View', 'Menu', 'LS', 'RS', 'D-up', 'D-down', 'D-left', 'D-right', 'Guide'];
@@ -145,7 +180,7 @@ export function buttonName(kind: ControllerKind | undefined, i: number): string 
 }
 
 /** Is a bound control currently active (button pressed, or switch axis past half travel)? */
-export function bindActive(pad: Gamepad, b: ButtonBind): boolean {
+export function bindActive(pad: Gamepad, b: { index: number; src?: 'button' | 'axis'; invert?: boolean }): boolean {
   if (b.src === 'axis') { const v = (pad.axes[b.index] ?? 0) * (b.invert ? -1 : 1); return v > 0.5; }
   const btn = pad.buttons[b.index];
   return !!btn && (btn.pressed || btn.value > 0.5);
@@ -159,16 +194,87 @@ function readRaw(pad: Gamepad, b: AxisBind): number {
   return 0;
 }
 
-/** Calibrated bipolar value -1..1 */
-export function bipolar(pad: Gamepad, b: AxisBind): number {
+const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
+
+/** Calibrated -1..1, before inversion / deadzone / expo. */
+function calibrated(pad: Gamepad, b: AxisBind): number {
   const raw = readRaw(pad, b);
-  let v = raw >= b.center ? (raw - b.center) / Math.max(1e-6, b.max - b.center) : (raw - b.center) / Math.max(1e-6, b.center - b.min);
-  v = Math.max(-1, Math.min(1, v));
+  return clamp1(raw >= b.center ? (raw - b.center) / Math.max(1e-6, b.max - b.center) : (raw - b.center) / Math.max(1e-6, b.center - b.min));
+}
+
+/** Inversion, then a 1-D deadzone (unless the stick pair already applied a radial one), then expo. */
+function shape(v: number, b: AxisBind, dzDone: boolean): number {
   if (b.invert) v = -v;
   const dz = b.deadzone;
-  if (Math.abs(v) < dz) v = 0; else v = Math.sign(v) * (Math.abs(v) - dz) / (1 - dz);
+  if (!dzDone) { if (Math.abs(v) < dz) v = 0; else v = Math.sign(v) * (Math.abs(v) - dz) / (1 - dz); }
   if (b.expo > 0) v = v * (1 - b.expo) + v * v * v * b.expo;
   return v;
+}
+
+/** Calibrated bipolar value -1..1 (single axis, per-axis deadzone). */
+export function bipolar(pad: Gamepad, b: AxisBind): number {
+  return shape(calibrated(pad, b), b, false);
+}
+
+/**
+ * One physical stick: radial deadzone (a round dead spot, so small diagonal moves aren't snapped
+ * onto an axis), then optionally the circular gate stretched to a square with the elliptical-grid
+ * mapping: identity near centre and along the axes, full corners (0.707, 0.707) -> (1, 1).
+ */
+export function stick2d(x: number, y: number, dz: number, square: boolean): [number, number] {
+  const r = Math.hypot(x, y);
+  if (r <= dz || r < 1e-9) return [0, 0];
+  const k = (Math.min(1, r) - dz) / (1 - dz) / r; // radius rescaled past the deadzone, gate clamped
+  const u = x * k, v = y * k;
+  if (!square) return [u, v];
+  const s2 = 2 * Math.SQRT2, a = 2 + u * u - v * v, b = 2 - u * u + v * v;
+  const sq = (t: number) => Math.sqrt(Math.max(0, t));
+  return [clamp1(0.5 * sq(a + s2 * u) - 0.5 * sq(a - s2 * u)), clamp1(0.5 * sq(b + s2 * v) - 0.5 * sq(b - s2 * v))];
+}
+
+/** Two bound axes on the same standard stick (0/1 left, 2/3 right; WebHID trackpads 4/5, 6/7). */
+const sameStick = (a: AxisBind, b: AxisBind) => a.src === 'axis' && b.src === 'axis' && a.index !== b.index && a.index >> 1 === b.index >> 1;
+
+/** Square sticks on? Saved profiles from before the option: on for standard pads, off for radios. */
+export function squareSticks(pad: { mapping: string }, p: InputProfile): boolean {
+  return p.circleToSquare ?? (isStandard(pad) && p.kind !== 'dji');
+}
+
+export interface Sticks { roll: number; pitch: number; yaw: number; throttle: number } // -1..1 each
+
+const CHANNELS = ['roll', 'pitch', 'yaw', 'throttle'] as const;
+
+/** Stick values after calibration, stick geometry (standard pads), inversion, deadzone and expo. */
+export function readSticks(pad: Gamepad, p: InputProfile): Sticks {
+  const v = CHANNELS.map((n) => calibrated(pad, p[n]));
+  const paired = [false, false, false, false];
+  // which axes share a stick is only known on the standard layout; radios keep per-axis processing
+  if (isStandard(pad)) {
+    const square = squareSticks(pad, p);
+    for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
+      const a = p[CHANNELS[i]], b = p[CHANNELS[j]];
+      if (paired[i] || paired[j] || !sameStick(a, b)) continue;
+      [v[i], v[j]] = stick2d(v[i], v[j], Math.max(a.deadzone, b.deadzone), square);
+      paired[i] = paired[j] = true;
+    }
+  }
+  const out = {} as Sticks;
+  CHANNELS.forEach((n, i) => { out[n] = shape(v[i], p[n], paired[i]); });
+  return out;
+}
+
+/** Output of an AUX5-12 binding in µs (toggle state supplied by the caller). */
+export function auxMicros(pad: Gamepad, b: AuxBind, toggled = false): number {
+  if (b.mode === 'toggle') return toggled ? 2000 : 1000;
+  if (b.src === 'axis') {
+    const v = clamp1((pad.axes[b.index] ?? 0) * (b.invert ? -1 : 1));
+    if (b.mode === 'axis') return 1500 + 500 * v;
+    if (b.mode === 'switch3') return v < -0.33 ? 1000 : v > 0.33 ? 2000 : 1500;
+    return v > 0.5 ? 2000 : 1000;
+  }
+  const raw = Math.max(0, Math.min(1, pad.buttons[b.index]?.value ?? 0)), val = b.invert ? 1 - raw : raw;
+  if (b.mode === 'axis') return 1000 + 1000 * val; // analog trigger
+  return bindActive(pad, b) !== !!b.invert ? 2000 : 1000;
 }
 
 export class InputManager {
@@ -177,7 +283,8 @@ export class InputManager {
   activeIndex = -1;
   readonly channels = new Float32Array(16).fill(1500);
   private prevButtons: boolean[] = [];
-  armed = false; modeIdx = 0; turtle = false; beeper = false;
+  armed = false; modeIdx = FIRST_MODE; turtle = false; beeper = false;
+  private auxToggled: boolean[] = [];
   onReset: (() => void) | null = null;
   onMenu: (() => void) | null = null;
   onAction: ((a: SimAction) => void) | null = null;
@@ -185,6 +292,9 @@ export class InputManager {
   /** While a menu is open its buttons navigate it: no arming, mode / turtle changes or respawns. */
   get suspended() { return this.keyboard.suspended; }
   set suspended(on: boolean) { this.keyboard.suspended = on; if (on) this.disarm(); this.turtle = false; this.keyboard.turtle = false; }
+  /** > 0 while the Controller tab listens to the pad (stick wizard, Detect, calibration): its buttons
+   *  belong to that, so the menu button can't toggle the menu either. */
+  capture = 0;
   lastRaw: { axes: number[]; buttons: number[] } = { axes: [], buttons: [] };
 
   constructor() {
@@ -197,18 +307,26 @@ export class InputManager {
   /** Direct WebHID driver for the 2026 Steam Controller (invisible to the Gamepad API). */
   steamHid = new SteamHidController();
 
+  /** Connected pads, the one in use first (menu navigation falls back to the first pad). */
   pads(): Gamepad[] {
     const list = (navigator.getGamepads?.() ?? []).filter((g): g is Gamepad => !!g);
     const h = this.steamHid.current();
     if (h) list.unshift(h as unknown as Gamepad);
+    const i = list.findIndex((g) => g.index === this.activeIndex);
+    if (i > 0) list.unshift(...list.splice(i, 1));
     return list;
   }
   profileFor(pad: Gamepad): InputProfile {
     let p = this.profiles[pad.id];
-    if (!p) { p = guessProfile(pad); this.profiles[pad.id] = p; this.save(); }
-    // profiles saved before `kind` existed: identify the family now, so button names (A / B / RB …)
-    // show instead of raw indices
-    else if (!p.kind) { const k = controllerKind(pad); if (k !== 'generic') { p.kind = k; this.save(); } }
+    if (!p) { p = guessProfile(pad); this.profiles[pad.id] = p; this.save(); return p; }
+    if (isStandard(pad)) {
+      // profiles saved before `kind` existed: identify the family now, so button names (A / B / RB …)
+      // show instead of raw indices
+      if (!p.kind) { const k = controllerKind(pad); if (k !== 'generic') { p.kind = k; this.save(); } }
+    } else if (p.kind === 'xbox' || p.kind === 'playstation' || p.kind === 'steam') {
+      // saved from a vendor preset on a non-standard mapping: names and sticks don't match the layout
+      p.kind = 'generic'; p.needsSetup ??= true; this.save();
+    }
     return p;
   }
   setProfile(pad: Gamepad, p: InputProfile) { this.profiles[pad.id] = { ...p, id: pad.id }; this.save(); }
@@ -220,14 +338,15 @@ export class InputManager {
     if (!pad && pads.length) { pad = pads[0]; this.activeIndex = pad.index; }
     this.active = pad;
     const ch = this.channels;
+    let p: InputProfile | null = null;
     if (pad) {
       this.lastRaw = { axes: [...pad.axes], buttons: pad.buttons.map((b) => b.value) };
-      const p = this.profileFor(pad);
-      const roll = bipolar(pad, p.roll), pitch = bipolar(pad, p.pitch), yaw = bipolar(pad, p.yaw);
+      p = this.profileFor(pad);
+      const s = readSticks(pad, p);
       let thr: number;
       if (p.throttleMode === 'trigger') thr = Math.max(0, Math.min(1, readRaw(pad, p.throttle)));
-      else { const t = bipolar(pad, p.throttle); thr = p.throttleMode === 'upper' ? Math.max(0, t) : (t + 1) / 2; }
-      ch[0] = 1500 + roll * 500; ch[1] = 1500 + pitch * 500; ch[2] = 1000 + thr * 1000; ch[3] = 1500 + yaw * 500;
+      else thr = p.throttleMode === 'upper' ? Math.max(0, s.throttle) : (s.throttle + 1) / 2;
+      ch[0] = 1500 + s.roll * 500; ch[1] = 1500 + s.pitch * 500; ch[2] = 1000 + thr * 1000; ch[3] = 1500 + s.yaw * 500;
       this.buttons(pad, p);
     } else {
       this.keyboard.update(ch);
@@ -237,23 +356,37 @@ export class InputManager {
     ch[5] = [1000, 1500, 2000][this.modeIdx];
     ch[6] = this.turtle ? 2000 : 1000;
     ch[7] = this.beeper ? 2000 : 1000;
-    for (let i = 8; i < 16; i++) ch[i] = 1500;
+    for (let i = 0; i < AUX_EXTRA; i++) {
+      const b = p?.aux?.[i];
+      ch[8 + i] = pad && b ? auxMicros(pad, b, this.auxToggled[i]) : 1500;
+    }
+    if (pad && p?.passthrough) this.passthrough(pad);
     return ch;
+  }
+
+  /** Radio passthrough: axis i -> CH i+1 as the radio mixed it. Arming still drops while suspended. */
+  private passthrough(pad: Gamepad) {
+    const ch = this.channels, n = Math.min(16, pad.axes.length);
+    for (let i = 0; i < n; i++) ch[i] = 1500 + 500 * clamp1(pad.axes[i] ?? 0);
+    if (n > 4 && this.suspended) ch[4] = 1000;
+    if (n > 4) this.armed = ch[4] > 1700;
+    if (n > 5) this.modeIdx = ch[5] < 1300 ? MODE_ACRO : ch[5] < 1700 ? MODE_HORIZON : MODE_ANGLE;
   }
 
   private prevBind: Record<string, boolean> = {};
   private buttons(pad: Gamepad, p: InputProfile) {
     const pressed = pad.buttons.map((b) => b.pressed || b.value > 0.5);
     const edge = (i: number | null | undefined) => i != null && pressed[i] && !this.prevButtons[i];
-    const act = (key: string, b: ButtonBind | null) => {
+    const act = (key: string, b: ButtonBind | AuxBind | null | undefined) => {
       if (!b) return { on: false, rise: false };
       const on = bindActive(pad, b), rise = on && !this.prevBind[key];
       this.prevBind[key] = on;
       return { on, rise };
     };
     const arm = act('arm', p.arm), mode = act('mode', p.mode), turtle = act('turtle', p.turtle), beep = act('beeper', p.beeper);
+    const aux = Array.from({ length: AUX_EXTRA }, (_, i) => { const b = p.aux?.[i]; return b?.mode === 'toggle' ? act(`aux${i}`, b) : null; });
     if (this.suspended) {
-      if (edge(p.menu)) this.onMenu?.();
+      if (!this.capture && edge(p.menu)) this.onMenu?.();
       this.prevButtons = pressed;
       return;
     }
@@ -267,6 +400,7 @@ export class InputManager {
     }
     if (p.turtle) { if (p.turtle.mode === 'toggle') { if (turtle.rise) this.turtle = !this.turtle; } else this.turtle = turtle.on; }
     if (p.beeper) this.beeper = beep.on;
+    aux.forEach((a, i) => { if (a?.rise) this.auxToggled[i] = !this.auxToggled[i]; });
     if (edge(p.reset)) { this.armed = false; this.turtle = false; this.onReset?.(); }
     for (const [a, b] of Object.entries(this.actionButtons(pad, p))) if (edge(b)) this.onAction?.(a as SimAction);
     if (edge(p.menu)) this.onMenu?.();
@@ -276,7 +410,8 @@ export class InputManager {
   /** Button for each sim action on this pad (none on radios / unmapped joysticks). */
   actionButtons(pad: { mapping: string }, p: InputProfile): Partial<Record<SimAction, number>> {
     const std = pad.mapping === 'standard' || p.kind === 'steam' || p.kind === 'xbox' || p.kind === 'playstation';
-    const taken = new Set([p.arm, p.mode, p.turtle, p.beeper].filter((b) => b && (b.src ?? 'button') === 'button').map((b) => b!.index).concat([p.reset, p.menu].filter((x): x is number => x != null)));
+    const binds: ({ index: number; src?: string } | null | undefined)[] = [p.arm, p.mode, p.turtle, p.beeper, ...(p.aux ?? [])];
+    const taken = new Set(binds.filter((b) => b && (b.src ?? 'button') === 'button').map((b) => b!.index).concat([p.reset, p.menu].filter((x): x is number => x != null)));
     const out: Partial<Record<SimAction, number>> = {};
     for (const a of Object.keys(STANDARD_ACTIONS) as SimAction[]) {
       const b = p.actions?.[a] !== undefined ? p.actions[a] : std && !p.needsSetup ? STANDARD_ACTIONS[a] : null;
@@ -300,7 +435,7 @@ export class InputManager {
 /** Keyboard fallback (for testing without a controller): not a substitute for sticks. */
 export class KeyboardInput {
   private keys = new Set<string>();
-  thr = 0; armed = false; modeIdx = 0; turtle = false;
+  thr = 0; armed = false; modeIdx = FIRST_MODE; turtle = false;
   suspended = false;
   private last = performance.now();
   constructor() {
