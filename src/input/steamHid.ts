@@ -77,7 +77,7 @@ export class SteamHidController {
         this.devices.push(d);
         await this.lizardOff(d);
       } catch (e) {
-        this.status = `Could not open ${d.productName || 'Steam Controller'}: ${(e as Error).message}. Quit Steam completely (it holds the controller) and try again.`;
+        this.status = `Could not open ${d.productName || 'Steam Controller'}: ${(e as Error).message}. If Steam is running it may be holding the controller: close Steam and try again.`;
       }
     }
     if (this.devices.length && this.keepalive === undefined) {

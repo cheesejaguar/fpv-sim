@@ -5,7 +5,7 @@
 // Keep it free of app imports (dom.ts has none) so nothing else has run when it starts.
 import { el } from '../ui/dom';
 
-export const SUPPORTED_BROWSERS = 'Chrome or Edge 92+, Firefox 114+, or Safari 15.2+';
+export const SUPPORTED_BROWSERS = 'Chrome or Edge 97+, Firefox 114+, or Safari 16.4+';
 const ISSUES_URL = 'https://github.com/cheesejaguar/fpv-sim/issues/new';
 const VERSION: string = import.meta.env.VITE_APP_VERSION ?? 'dev';
 const HW_ACCEL = 'Check that hardware acceleration is on (Chrome / Edge: Settings, System, "Use graphics acceleration when available"; Firefox: Settings, General, Performance), update your graphics driver, or try another browser.';

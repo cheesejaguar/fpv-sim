@@ -151,9 +151,7 @@ export function bfPanel(bf: BfBridge, opts?: BfPanelOptions): HTMLElement {
   const restoreDefaults = async () => {
     const ok = await confirmDialog({ title: 'Restore simulator defaults?', body: 'This erases the simulated flight controller’s settings (your tune, rates, filters, OSD layout and any imported diff) and reboots it with the simulator’s first-boot defaults. It cannot be undone.', ok: 'Restore defaults', cancel: 'Cancel', danger: true });
     if (!ok) return;
-    // until the app passes factoryReset, use the running app's worker handle (same message)
-    const reset = opts?.factoryReset ?? (() => (window as any).__fpv?.ctx?.send?.({ type: 'factoryReset' }));
-    reset();
+    opts?.factoryReset?.();
     dirty.clear(); updateDirty();
     status.textContent = 'Restoring simulator defaults (the flight controller reboots)…';
     setTimeout(() => void load(), 2500);

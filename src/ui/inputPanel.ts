@@ -132,13 +132,13 @@ export function inputPanel(im: InputManager): HTMLElement {
     const pad = im.active;
     const notes = section('Controller notes',
       el('ul', {},
-        el('li', {}, el('b', {}, 'Xbox (Series / One / 360) and PS5 DualSense: '), 'plug in by USB or pair over Bluetooth, then press a button with this page focused. They’re recognised automatically (Mode 2: left stick throttle/yaw, right stick pitch/roll; RB / R1 arms, LB / L1 changes flight mode — you start in Angle, the self-levelling mode — A / ✕ respawns, B / ○ fresh battery, D-pad ↑ camera, ↓ telemetry, ← hover drill, → noise spectrum). Crashes rumble the controller in Chrome and Edge.'),
-        el('li', {}, el('b', {}, 'DJI FPV Remote Controller 3: '), 'power it on and connect its USB-C port to the computer; it appears as “DJI Virtual Joystick”. Move a stick, then run the stick & switch setup once. If its throttle springs back to centre, the “Full stick travel” throttle mode treats centre as 50%; DJI’s manual describes adjusting the throttle stick for manual (M-mode) flying.'),
+        el('li', {}, el('b', {}, 'Xbox (Series / One / 360) and PS5 DualSense: '), 'plug in by USB or pair over Bluetooth, then press a button with this page focused. They’re recognized automatically (Mode 2: left stick throttle/yaw, right stick pitch/roll; RB / R1 arms, LB / L1 changes flight mode — you start in Angle, the self-levelling mode — A / ✕ respawns, B / ○ fresh battery, D-pad ↑ camera, ↓ telemetry, ← hover drill, → noise spectrum). Crashes rumble the controller in Chrome and Edge.'),
+        el('li', {}, el('b', {}, 'DJI FPV Remote Controller 3: '), 'power it on and connect its USB-C port to the computer; it appears as “DJI Virtual Joystick”. Move a stick, then run the stick & switch setup once. If its throttle springs back to center, the “Full stick travel” throttle mode treats center as 50%; DJI’s manual describes adjusting the throttle stick for manual (M-mode) flying.'),
         el('li', {}, el('b', {}, 'Other RC radios (EdgeTX / OpenTX, USB joystick mode) and HID joysticks: '), 'same as the DJI radio — run the setup, or turn on radio passthrough to fly with the radio’s own mixer and switches.'),
-        el('li', {}, el('b', {}, 'Gamepad throttle: '), 'gamepad sticks spring to centre, so new gamepads use “Upper half” (centre = off). “Full stick travel” and “Analog trigger” are in the Throttle mode list.'),
+        el('li', {}, el('b', {}, 'Gamepad throttle: '), 'gamepad sticks spring to center, so new gamepads use “Upper half” (center = off). “Full stick travel” and “Analog trigger” are in the Throttle mode list.'),
       ));
     const hidSec = section('Steam Controller (2026) — direct USB / wireless puck',
-      el('p', {}, 'The 2026 Steam Controller is invisible to the browser Gamepad API (outside Steam it pretends to be a keyboard and mouse). The simulator drives it directly over WebHID using Valve’s protocol (from SDL). Quit Steam completely first, since it holds the controller.'),
+      el('p', {}, 'The 2026 Steam Controller is invisible to the browser Gamepad API (outside Steam it pretends to be a keyboard and mouse). The simulator drives it directly over WebHID using Valve’s protocol (from SDL). If connecting fails while Steam is running (Steam can hold the controller, mostly on macOS and Linux), close Steam and try again.'),
       webHidSupported()
         ? btn('hid-connect', 'Connect Steam Controller', async () => { await im.steamHid.request(); render(); }, { primary: true })
         : el('p', { class: 'status' }, 'Not available in this browser: it has no WebHID (Safari and Firefox don’t implement it). Use Chrome or Edge for this controller; Xbox, PS5 and USB joysticks/radios work here.'),
@@ -146,7 +146,7 @@ export function inputPanel(im: InputManager): HTMLElement {
     if (!pad) {
       auxVals = [];
       root.replaceChildren(el('div', { class: 'cols' },
-        el('div', { class: 'col' }, section('No controller detected', el('p', {}, 'Connect a controller and press a button (or move a stick) with this page focused. Keyboard fallback: W/S throttle, A/D yaw, arrows pitch/roll, Space arm, 1/2/3 acro/horizon/angle (you start in angle), T turtle, R reset.')), section('RC channels sent to Betaflight', chans)),
+        el('div', { class: 'col' }, section('No controller detected', el('p', {}, 'Connect a controller and press a button (or move a stick) with this page focused. Keyboard fallback: W/S throttle, A/D yaw, arrows pitch/roll, Space arm, 1/2/3 acro/horizon/angle (you start in angle), T turtle, R respawn.')), section('RC channels sent to Betaflight', chans)),
         el('div', { class: 'col' }, notes), el('div', { class: 'col' }, hidSec)));
       return;
     }
@@ -194,11 +194,11 @@ export function inputPanel(im: InputManager): HTMLElement {
         }
         save(); render();
       }),
-      p[k] ? sel(`${k}-mode`, 'behaviour', modes, p[k]!.mode, (v) => { p[k]!.mode = v; save(); }, { aria: `${BIND_NAMES[k]} behaviour` }) : null,
+      p[k] ? sel(`${k}-mode`, 'behavior', modes, p[k]!.mode, (v) => { p[k]!.mode = v; save(); }, { aria: `${BIND_NAMES[k]} behavior` }) : null,
     );
     // --- AUX5-12 ------------------------------------------------------------------------------
     const auxOptions = [
-      { value: 'none', label: 'none (centred, 1500)' },
+      { value: 'none', label: 'none (centered, 1500)' },
       ...pad.buttons.map((_, i) => ({ value: `b${i}`, label: buttonName(kind, i) })),
       ...pad.axes.map((_, i) => ({ value: `a${i}`, label: `switch on axis ${i}` })),
       ...pad.axes.map((_, i) => ({ value: `A${i}`, label: `switch on axis ${i} (reversed)` })),
@@ -225,7 +225,7 @@ export function inputPanel(im: InputManager): HTMLElement {
           }
           save(); render();
         }, { aria: `Control for AUX${n} (channel ${n + 4})` }),
-        modes && b ? sel(`aux${i}-mode`, 'behaviour', modes, b.mode, (v) => { b.mode = v; save(); }, { aria: `AUX${n} behaviour` }) : null,
+        modes && b ? sel(`aux${i}-mode`, 'behavior', modes, b.mode, (v) => { b.mode = v; save(); }, { aria: `AUX${n} behavior` }) : null,
         el('div', { class: 'actions', style: { alignItems: 'center', margin: '2px 0' } },
           btn(`aux${i}-detect`, 'Detect', () => {
             auxListen = { i, base: controlBase(pad), until: performance.now() + LISTEN_MS };
@@ -239,13 +239,13 @@ export function inputPanel(im: InputManager): HTMLElement {
     // --- throttle & stick geometry --------------------------------------------------------------
     const thrHelp = help(
       para(el('b', {}, 'Upper half'), ' (gamepad default): stick released = throttle off, push up for power. Letting go never leaves 50 % throttle, about twice what a light quad needs to hover.'),
-      para(el('b', {}, 'Full stick travel'), ': bottom = off, centre = 50 %. For radios and throttle sticks that stay where you leave them; on a spring-centred gamepad stick the quad climbs when you let go.'),
+      para(el('b', {}, 'Full stick travel'), ': bottom = off, center = 50 %. For radios and throttle sticks that stay where you leave them; on a spring-centered gamepad stick the quad climbs when you let go.'),
       para(el('b', {}, 'Analog trigger'), ': the right trigger (RT / R2) is the throttle, released = off; the left stick only yaws.'));
     const squareHelp = help(std
-      ? 'Gamepad sticks move in a circle, so full roll plus full pitch only reaches about 70 % of each. This stretches the circle to the square a radio gimbal covers; small moves near centre stay the same. Leave it off for RC radios.'
+      ? 'Gamepad sticks move in a circle, so full roll plus full pitch only reaches about 70 % of each. This stretches the circle to the square a radio gimbal covers; small moves near center stay the same. Leave it off for RC radios.'
       : 'Needs the standard gamepad mapping (which axes share a stick is unknown here). Radio gimbals are square already.');
     const passHelp = help('For EdgeTX / OpenTX radios in USB joystick mode, whose axes already are the model’s mixed channels: axis 1…N goes to CH1…N unchanged, with the radio’s own switches, endpoints and channel order (Betaflight here uses AETR, “map AETR1234”). Stick assignment, calibration and the bindings below are bypassed for those channels; opening the menu still disarms.');
-    const stickHelp = help('Detect: press it, then push that stick fully (stops after 10 s). Deadzone: travel ignored around centre; on standard gamepads it is round per stick (the larger of its two axes’ settings), so small diagonal moves aren’t snapped onto an axis. Expo: softens the centre (normally 0, Betaflight rates do the shaping).');
+    const stickHelp = help('Detect: press it, then push that stick fully (stops after 10 s). Deadzone: travel ignored around center; on standard gamepads it is round per stick (the larger of its two axes’ settings), so small diagonal moves aren’t snapped onto an axis. Expo: softens the center (normally 0, Betaflight rates do the shaping).');
     const auxHelp = help(
       para('Spare buttons, switches or pots for extra Betaflight modes. Bind a control here, then give that channel a mode in Settings → Betaflight → CLI (type the line, then ', el('code', {}, 'save'), '):'),
       el('ul', { style: { margin: '4px 0', paddingLeft: '18px' } }, ...BF_MODES.map((m) => el('li', {}, el('b', {}, m.name), ` on AUX${m.aux}: `, el('code', {}, `aux ${m.aux} ${m.id} ${m.aux - 1} 1700 2100 0 0`), ` — ${m.why}.`))));
@@ -268,7 +268,7 @@ export function inputPanel(im: InputManager): HTMLElement {
             chk('rumble', 'Rumble on crashes (Xbox / DualSense, where the browser supports it)', im.rumbleEnabled, (v) => { im.setRumble(v); if (v) im.rumble(0.6, 0.6, 200); }),
           ),
           section('Throttle & sticks',
-            sel('thr-mode', 'Throttle mode', [{ value: 'upper', label: 'Upper half (centre = off)' }, { value: 'full', label: 'Full stick travel (centre = 50%)' }, { value: 'trigger', label: 'Analog trigger' }], p.throttleMode, (v: ThrottleMode) => {
+            sel('thr-mode', 'Throttle mode', [{ value: 'upper', label: 'Upper half (center = off)' }, { value: 'full', label: 'Full stick travel (center = 50%)' }, { value: 'trigger', label: 'Analog trigger' }], p.throttleMode, (v: ThrottleMode) => {
               p.throttleMode = v;
               if (v === 'trigger' && p.throttle.src !== 'button') p.throttle = { ...p.throttle, src: 'button', index: 7, min: 0, center: 0, max: 1, invert: false };
               // back from the trigger: the throttle stick again (a button would idle at 50 % in "full")
@@ -281,14 +281,14 @@ export function inputPanel(im: InputManager): HTMLElement {
           section('Stick & switch setup wizard', wizBox),
           section('Stick assignment', axisRow('throttle'), axisRow('yaw'), axisRow('pitch'), axisRow('roll'), stickHelp, detectMsg),
           section('Calibration',
-            el('p', {}, 'Press Start, move every stick to all its extremes (circles), centre roll / pitch / yaw, then press Finish.'),
+            el('p', {}, 'Press Start, move every stick to all its extremes (circles), center roll / pitch / yaw, then press Finish.'),
             el('div', { class: 'actions' }, ...(calibrating
               ? [btn('cal-finish', 'Finish', () => {
                 if (!calibrating) return;
                 for (const n of ['roll', 'pitch', 'yaw', 'throttle'] as const) {
                   const b = p[n]; if (b.src !== 'axis') continue;
                   b.min = calibrating.min[b.index]; b.max = calibrating.max[b.index];
-                  // throttle may not self-centre (radios): use mid-travel instead of its resting value
+                  // throttle may not self-center (radios): use mid-travel instead of its resting value
                   b.center = n === 'throttle' ? (b.min + b.max) / 2 : pad.axes[b.index] ?? 0;
                 }
                 const r = ringed();

@@ -1,5 +1,5 @@
-// Inline SVG icons for the game menu, drawn in the Lucide style (24px grid, 2px round strokes;
-// Lucide is ISC-licensed). Inline so they inherit currentColor and need no icon font or network.
+// Inline SVG icons for the game menu: path data copied from Lucide (ISC license, partly derived from
+// Feather, MIT; see THIRD_PARTY_NOTICES). Inline so they inherit currentColor and need no icon font or network.
 const P: Record<string, string> = {
   play: '<path d="M7 4v16l13-8z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',

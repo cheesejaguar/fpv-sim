@@ -2,6 +2,7 @@
 import { filesFromDrop, filesFromList, loadLocalMap } from '../maps/localMaps';
 import { MapFormatError } from '../maps/mapFormat';
 import { MAP_LIST, MapEntry } from '../maps/maps';
+import type { TimeOfDay } from '../render/sky';
 import { SimSettings } from '../worker/shared';
 import { checkbox, el, onUnmount, section, select, slider } from './dom';
 
@@ -18,12 +19,18 @@ export interface ViewSettings {
   view: 'fpv' | 'chase' | 'los';
   linkEffects: boolean;
   highlightGate: boolean;  // make the next race gate glow
+  timeOfDay: TimeOfDay;    // 'map' = lit as the map was authored
 }
 
-// the training telemetry overlay is opt-in (H / D-pad down): new pilots see the OSD, not a wall of numbers
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true };
+export const TIMES_OF_DAY: { value: TimeOfDay; label: string }[] = [
+  { value: 'map', label: 'As the map is set' }, { value: 'morning', label: 'Morning' }, { value: 'noon', label: 'Noon' },
+  { value: 'golden', label: 'Golden hour' }, { value: 'dusk', label: 'Dusk' }, { value: 'night', label: 'Night' },
+];
 
-/** What the latency readout needs from the running app (optional: falls back to the debug handle). */
+// the training telemetry overlay is opt-in (H / D-pad down): new pilots see the OSD, not a wall of numbers
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map' };
+
+/** What the latency readout needs from the running app (no readout without it). */
 export interface LatencySource {
   /** the selected drone's video system */
   video(): { name: string; latencyMs: number };
@@ -56,6 +63,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
             ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),
             el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md, public/maps/freedoom/ATTRIBUTION.md and public/maps/community/<map>/ATTRIBUTION.md in the source repository.')),
           localMapLoader(setMap),
+          select('Time of day', TIMES_OF_DAY, v.timeOfDay, (x) => { v.timeOfDay = x; pushV(); }),
           slider({ label: 'Wind (at 6 m)', min: 0, max: 15, step: 0.1, value: s.wind.speed, unit: 'm/s', onInput: (x) => { s.wind.speed = x; pushS(); } }).row,
           slider({ label: 'Wind from', min: 0, max: 359, step: 1, value: s.wind.direction, unit: '°', onInput: (x) => { s.wind.direction = x; pushS(); } }).row,
           slider({ label: 'Turbulence (Dryden) ×', min: 0, max: 3, step: 0.05, value: s.wind.turbulence, onInput: (x) => { s.wind.turbulence = x; pushS(); } }).row,
@@ -64,6 +72,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
         ),
         section('Physics',
           select('Physics / PID loop rate', [{ value: '8000', label: '8 kHz (gyro 8k / PID 8k)' }, { value: '4000', label: '4 kHz' }, { value: '2000', label: '2 kHz (low-end CPU)' }], String(s.physicsHz), (x) => { s.physicsHz = +x; pushS(); }),
+          checkbox('Lower the physics rate automatically when this computer can’t keep up', s.autoRate !== false, (x) => { s.autoRate = x; pushS(); }),
           select('RC link rate (ELRS)', [{ value: '500', label: '500 Hz' }, { value: '250', label: '250 Hz' }, { value: '150', label: '150 Hz' }, { value: '50', label: '50 Hz' }], String(s.rcLinkHz), (x) => { s.rcLinkHz = +x; pushS(); }),
           select('RC transmitter power', [{ value: '10', label: '10 mW' }, { value: '25', label: '25 mW' }, { value: '100', label: '100 mW' }, { value: '250', label: '250 mW' }, { value: '500', label: '500 mW' }, { value: '1000', label: '1 W' }], String(s.rcTxPowerMw ?? 250), (x) => { s.rcTxPowerMw = +x; pushS(); }),
           slider({ label: 'Prop wash intensity ×', min: 0, max: 3, step: 0.05, value: s.propwash, onInput: (x) => { s.propwash = x; pushS(); } }).row,
@@ -104,10 +113,8 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
  */
 function latencyReadout(v: ViewSettings, src?: LatencySource): { el: HTMLElement; update(): void } {
   const box = el('div', { class: 'latency', role: 'status' });
-  // fallback until the app passes a LatencySource: the running app's debug handle
-  const app = () => (window as any).__fpv?.ctx;
-  const video = () => src?.video() ?? app()?.build?.info?.components?.video as { name: string; latencyMs: number } | undefined;
-  const measured = () => src?.effectiveLatencyMs?.() ?? (app()?.fpv as { effectiveLatencyMs?: number } | undefined)?.effectiveLatencyMs;
+  const video = () => src?.video();
+  const measured = () => src?.effectiveLatencyMs?.();
   let frameMs = 16.7, last = 0, raf = 0, seen = false;
   const tick = (t: number) => {
     if (last) { const d = t - last; if (d > 2 && d < 100) frameMs += (d - frameMs) * 0.1; }

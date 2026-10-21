@@ -373,7 +373,7 @@ export class GameMenu {
 
   // -------------------------------------------------------------------------------------------
   // New game
-  private saveNg() { try { localStorage.setItem(NG_KEY, JSON.stringify({ mode: this.ng.mode, preset: this.ng.preset })); } catch { /* ignore */ } }
+  private saveNg() { save(NG_KEY, { mode: this.ng.mode, preset: this.ng.preset }); }
 
   private tabsBar<T extends string>(ids: { id: T; label: string; icon: IconName }[], cur: T, pick: (id: T) => void): HTMLElement {
     const i = ids.findIndex((x) => x.id === cur);

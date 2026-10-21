@@ -84,7 +84,7 @@ const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.param
 const logLines: string[] = [];
 const ctx: AppCtx = {
   spec: spec0, sim: sim0, view: view0,
-  build: build0, map: map0, world: new PrimitiveWorld(map0), scene: buildScene(map0), drone: makeDroneModel(build0),
+  build: build0, map: map0, world: new PrimitiveWorld(map0), scene: buildScene(map0, { timeOfDay: view0.timeOfDay }), drone: makeDroneModel(build0),
   mountQ: cameraMountQuat(spec0.cameraUptiltDeg),
   sh, send: bridge.send, renderer,
   fpv: new FpvCamera(renderer, view0.cubeSize), osd: new OsdRenderer(), link: new VideoLink(), audio: new MotorAudio(),
@@ -102,7 +102,17 @@ bridge.onMessage = (m) => {
   switch (m.type) {
     case 'ready': ctx.fwStatus = ''; ctx.log(`Firmware running: ${m.fw}`); break;
     case 'fwMissing': ctx.fwStatus = m.reason; ctx.log(m.reason); break;
-    case 'fatal': ctx.fwStatus = `The simulator stopped: ${m.reason} — reload the page`; ctx.log(ctx.fwStatus); break;
+    case 'fatal': {
+      // the bridge already restarted the worker once: a second failure needs a reload
+      ctx.fwStatus = `The simulator stopped: ${m.reason} — reload the page`; ctx.log(ctx.fwStatus);
+      showFatal({
+        title: 'The simulator stopped',
+        lead: 'The flight simulation (Betaflight and the physics) stopped and could not be restarted. Reload to continue: your settings and your Betaflight configuration are kept.',
+        detail: m.reason,
+        report: `Simulator worker failed: ${m.reason}`,
+      });
+      break;
+    }
     case 'telemetry': ctx.tel = m.tel; break;
     case 'log': ctx.log(m.text); break;
     case 'gate': onGate(ctx, m.gate, m.t); break;
@@ -110,7 +120,7 @@ bridge.onMessage = (m) => {
     case 'mapLoaded': onWorkerMap(m.id, m.requested, m.ok, m.error); break;
     case 'overload': {
       // the worker already flies at the lower rate: settings follow, so later messages don't undo it
-      ctx.sim = { ...ctx.sim, physicsHz: m.physicsHz }; store('fpv-sim-settings', ctx.sim);
+      ctx.sim = { ...ctx.sim, physicsHz: m.physicsHz }; store(KEYS.sim, ctx.sim);
       ctx.log(`This computer can't run the simulation in real time (${Math.round(m.simRate * 100)} %): physics rate lowered to ${m.physicsHz} Hz`);
       break;
     }
@@ -133,16 +143,21 @@ function applySpec(s: DroneSpec) {
 }
 
 let applyingRoomMap = false;
+/** Rebuild the rendered scene of the current map (new map, or the time of day changed). */
+function rebuildScene() {
+  ctx.scene.scene.remove(ctx.drone.root); ctx.scene.dispose();
+  ctx.scene = buildScene(ctx.map, { timeOfDay: ctx.view.timeOfDay }); ctx.scene.scene.add(ctx.drone.root);
+}
 /** Rebuild the rendered world for a map that is loaded (preloaded or built in). */
 function showMap(id: string) {
-  ctx.scene.scene.remove(ctx.drone.root); ctx.scene.dispose();
-  ctx.map = MAPS[id](); ctx.world = new PrimitiveWorld(ctx.map); ctx.scene = buildScene(ctx.map); ctx.scene.scene.add(ctx.drone.root);
+  ctx.map = MAPS[id](); ctx.world = new PrimitiveWorld(ctx.map);
+  rebuildScene();
   resetLaps(ctx);
 }
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
   const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId;
-  ctx.sim = s; store('fpv-sim-settings', s);
+  ctx.sim = s; store(KEYS.sim, s);
   // loading is async (Quake maps fetch their sources): remember now whether the room asked for it
   const fromRoom = applyingRoomMap;
   if (mapChanged) void preloadMap(s.mapId).then(() => {
@@ -153,7 +168,7 @@ function applySim(s: SimSettings, reloadMap = false) {
     if (ctx.sim.mapId !== s.mapId) return;
     // physics and render must never disagree: stay on the map on screen and send the worker back to it
     ctx.log(`Map ${s.mapId} failed to load (${(e as Error)?.message ?? e}); staying on ${ctx.map.name}`);
-    ctx.sim = { ...ctx.sim, mapId: hasMap(shown) ? shown : 'field' }; store('fpv-sim-settings', ctx.sim);
+    ctx.sim = { ...ctx.sim, mapId: hasMap(shown) ? shown : 'field' }; store(KEYS.sim, ctx.sim);
     if (ctx.sim.mapId !== ctx.map.id) showMap(ctx.sim.mapId);
     ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: ctx.menuOpen } });
   });
@@ -163,7 +178,7 @@ function applySim(s: SimSettings, reloadMap = false) {
 function onWorkerMap(id: string, requested: string, ok: boolean, error?: string) {
   if (id === ctx.sim.mapId) return; // physics flies what we show (or are about to)
   if (!ok && requested === ctx.sim.mapId) {
-    ctx.sim = { ...ctx.sim, mapId: id }; store('fpv-sim-settings', ctx.sim);
+    ctx.sim = { ...ctx.sim, mapId: id }; store(KEYS.sim, ctx.sim);
     void preloadMap(id).then(() => {
       if (ctx.sim.mapId !== id) return;
       showMap(id);
@@ -182,8 +197,9 @@ onLocalMap((id, info, urls) => {
 });
 
 function applyView(v: ViewSettings) {
-  const fontChanged = v.osdFont !== ctx.view.osdFont, scaleChanged = v.renderScale !== ctx.view.renderScale;
+  const fontChanged = v.osdFont !== ctx.view.osdFont, scaleChanged = v.renderScale !== ctx.view.renderScale, todChanged = v.timeOfDay !== ctx.view.timeOfDay;
   ctx.view = v; store(KEYS.view, v);
+  if (todChanged) rebuildScene();
   if (fontChanged) void ctx.osd.setFont(v.osdFont);
   if (scaleChanged) ctx.fpv.setVideo(ctx.build.info.components.video, v.renderScale);
   ctx.audio.enabled = v.audio; ctx.audio.volume = v.volume;
@@ -199,7 +215,7 @@ input.onAction = (a) => simAction(a);
 function simAction(a: SimAction) {
   if (a === 'camera') { const order: ViewSettings['view'][] = ['fpv', 'chase', 'los']; applyView({ ...ctx.view, view: order[(order.indexOf(ctx.view.view) + 1) % 3] }); }
   if (a === 'telemetry') applyView({ ...ctx.view, telemetry: !ctx.view.telemetry });
-  if (a === 'drill') toggleDrill(ctx);
+  if (a === 'drill') { toggleDrill(ctx); gameMenu.activeMode = ctx.drill.on ? 'drill' : gameMenu.activeMode === 'drill' ? 'free' : gameMenu.activeMode; } // the pause menu's Respawn keeps it
   if (a === 'battery') sendReset(true);
   if (a === 'spectrum') ctx.send({ type: 'spectrum', on: spectrum.toggle() });
 }
@@ -242,6 +258,7 @@ function joinRoom(code: string, room?: { name: string; public: boolean }) {
 // ---------------------------------------------------------------------------------------------
 // HUD + menu (title screen, new game, server browser, settings, Betaflight guide, pause)
 const hudCtl = new HudController(ctx, sticks, spectrum);
+hudCtl.hud.onMenuTap = () => gameMenu.toggle(); // the Esc key hint is a button on touch screens
 appEl.append(hudCtl.hud.root);
 
 function blackboxPanel(): HTMLElement {
@@ -258,7 +275,7 @@ function blackboxPanel(): HTMLElement {
     bblStatus.textContent = `Downloaded ${sessions} flight${sessions === 1 ? '' : 's'} (${(data.byteLength / 1048576).toFixed(1)} MB).`;
   };
   const render = () => root.replaceChildren(el('section', { class: 'sec' }, el('h3', {}, 'Blackbox-lite recorder'),
-    el('p', {}, `Records the 1 kHz true state, raw gyro, motor DShot outputs and RPM, battery and your RC sticks whenever the quad is armed (last 5 minutes kept). ${ctx.blackbox.length} samples recorded.`),
+    el('p', {}, `Records the 1 kHz true state, raw gyro, motor DShot outputs and RPM, battery and your RC sticks whenever the quad is armed (the last ${Math.round(ctx.blackbox.seconds / 60)} minutes are kept). ${ctx.blackbox.length} samples recorded.`),
     el('div', { class: 'actions' }, el('button', { class: 'primary', onclick: () => ctx.blackbox.download() }, 'Download CSV'), el('button', { onclick: () => { ctx.blackbox.clear(); render(); } }, 'Clear'))),
   el('section', { class: 'sec' }, el('h3', {}, 'Betaflight blackbox (.bbl)'),
     el('p', {}, 'Betaflight logs every armed flight itself at 2 kHz (blackbox on a serial port, as with an OpenLog): gyro raw and filtered, PID terms, setpoints, RC, motors, eRPM, battery. Opens in Blackbox Explorer and PIDtoolbox like a log from a real quad. The newest 32 MB are kept.'),
@@ -280,12 +297,16 @@ const gameMenu = new GameMenu({
   build: () => ctx.build,
   fwStatus: () => ctx.fwStatus,
   settingsTabs: [
-    { id: 'sim', label: 'Simulation', icon: 'sliders', render: () => settingsPanel(ctx.sim, ctx.view, applySim, applyView) },
+    { id: 'sim', label: 'Simulation', icon: 'sliders', render: () => settingsPanel(ctx.sim, ctx.view, applySim, applyView, {
+      video: () => ctx.build.info.components.video,
+      effectiveLatencyMs: () => (ctx.fpv as { effectiveLatencyMs?: number }).effectiveLatencyMs,
+    }) },
     { id: 'controller', label: 'Controller', icon: 'gamepad', render: () => inputPanel(input) },
     { id: 'bf', label: 'Betaflight', icon: 'cpu', render: () => bfPanel(bridge, {
       hardwareCli: (keepOsdLayout, propsOut) => simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
       propsOut: () => ctx.spec.propDirection === 'props-out',
       setPropsOut: (out) => applySpec({ ...ctx.spec, propDirection: out ? 'props-out' : 'props-in' }),
+      factoryReset: () => ctx.send({ type: 'factoryReset' }),
     }) },
     { id: 'builder', label: 'Drone builder', icon: 'wrench', render: () => builderPanel(() => ctx.spec, (s) => { applySpec(s); gameMenu.resume(); }) },
     { id: 'mp', label: 'Multiplayer', icon: 'users', render: () => multiplayerPanel(ctx.mp, joinRoom) },

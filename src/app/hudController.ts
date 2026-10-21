@@ -52,7 +52,7 @@ export class HudController {
       el('p', { class: 'keys-line' }, k('W'), ' / ', k('S'), ' throttle · ', k('A'), ' / ', k('D'), ' yaw · arrow keys pitch / roll · ', k('Space'), ' arm'),
       el('p', {}, 'Connect a controller, then press a button on it: browsers only reveal a gamepad after its first input.'),
       ...(webHidSupported()
-        ? [el('p', { class: 'sub' }, 'Steam Controller (2026) without Steam: quit Steam, connect it, then'), el('button', { onclick: () => void ctx.input.steamHid.request() }, 'Connect Steam Controller')]
+        ? [el('p', { class: 'sub' }, 'Steam Controller (2026) without Steam Input: connect it by USB or its dongle, then'), el('button', { onclick: () => void ctx.input.steamHid.request() }, 'Connect Steam Controller')]
         // Safari / Firefox: no WebHID, which the 2026 Steam Controller's direct connection needs
         : [el('p', { class: 'sub' }, 'Steam Controller (2026) needs Chrome or Edge (WebHID), or Steam Input.')]),
       this.hidStatus);

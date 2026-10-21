@@ -175,6 +175,7 @@ export function validView(raw: unknown): ViewSettings {
     view: oneOf('fpv', 'chase', 'los'),
     linkEffects: bool,
     highlightGate: bool,
+    timeOfDay: oneOf('map', 'morning', 'noon', 'golden', 'dusk', 'night'),
   });
 }
 
