@@ -9,7 +9,7 @@ import { GYRO_CHIPS } from '../sim/imu';
 import { V3 } from '../sim/math';
 import { MotorParams } from '../sim/motor';
 import { QuadParams, RotorConfig, STRENGTH } from '../sim/quad';
-import { RotorAero, RotorAeroOut } from '../sim/rotor';
+import { RotorAero, RotorAeroOut, emptyRotorOut } from '../sim/rotor';
 
 export interface DroneSpec {
   name: string;
@@ -83,11 +83,16 @@ export interface DroneBuild { spec: DroneSpec; params: QuadParams; info: Derived
 
 const tableCache = new Map<string, BemtTable>();
 
-export function propGeometry(p: PropSpec, pitchOverride?: number): PropGeometry {
-  // section Reynolds number at 0.75R at the calibration (typical full-power) rpm
+/** Blade chord at 0.75R (m). */
+function chord75(p: PropSpec): number {
   const R = (p.diameterIn * 0.0254) / 2, cf = p.chordFracs;
   const u = ((0.75 - p.hubFrac) / (1 - p.hubFrac)) * (cf.length - 1), i0 = Math.min(cf.length - 2, Math.floor(u));
-  const c75 = (cf[i0] + (cf[i0 + 1] - cf[i0]) * (u - i0)) * R;
+  return (cf[i0] + (cf[i0 + 1] - cf[i0]) * (u - i0)) * R;
+}
+
+export function propGeometry(p: PropSpec, pitchOverride?: number): PropGeometry {
+  // section Reynolds number at 0.75R at the calibration (typical full-power) rpm
+  const R = (p.diameterIn * 0.0254) / 2, c75 = chord75(p);
   const re75 = ((p.calib.rpm * 2 * Math.PI) / 60) * 0.75 * R * c75 / 1.5e-5;
   return {
     diameterM: p.diameterIn * 0.0254, pitchM: (pitchOverride ?? p.pitchIn) * 0.0254, blades: p.blades,
@@ -201,8 +206,14 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
     kv: ov.kv ?? motor.kv, rmOhm: (ov.rmMohm ?? motor.rmMohm) / 1000, escOhm: esc.equivOhm, i0A: ov.i0A ?? motor.i0A,
     poles: motor.poles, rotorInertia: motor.rotorInertia, massKg: motor.massG / 1000,
     thermalCapJPerK: motor.thermalCap, thermalResKPerW: motor.thermalRes, kvLoadFactor: 0.94,
-    escCurrentLimitA: ov.escCurrentLimitA ?? Math.min(esc.burstA, motor.maxCurrentA * 1.25), escEfficiency: esc.efficiency,
+    // BLHeli_32 / AM32 / Bluejay ship with current protection off; an override turns the PI limiter on
+    escCurrentLimitA: ov.escCurrentLimitA ?? 0, escEfficiency: esc.efficiency,
   };
+  // blade flapping: Lock number γ = ρ a c R⁴ / I_β with I_β = m_b R²/3 (blades ~85 % of the prop mass);
+  // first flap-bending frequency of the non-rotating blade ~200 Hz for a 5" polycarbonate blade,
+  // ∝ thickness / length² (so ∝ 1/R for similar props), stiffer for glass-filled blades (est.)
+  const lock = (3 * 1.225 * 5.3 * chord75(prop) * R * R * prop.blades) / (0.85 * (prop.massG / 1000));
+  const flapHz = 200 * (0.0635 / R) * (0.6 + 0.8 * prop.stiffness);
   const tilt = ((spec.motorTiltDeg || 0) * Math.PI) / 180;
   const rotors: RotorConfig[] = hubs.map((h, k) => {
     // inward motor tilt (positive tilts thrust toward the centre)
@@ -210,7 +221,7 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
     const ax = { x: (-h.x / r) * Math.sin(tilt), y: (-h.y / r) * Math.sin(tilt), z: Math.cos(tilt) };
     return {
       pos: { x: h.x - cg.x, y: h.y - cg.y, z: h.z - cg.z }, axis: ax, dir: dirs[k], motor: { ...mp }, table: tbl, propInertia, propMass: prop.massG / 1000, bladeCount: prop.blades,
-      ductGain: ducted ? frame.ductGain ?? 0.12 : 0,
+      ductGain: ducted ? frame.ductGain ?? 0.12 : 0, lock, flapHz,
       // residual static imbalance scales with prop mass (2e-7 kg·m for a ~4.3 g 5" prop)
       imbalance: ov.propImbalance ?? 2e-7 * (prop.massG / 4.3),
       // impact energy (J) at which a part fails half the time; strength ~ section ~ mass^(2/3), so small
@@ -277,6 +288,7 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
     chemistry: battery.chemistry, cells: ov.cells ?? battery.cells, parallel: battery.parallel,
     capacityMah: ov.capacityMah ?? battery.capacityMah, cRating: battery.cRating,
     irPerCellMohm: ov.irPerCellMohm ?? battery.irPerCellMohm, massG: battery.massG * capScale, ageFactor: spec.batteryAge, wiringMohm: battery.wiringMohm,
+    seed: specSeed(spec),
   });
 
   const params: QuadParams = {
@@ -284,18 +296,38 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
     angularDrag: { x: 2e-6, y: 2e-6, z: 3e-6 },
     battery: bp, auxPowerW: ov.auxPowerW ?? video.powerW + 1.5,
     colliders, imuChip: chip,
+    // per-arm modes (Imu: each arm detuned ±8 %): out-of-plane bending, torsion, in-plane bending.
+    // Carbon laminate alone rings at ζ ~ 0.01-0.02, but bolted joints, the battery strap and the
+    // stack's rubber grommets bring a frame mode as seen by the gyro to ζ ≈ 0.1; the in-plane arm is
+    // ~3x stiffer (15 x 5 mm section: (w/t)² = 9 in stiffness) and barely shakes the board: yaw is
+    // the quietest axis.
     flex: {
-      roll: { freqHz: fRP, zeta: 0.03, gain: gainBase },
-      pitch: { freqHz: fRP * 1.08, zeta: 0.03, gain: gainBase },
-      yaw: { freqHz: fRP * 1.6, zeta: 0.04, gain: gainBase * 0.4 },
+      roll: { freqHz: fRP, zeta: 0.1, gain: gainBase },
+      pitch: { freqHz: fRP * 1.08, zeta: 0.11, gain: gainBase },
+      yaw: { freqHz: fRP * 2.7, zeta: 0.1, gain: gainBase * 0.12 },
     },
     mountIsolation: fc.softMount,
+    seed: specSeed(spec),
   };
   if (ov.propImbalance != null) { /* applied to rotor damage state at sim creation */ }
 
   const info = deriveInfo(spec, params, { frame, motor, prop, battery, esc, fc, video }, items, cg, fRP);
   return { spec, params, info, tables: tbl };
 }
+
+/**
+ * Per-build seed (FNV-1a over the name and parts list): the "unit-to-unit" scatter of a real build
+ * (IMU offsets / board alignment, cell spread, arm detuning) stays put while sliders are tuned.
+ */
+export function specSeed(spec: DroneSpec): number {
+  const key = [spec.name, spec.frame, spec.motor, spec.prop, spec.battery, spec.esc, spec.fc, spec.video].join('|');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h >>> 0;
+}
+
+/** Steady-state phase current an enabled ESC current limiter (bus-current PI) settles at for duty D. */
+const phaseLimit = (mp: MotorParams, D: number) => (mp.escCurrentLimitA > 0 ? (mp.escCurrentLimitA * mp.escEfficiency) / Math.max(0.05, D) : Infinity);
 
 /** Steady-state static rotor speed and current for duty D at bus voltage V (no forward speed). */
 export function staticOperatingPoint(mp: MotorParams, kT: number, kQ0: number, D: number, V: number, tipRef = 0, R = 0): { omega: number; current: number; thrust: number } {
@@ -318,9 +350,10 @@ export function staticOperatingPoint(mp: MotorParams, kT: number, kQ0: number, D
   const a = kQ, b = (ke * ke) / R + (ke * mp.i0A * 0.65) / wRef, c = ke * mp.i0A * 0.35 - (ke * D * V) / R;
   let w = (-b + Math.sqrt(Math.max(0, b * b - 4 * a * c))) / (2 * a);
   let i = (D * V - ke * w) / R;
-  if (i > mp.escCurrentLimitA) {
-    i = mp.escCurrentLimitA;
-    // torque-limited: ke i = kQ w² + loss
+  const iLim = phaseLimit(mp, D);
+  if (i > iLim) {
+    i = iLim;
+    // the ESC's current limiter settles at its bus-current limit: ke i = kQ w² + loss
     w = Math.sqrt(Math.max(0, (ke * i - ke * mp.i0A * 0.6) / kQ));
   }
   return { omega: w, current: i * D / mp.escEfficiency, thrust: kT * w * w };
@@ -348,16 +381,17 @@ function levelTopSpeedAt(p: QuadParams, Vbus: number): { v: number; iBus: number
   const rc = p.rotors[0], mp = rc.motor, rho = 1.225, W = p.mass * 9.80665, n = p.rotors.length;
   let iBus = 0;
   const ro = new RotorAero(rc.table, 1); ro.ductGain = rc.ductGain ?? 0;
-  const o: RotorAeroOut = { thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0 };
+  const o: RotorAeroOut = emptyRotorOut();
   const ke = 60 / (2 * Math.PI * mp.kv) / mp.kvLoadFactor, Rw = mp.rmOhm + mp.escOhm, wRef = (mp.kv * 10 * 2 * Math.PI) / 60;
-  const motorTq = (w: number) => ke * Math.min(mp.escCurrentLimitA, (Vbus - ke * w) / Rw) - ke * mp.i0A * (0.35 + 0.65 * w / wRef);
+  const iLim = phaseLimit(mp, 1);
+  const motorTq = (w: number) => ke * Math.min(iLim, (Vbus - ke * w) / Rw) - ke * mp.i0A * (0.35 + 0.65 * w / wRef);
   // net world force (horizontal, vertical) at airspeed v and pitch th
   const force = (v: number, th: number): [number, number] => {
     const ux = v * Math.cos(th), uz = v * Math.sin(th); // body-frame airflow components (x fwd, z thrust axis)
     let lo = 0, hi = Vbus / ke;
     for (let i = 0; i < 30; i++) { const w = (lo + hi) / 2; ro.evaluate(w, uz, ux, rho, Infinity, 0, 1e-4, o); if (motorTq(w) > o.torque) lo = w; else hi = w; }
     ro.evaluate(lo, uz, ux, rho, Infinity, 0, 1e-4, o);
-    iBus = (n * Math.min(mp.escCurrentLimitA, Math.max(0, (Vbus - ke * lo) / Rw))) / mp.escEfficiency;
+    iBus = (n * Math.min(iLim, Math.max(0, (Vbus - ke * lo) / Rw))) / mp.escEfficiency;
     const fz = n * o.thrust - 0.5 * rho * v * p.cdA.z * uz, fx = -n * o.hForce - 0.5 * rho * v * p.cdA.x * ux;
     // body x = (cos th, -sin th), body z = (sin th, cos th) in world (forward, up)
     return [fx * Math.cos(th) + fz * Math.sin(th), -fx * Math.sin(th) + fz * Math.cos(th) - W];
