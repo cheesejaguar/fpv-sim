@@ -5,3 +5,6 @@ firmware/build
 *.log
 .claude/
 .vercel
+.wrangler/
+server/.wrangler/
+server/.dev.vars

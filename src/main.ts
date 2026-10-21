@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import './style.css';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from './builder/derive';
 import { InputManager } from './input/gamepad';
+import { webHidSupported } from './input/steamHid';
 import { MAPS } from './maps/maps';
 import { MapDef, PrimitiveWorld } from './maps/world';
 import { MotorAudio } from './render/audio';
@@ -12,7 +13,11 @@ import { OsdRenderer } from './render/osdRenderer';
 import { buildScene, SceneBundle } from './render/scene';
 import { VideoLink } from './render/videoLink';
 import { bfPanel } from './ui/bfPanel';
+import { simHardwareCli } from './bf/defaults';
 import { Blackbox } from './ui/blackbox';
+import { MultiplayerClient } from './net/multiplayer';
+import { RemoteQuads } from './render/remoteQuads';
+import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { builderPanel } from './ui/builderPanel';
 import { el } from './ui/dom';
 import { inputPanel } from './ui/inputPanel';
@@ -71,7 +76,7 @@ function onGate(gate: number, t: number) {
   const n = map.gates.length;
   gateTimes.push({ gate, t });
   if (gate === 0) {
-    if (lapStart >= 0) { lastLap = t - lapStart; lapCount++; bestLap = Math.min(bestLap, lastLap); }
+    if (lapStart >= 0) { lastLap = t - lapStart; lapCount++; bestLap = Math.min(bestLap, lastLap); mp.sendLap(lapCount, lastLap, bestLap); }
     lapStart = t;
   }
   void n;
@@ -107,6 +112,23 @@ const input = new InputManager();
 input.onReset = () => send({ type: 'reset', repair: true });
 input.onMenu = () => toggleMenu();
 const blackbox = new Blackbox();
+// Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
+const mp = new MultiplayerClient();
+const remotes = new RemoteQuads();
+const mpRec = new Float64Array(REC);
+let applyingRoomMap = false;
+mp.onMap = (m) => {
+  if (!MAPS[m] || m === simSettings.mapId) return;
+  applyingRoomMap = true;
+  applySim({ ...simSettings, mapId: m });
+  applyingRoomMap = false;
+  log(`Room switched the map to ${MAPS[m]().name}`);
+};
+function joinRoom(code: string) {
+  const p = loadPilot();
+  mp.join(code, { name: p.name, color: p.color, frame: build.info.components.frame.sizeClass, map: simSettings.mapId });
+  history.replaceState(null, '', inviteLink(code));
+}
 const drillMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 16), new THREE.MeshBasicMaterial({ color: 0x39b6ff, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
 const chaseCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 3000);
 
@@ -133,6 +155,7 @@ function applySim(s: SimSettings) {
     sceneB.scene.remove(drone.root); sceneB.dispose();
     map = MAPS[s.mapId](); world = new PrimitiveWorld(map); sceneB = buildScene(map); sceneB.scene.add(drone.root);
     lapStart = -1; bestLap = Infinity; lapCount = 0;
+    if (mp.connected && !applyingRoomMap) mp.sendMap(s.mapId); // the room flies one shared map
   }
   send({ type: 'settings', settings: { ...s, paused: menuOpen && pauseInMenu } });
 }
@@ -158,8 +181,9 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyB') { input.disarm(); send({ type: 'reset', repair: true, fullBattery: true }); }
   if (e.code === 'KeyF') toggleSpectrum();
 });
-window.addEventListener('pointerdown', () => audio.start(), { once: true });
-window.addEventListener('keydown', () => audio.start(), { once: true });
+// Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the
+// browser may suspend the context later (tab switch, audio device change).
+for (const ev of ['pointerdown', 'keydown', 'touchstart'] as const) window.addEventListener(ev, () => audio.unlock(), { capture: true });
 
 // ---------------------------------------------------------------------------------------------
 // HUD
@@ -169,6 +193,8 @@ const telBox = el('div', { class: 'tel' });
 const sticks = el('canvas', { class: 'sticks', width: 220, height: 100 }) as HTMLCanvasElement;
 const lapBox = el('div', { class: 'laps' });
 const crashBox = el('div', { class: 'crash' });
+// Browsers block audio until a click / key press on the page (controller buttons don't count).
+const soundHint = el('div', { class: 'sound-hint' }, '🔇 Click anywhere (or press a key) to enable motor sound');
 const helpBox = el('div', { class: 'help' }, 'Esc menu · R reset · B new battery · C camera · H telemetry · G hover-box drill · F noise spectrum');
 const SPEC_W = 380, SPEC_ROW = 92;
 const specCanvas = el('canvas', { class: 'spectrum', width: SPEC_W, height: SPEC_ROW * 3 + 22 }) as HTMLCanvasElement;
@@ -179,8 +205,13 @@ const hidStatus = el('div', { class: 'hid-status' });
 const padBox = el('div', { class: 'pad-warn' },
   el('b', {}, 'No game controller detected — keyboard fallback is active.'),
   el('div', {}, 'Xbox, PS5 DualSense, DJI FPV Remote Controller 3 (USB-C) or other USB joystick: connect it, click this page, then press a button or move a stick — browsers only reveal a controller after its first input.'),
-  el('div', {}, 'Steam Controller (2026): browsers can’t see it as a gamepad. Quit Steam completely (tray icon → Exit), connect it by cable or its wireless puck, then click:'),
-  el('button', { class: 'primary', onclick: () => void input.steamHid.request() }, 'Connect Steam Controller'),
+  ...(webHidSupported()
+    ? [
+      el('div', {}, 'Steam Controller (2026): browsers can’t see it as a gamepad. Quit Steam completely (tray icon → Exit), connect it by cable or its wireless puck, then click:'),
+      el('button', { class: 'primary', onclick: () => void input.steamHid.request() }, 'Connect Steam Controller'),
+    ]
+    // Safari / Firefox: no WebHID, so the 2026 Steam Controller can't be driven from the page
+    : [el('div', { class: 'note' }, 'Steam Controller (2026): this browser has no WebHID, which the direct connection needs. Use Chrome or Edge for that controller.')]),
   hidStatus,
 );
 // Radios / HID joysticks with an unknown stick layout: point at the setup wizard.
@@ -188,7 +219,7 @@ const setupBox = el('div', { class: 'pad-warn' },
   el('b', {}, 'New controller: run the stick & switch setup once.'),
   el('div', {}, 'Press Esc → Controller → “Start stick & switch setup”. It detects your sticks, their directions and your arm / flight-mode switches.'),
 );
-hud.append(status, padBox, setupBox, telBox, sticks, lapBox, crashBox, specCanvas, helpBox);
+hud.append(soundHint, status, padBox, setupBox, telBox, sticks, lapBox, crashBox, specCanvas, helpBox);
 app.append(hud);
 
 function drawSticks() {
@@ -295,7 +326,14 @@ function updateHud() {
     drawSticks();
   } else { telBox.style.display = 'none'; sticks.style.display = 'none'; }
   lapBox.textContent = map.gates.length ? `Lap ${lapCount}  last ${lastLap ? lastLap.toFixed(2) : '--'} s  best ${bestLap < Infinity ? bestLap.toFixed(2) : '--'} s  next gate ${(gateTimes.length % map.gates.length) + 1}/${map.gates.length}` : '';
+  // live room leaderboard (best lap first)
+  if (mp.connected && map.gates.length) {
+    const rows = [{ name: loadPilot().name + ' (you)', lap: lapCount, best: bestLap }, ...[...mp.peers.values()].map((p) => ({ name: p.info.name, lap: p.lap?.lap ?? 0, best: p.lap?.best || Infinity }))]
+      .sort((a, b) => a.best - b.best);
+    lapBox.textContent += '\n' + rows.map((r, i) => `${i + 1}. ${r.name.padEnd(16)} lap ${String(r.lap).padStart(2)}  best ${r.best < Infinity ? r.best.toFixed(2) + ' s' : '--'}`).join('\n');
+  }
   crashBox.textContent = tel?.crash ?? '';
+  soundHint.style.display = audio.blocked && !menuOpen ? 'block' : 'none';
   // haptic thump on a new crash, scaled by impact speed ("Impact 12.3 m/s")
   const crash = tel?.crash ?? null;
   if (crash && crash !== lastCrash) {
@@ -334,9 +372,14 @@ const bfBridge = {
 };
 const TABS: [string, () => HTMLElement][] = [
   ['Drone builder', () => builderPanel(() => spec, (s) => { applySpec(s); toggleMenu(); })],
-  ['Betaflight', () => bfPanel(bfBridge)],
+  ['Betaflight', () => bfPanel(bfBridge, {
+    hardwareCli: (keepOsdLayout, propsOut) => simHardwareCli(build, { keepOsdLayout, propsOut }),
+    propsOut: () => spec.propDirection === 'props-out',
+    setPropsOut: (out) => applySpec({ ...spec, propDirection: out ? 'props-out' : 'props-in' }),
+  })],
   ['Controller', () => inputPanel(input)],
   ['Simulation', () => settingsPanel(simSettings, view, applySim, applyView)],
+  ['Multiplayer', () => multiplayerPanel(mp, joinRoom)],
   ['Blackbox', () => el('div', { class: 'panel' }, el('section', { class: 'sec' }, el('h3', {}, 'Blackbox-lite recorder'),
     el('p', {}, `Records the 1 kHz true state, raw gyro, motor DShot outputs and RPM, battery and your RC sticks whenever the quad is armed (last 5 minutes kept). ${blackbox.length} samples recorded.`),
     el('div', { class: 'actions' }, el('button', { class: 'primary', onclick: () => blackbox.download() }, 'Download CSV'), el('button', { onclick: () => { blackbox.clear(); renderTabs(); } }, 'Clear')))),
@@ -371,6 +414,13 @@ function poseAt(t: number): boolean {
 
 function animate(now: number) {
   requestAnimationFrame(animate);
+  // multiplayer: publish our newest pose, place the other pilots before anything is rendered
+  if (mp.connected && sampleRing(sh, newestTime(sh), mpRec)) {
+    const rr = mpRec;
+    mp.sendPose(now, [rr[R.px], rr[R.py], rr[R.pz]], [rr[R.qw], rr[R.qx], rr[R.qy], rr[R.qz]],
+      (Math.abs(rr[R.rpm0]) + Math.abs(rr[R.rpm1]) + Math.abs(rr[R.rpm2]) + Math.abs(rr[R.rpm3])) / 4, rr[R.armed] > 0.5);
+  }
+  remotes.update(sceneB.scene, mp, now);
   const v = build.info.components.video;
   const head = newestTime(sh);
   const sp = map.spawn.pos;
@@ -447,5 +497,11 @@ function spinProps(rpm: number[]) {
 }
 requestAnimationFrame(animate);
 
+// invite links: ?room=CODE joins that room on load
+{
+  const code = new URLSearchParams(location.search).get('room')?.toUpperCase();
+  if (code && /^[A-Z0-9]{4,8}$/.test(code)) joinRoom(code);
+}
+
 // debugging handle (inspect from devtools)
-(window as any).__fpv = { sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };
+(window as any).__fpv = { mp, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };

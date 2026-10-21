@@ -1,0 +1,15 @@
+name = "fpv-sim-rooms"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+[vars]
+# Pages allowed to open room WebSockets (comma-separated; "*." wildcards and "host:*" ports allowed)
+ALLOWED_ORIGINS = "https://fpv-sim-gamma.vercel.app,https://*.vercel.app,http://localhost:*,http://127.0.0.1:*"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
