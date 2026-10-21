@@ -5,7 +5,7 @@ firmware compiled to WebAssembly**, in lock-step with a physics / electrical / s
 The drone and its flight model are generated from component-level specs: frame, motors, props,
 battery, ESC, FC gyro and video system.
 
-Live: https://fpv-sim.vercel.app (if the deployment uses that name) · Source: https://github.com/cheesejaguar/fpv-sim
+Source: https://github.com/cheesejaguar/fpv-sim
 
 ## Quick start
 
