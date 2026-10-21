@@ -99,7 +99,8 @@ export class WorkerBridge implements BfBridge {
    * FC sees evenly aged stick data instead of a 4 ms poll beating against the 250 Hz link.
    * setTimeout(1) chained to itself is clamped to 4 ms after five levels of nesting; a MessageChannel
    * hop between the timeouts resets the nesting, so this ticks at ~1-2 ms without spinning.
-   * (Measured in headless Edge on the running sim: ~800 polls/s vs 243 for setInterval(4).)
+   * (Measured in headless Edge on the running sim: ~500-800 polls/s vs 243 for setInterval(4); a
+   * Windows timer can't go finer without spinning, Atomics.waitAsync timeouts included.)
    */
   static pollSticks(sh: Shared, poll: () => Float32Array, pad: () => { timestamp?: number } | null): () => void {
     const mc = new MessageChannel();

@@ -318,7 +318,7 @@ const wallAt = (t: number) => performance.timeOrigin + wallStart + ((t - simAtWa
 
 /**
  * Inputs to the FC that don't depend on whether the plant flies: RC link packets and link stats,
- * battery ADC, baro, GPS UART, blackbox UART. heldCurrent: the plant is frozen (no current drawn).
+ * battery ADC, baro, GPS UART, blackbox UART. held: the plant is frozen (no current, no motion).
  */
 function fcInputs(dt: number, held: boolean) {
   if (!bf) return;

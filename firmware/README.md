@@ -75,8 +75,11 @@ real time at 8 kHz), ~1.7 M/s disarmed.
 real firmware on the generated plant: hover / rates / beginner presets, plus
 accelerometer calibration, yaw spin recovery, the BMI270 3.2 kHz gyro path,
 beeper and DShot beacon, the serial blackbox stream, the u-blox GPS handshake
-up to a 3D fix and home point (the test file contains a small UBX receiver),
-CPU load and eRPM telemetry errors.
+up to a 3D fix and home point (against the worker's receiver emulator,
+`src/worker/ubxGps.ts`), CPU load and eRPM telemetry errors.
+`tests/worker.test.ts` covers EEPROM persistence across a reload and CLI
+pacing, `tests/gps.test.ts` the GPS emulator, `tests/stickPath.test.ts` the
+stick → setpoint / feedforward path.
 
 ## JS usage
 
@@ -267,3 +270,43 @@ buffers the host `_malloc`ed stay valid.
   not blocked.
 * Betaflight's `bootgrace` still applies: arming is refused for the first
   seconds after boot, as on hardware.
+* **Not done yet** – an MSP bridge for Betaflight Configurator (it would need a
+  WebSerial-like transport to UART1, e.g. a WebSocket relay to a virtual COM
+  port, since the Configurator can't reach a page's worker) and VTX tables /
+  SmartAudio on a memory UART (needs `USE_VTX_*` built and a SmartAudio
+  responder on the host side, plus a video-link model that follows the VTX
+  power / channel).
+
+## Host side (src/worker)
+
+What the simulator's worker adds around the firmware:
+
+* **EEPROM persistence** (`fwCli.ts`, `kv.ts`): `EepromStore.check()` is the
+  only reader of `bf_eeprom_dirty()` and stores the image in IndexedDB right
+  away (queued, newest last). The sim defaults are re-applied on first boot,
+  when Betaflight reset its stored config while booting (image dirty right
+  after boot), on a new `DEFAULTS_VERSION`, or when the firmware build hash
+  (`__FW_VERSION__`) changed. IndexedDB that is blocked / failing / hung (3 s)
+  only costs persistence.
+* **CLI batches** run on firmware time with the plant held at rest (no
+  integration; the IMU reads the quad still in its attitude, with its own bias
+  and noise). Each line ends on the CLI prompt; a batch first waits for the
+  disarm (Betaflight ignores `#` while armed).
+* **Gyro ODR**: `setGyroRate(chip.sampleRateHz)` before every boot; the IMU
+  sample goes to `bf_set_gyro_acc` only on the physics steps where the chip
+  latched one. The first boot also runs the level accelerometer calibration.
+* **RC sticks**: the main thread writes timestamped stick samples (Gamepad
+  timestamp) into a shared ring at ~0.5–1 kHz; each ELRS packet carries the
+  newest sample 2.5 ms (+ a mixer-sync offset that keeps the sampling instant
+  between input updates) before its slot — see `tests/stickPath.test.ts`.
+* **GPS** (`ubxGps.ts`): u-blox M8 emulator on UART3 — MON-VER replies, ACKs,
+  CFG-RATE, NAV-PVT (+ NAV-SAT) from the plant's ENU state at a fixed origin
+  plus the map elevation; ~1.5 m CEP wandering error, ~0.1 m/s Doppler
+  velocity noise, cold start: 3D fix with 12 satellites ~8 s after power-on.
+* **Blackbox** (`bbl.ts`): UART2 drained every 10 ms into one log per armed
+  session (32 MB kept) → "Download .bbl".
+* **Sensor errors** (`fcHardware.ts`): baro noise (0.3 m σ) and prop-wash
+  overpressure (≈1 % of the disk loading in free air, up to ≈7 % at the
+  ground: reads ~0.6 m low on the pad); current sensor offset ±1 A and scale
+  ±10 % per build (mAh integrated from it); 1S boards brown out below 2.8 V
+  for > 30 ms and boot again ~0.8 s after the pack recovers.
