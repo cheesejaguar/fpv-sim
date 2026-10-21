@@ -155,6 +155,9 @@ export class OsdRenderer {
 // ---------------------------------------------------------------------------------------------
 // Goggle overlay: what the goggles / VRX draw over the received picture, independent of the FC OSD.
 
+/** Top strip of the frame the goggle overlay draws in (fraction of the frame height). */
+export const GOGGLE_BAND = 0.065;
+
 export interface GoggleInfo {
   system: string; kind: 'analog' | 'digital';
   cnr: number; margin: number; bitrateMbps: number; latencyMs: number; lost: boolean;
@@ -217,7 +220,7 @@ export class GoggleOverlay {
     }
     const g = this.canvas.getContext('2d')!;
     g.clearRect(0, 0, w, h);
-    const fs = Math.round(h * 0.034), pad = Math.round(h * 0.03), y = pad + fs;
+    const fs = Math.round(h * 0.03), pad = Math.round(h * 0.025), y = Math.round(h * (GOGGLE_BAND - 0.016));
     g.font = `600 ${fs}px "Chakra Petch", system-ui, sans-serif`;
     g.textBaseline = 'alphabetic';
     g.shadowColor = 'rgba(0,0,0,0.85)'; g.shadowBlur = fs * 0.25; g.shadowOffsetY = fs * 0.06;

@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 import * as THREE from 'three';
 import { dvrFileName, pickMimeType, recClock } from '../src/app/dvr';
 import { PROPS, VIDEO } from '../src/data/catalog';
-import { bladeSolidity, kbDistort, mountVibration, noiseSigma, projectFisheye, propLook, quatToRotVec, SHUTTER_MAX, SHUTTER_MIN, shutterTime } from '../src/render/fpvCamera';
+import { bladeSolidity, kbDistort, mountVibration, noiseSigma, projectFisheye, propLook, quatToRotVec, sensorGain, SHUTTER_MAX, SHUTTER_MIN, shutterTime } from '../src/render/fpvCamera';
 import { goggleItems, rssiPercent, scale2x, signalBars } from '../src/render/osdRenderer';
 import { bitrateAt, maxBitrateMbps } from '../src/render/videoLink';
 
@@ -12,12 +12,14 @@ test('shutter: 1/2000 s in daylight, the frame period (≤ 1/60 s) in the dark, 
   expect(shutterTime(0.06, 60)).toBe(SHUTTER_MIN);
   expect(shutterTime(5, 59.94)).toBeCloseTo(SHUTTER_MAX, 9);
   expect(shutterTime(5, 120)).toBeCloseTo(1 / 120, 9); // can't expose longer than a frame
+  const day = shutterTime(0.4, 60); expect(day).toBeGreaterThan(1 / 1500); expect(day).toBeLessThan(1 / 400); // ~1/800 s
   let prev = 0;
   for (let e = 0.06; e <= 5; e *= 1.3) { const s = shutterTime(e, 60); expect(s).toBeGreaterThanOrEqual(prev); prev = s; }
 });
 
 test('sensor noise grows with the square root of the gain at a given picture level', () => {
   const y = 0.18;
+  expect(sensorGain(0.1)).toBe(1); expect(sensorGain(5)).toBeCloseTo(20, 9);
   expect(noiseSigma(4, y) / noiseSigma(1, y)).toBeCloseTo(2, 6);
   expect(noiseSigma(5, y)).toBeGreaterThan(noiseSigma(0.3, y) * 3);
   expect(noiseSigma(1, 0)).toBeGreaterThan(0); // read-noise floor in the blacks

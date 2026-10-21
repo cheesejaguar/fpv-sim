@@ -15,6 +15,7 @@
 //     the goggles' own overlay.
 import * as THREE from 'three';
 import type { VideoSpec } from '../data/catalog';
+import { GOGGLE_BAND } from './osdRenderer';
 
 // ---------------------------------------------------------------------------------------------
 // Camera maths shared by the shaders and the frame loop (plain numbers: unit-tested)
@@ -22,14 +23,23 @@ import type { VideoSpec } from '../data/catalog';
 /** Shortest / longest exposure: FPV cameras shorten the shutter in daylight (~1/2000 s) and open it
  *  to the frame period (~1/60 s) in the dark before they add gain. */
 export const SHUTTER_MIN = 1 / 2000, SHUTTER_MAX = 1 / 60;
-/** Exposure time for exposure factor e (scene → mid-grey gain, 0.06 … 5). Mirrored in fisheyeFS. */
+/** Exposure factor e (scene -> mid-grey, 0.06 … 5) at which the shutter is fully open. */
+export const E_SHUTTER = 2;
+/** Exposure time for exposure factor e: ~1/800 s in daylight (e ≈ 0.4), the frame period from
+ *  E_SHUTTER on. Mirrored in fisheyeFS. */
 export function shutterTime(e: number, fps: number): number {
-  return Math.min(Math.max(e / 300, SHUTTER_MIN), Math.min(SHUTTER_MAX, 1 / fps));
+  const smax = Math.min(SHUTTER_MAX, 1 / fps);
+  return Math.min(Math.max(smax * Math.pow(Math.max(e, 0) / E_SHUTTER, 1.6), SHUTTER_MIN), smax);
 }
+/** Sensor gain behind exposure factor e: the analog / digital gain that brightens a dark scene (1× in
+ *  bright daylight, 20× at the darkest the auto-exposure goes). */
+export const E_UNITY = 0.25;
+export const sensorGain = (e: number) => Math.max(1, e / E_UNITY);
 /** Sensor noise (std dev, linear output units) at exposure factor e and output level y: photon shot
- *  noise amplified by the gain plus a read-noise floor, ∝ √gain at a given picture level. */
-export const NOISE_K = 0.035;
-export function noiseSigma(e: number, y: number): number { return NOISE_K * Math.sqrt(e * (Math.max(0, y) + 0.01)); }
+ *  noise amplified by the gain plus a read-noise floor, ∝ √gain. Digital cameras' spatial NR leaves
+ *  ~60 %. Mirrored in fisheyeFS / tnrFS. */
+export const NOISE_K = 0.012;
+export function noiseSigma(e: number, y: number, k = NOISE_K): number { return k * Math.sqrt(sensorGain(e) * (Math.max(0, y) + 0.01)); }
 
 /** Kannala–Brandt forward model: distorted angle θ_d for an incidence angle θ. */
 export function kbDistort(theta: number, k: readonly number[]): number {
@@ -101,7 +111,7 @@ precision highp float;
 varying vec2 vUv;
 uniform samplerCube cube;
 uniform sampler2D expTex, sunTex;
-uniform float halfFovDiag, aspect, readout, shutterMax, nSamples, footprint, seed, noiseK;
+uniform float halfFovDiag, aspect, readout, shutterMax, nSamples, footprint, seed, noiseK, hasNear;
 uniform vec4 kb;
 uniform vec3 rotTab[${ROT_N}];  // camera rotation (rotation vectors, camera frame) through the frame
 uniform float tab0, tabDt;     // time of rotTab[0] relative to the frame's middle row, and spacing (s)
@@ -165,14 +175,14 @@ void main() {
   vec3 d = vec3(sin(th) * cos(ph), sin(th) * sin(ph), -cos(th));
   // pixel footprint on the sphere: drives the mip level, so the compressed periphery doesn't shimmer
   vec3 gx = dFdx(d), gy = dFdy(d);
-  float e = textureLod(expTex, vec2(0.5), 0.0).r;
+  float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   // exposure time: short in daylight, up to the frame period in the dark (shutterTime() in JS)
-  float shutter = clamp(e / 300.0, ${SHUTTER_MIN}, shutterMax);
+  float shutter = clamp(shutterMax * pow(e / ${E_SHUTTER.toFixed(1)}, 1.6), ${SHUTTER_MIN}, shutterMax);
   // rolling shutter: rows read top -> bottom over 'readout' seconds; each row integrates over its
   // own exposure window, so fast rotation both skews and smears the picture
   float tRow = (0.5 - vUv.y) * readout;
-  // the quad's own parts (alpha 0 in the cube) are bolted to the camera: no skew, no motion blur
-  bool own = textureGrad(cube, d, gx * footprint, gy * footprint).a < 0.5;
+  // the quad's own parts (alpha 1 in the cube, the world 0) are bolted to the camera: no skew, no blur
+  bool own = hasNear > 0.5 && textureGrad(cube, d, gx * footprint, gy * footprint).a > 0.5;
   vec3 acc = vec3(0.0);
   float wsum = 0.0;
   for (int i = 0; i < 8; i++) {
@@ -188,7 +198,7 @@ void main() {
     if (dot(m, m) > dot(fx, fx)) { fx = m; fy = normalize(cross(m, w) + 1e-9) * length(gy) * footprint; }
     vec4 s = textureGrad(cube, w, fx, fy);
     // a world sample that lands on the quad would see what is behind it, which the cube doesn't have
-    float k = own ? 1.0 : step(0.5, s.a);
+    float k = own || hasNear < 0.5 ? 1.0 : step(s.a, 0.5);
     acc += min(s.rgb, vec3(6e4)) * k; // (min: a clear sky's sun disc can overflow half floats)
     wsum += k;
   }
@@ -213,7 +223,7 @@ void main() {
   // sensor noise before the camera's gamma: shot noise amplified by the gain + a read-noise floor
   // (noiseSigma() in JS), mostly luma with some chroma
   float y = max(dot(c, LUM), 0.0) * e;
-  float sig = noiseK * sqrt(e * (y + 0.01));
+  float sig = noiseK * sqrt(max(1.0, e / ${E_UNITY}) * (y + 0.01));
   vec2 fc = gl_FragCoord.xy + seed;
   float nl = hash(fc) + hash(fc + 71.3) - 1.0;
   vec3 nc = vec3(hash(fc + 13.1), hash(fc + 29.7), hash(fc + 47.9)) - 0.5;
@@ -275,7 +285,7 @@ vec3 tap(vec2 uv, float e) {
   ${bright ? 'return min(max(c * e - 0.85, 0.0), 6.0) / e; // above clip, in scene units' : 'return c;'}
 }
 void main() {
-  float e = textureLod(expTex, vec2(0.5), 0.0).r;
+  float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   vec3 s = tap(vUv, e) * W[0];
   for (int i = 1; i < 5; i++) s += (tap(vUv + stepUv * float(i), e) + tap(vUv - stepUv * float(i), e)) * W[i];
   gl_FragColor = vec4(s, 1.0);
@@ -293,13 +303,14 @@ const vec3 LUM = vec3(0.2126, 0.7152, 0.0722);
 void main() {
   vec4 c = textureLod(cur, vUv, 0.0);
   vec3 p = textureLod(prev, vUv, 0.0).rgb;
-  float e = textureLod(expTex, vec2(0.5), 0.0).r;
+  if (any(isnan(p)) || any(isinf(p))) p = c.rgb; // the history is recursive: never let a bad value stick
+  float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   float strength = clamp((e - 0.7) / 2.5, 0.0, 0.85);
-  float sig = noiseK * sqrt(e * (max(dot(c.rgb, LUM), 0.0) * e + 0.01));
+  float sig = noiseK * sqrt(max(1.0, e / ${E_UNITY}) * (max(dot(c.rgb, LUM), 0.0) * e + 0.01));
   float dl = length((c.rgb - p) * e);
   float th = 3.0 * sig + 0.012;
   float k = strength * exp(-0.5 * dl * dl / (th * th));
-  gl_FragColor = vec4(mix(c.rgb, p, k), c.a);
+  gl_FragColor = vec4(min(mix(c.rgb, p, k), vec3(6e4)), c.a);
 }`;
 
 const commonPost = /* glsl */ `
@@ -354,7 +365,7 @@ void main() {
   shift += sin(line * 0.05 + time * 40.0) * 0.004 * tear;
   float roll = tear > 0.8 ? fract(time * 0.7) * (tear - 0.8) * 5.0 : 0.0;
   vec2 suv = vec2(fract(uv.x + shift), fract(uv.y + roll));
-  float e = textureLod(expTex, vec2(0.5), 0.0).r;
+  float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   bool useprev = interlaced > 0.5 && mod(line, 2.0) == oddField;
   // glow is smooth: one tap serves the luma, chroma and sharpening taps
   vec3 glw = (useprev ? textureLod(prevGlow, suv, 0.0).rgb : textureLod(glow, suv, 0.0).rgb) * glowK;
@@ -403,7 +414,7 @@ void main() {
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(vec3(0.0), 1.0); return; }
   // no signal: goggles show black (the HD OSD travels over the same link, so it is gone too)
   if (lost > 0.5) { gl_FragColor = vec4(goggle(vec3(0.0), uv), 1.0); return; }
-  float e = textureLod(expTex, vec2(0.5), 0.0).r;
+  float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   vec2 suv = uv;
   vec3 c;
   if (hdz > 0.5) {
@@ -468,8 +479,6 @@ export class FpvCamera {
   // shadow-map refresh: an empty render (camera looking at nothing) with the whole scene visible
   private voidCam = new THREE.PerspectiveCamera(1, 1, 1, 2);
   private voidRT = new THREE.WebGLRenderTarget(1, 1);
-  // writes alpha 0 over the quad's own (opaque) parts in the near pass
-  private tagMat = new THREE.MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, blending: THREE.NoBlending, depthWrite: false, depthFunc: THREE.LessEqualDepth, side: THREE.DoubleSide });
   video!: VideoSpec;
   field = 0;
   private seed = 0;
@@ -485,8 +494,9 @@ export class FpvCamera {
   sunColor = new THREE.Color(1, 1, 1);
   /** Camera orientation through the frame (see setMotion) and mount vibration (see setVibration). */
   private rotTab = new Float32Array(ROT_N * 3);
-  /** Where the last presented video frame and its OSD grid sit on screen (CSS px, top-left origin). */
-  layout = { frame: { x: 0, y: 0, w: 0, h: 0 }, osd: { x: 0, y: 0, w: 0, h: 0 } };
+  /** Where the last presented video frame, its OSD grid and the goggle overlay's strip (h 0 when
+   *  off) sit on screen (CSS px, top-left origin). */
+  layout = { frame: { x: 0, y: 0, w: 0, h: 0 }, osd: { x: 0, y: 0, w: 0, h: 0 }, goggle: { x: 0, y: 0, w: 0, h: 0 } };
 
   constructor(private renderer: THREE.WebGLRenderer, cubeSize = 768) {
     this.cubeRT = this.makeCubeRT(cubeSize);
@@ -508,7 +518,7 @@ export class FpvCamera {
       uniforms: {
         cube: U(this.cubeRT.texture), expTex: U<THREE.Texture | null>(null), sunTex: U(this.sunRT.texture),
         halfFovDiag: U(1.4), aspect: U(4 / 3), kb: U(new THREE.Vector4()), readout: U(0.016), shutterMax: U(SHUTTER_MAX),
-        nSamples: U(4), footprint: U(0.6), seed: U(0), noiseK: U(NOISE_K),
+        nSamples: U(4), footprint: U(0.6), seed: U(0), noiseK: U(NOISE_K), hasNear: U(0),
         rotTab: U(Array.from({ length: ROT_N }, () => new THREE.Vector3())), tab0: U(-0.02), tabDt: U(0.04 / (ROT_N - 1)),
         vibAmp: U(new THREE.Vector4()), vibFreq: U(new THREE.Vector4()), vibPhase: U(new THREE.Vector4()), vibOn: U(0),
         sunCam: U(new THREE.Vector3(0, 0, -1)), sunColor: U(new THREE.Color()), sunImg: U(new THREE.Vector2()), sunGain: U(0), ghostGain: U(0), veil: U(0.014),
@@ -549,7 +559,7 @@ export class FpvCamera {
    * The cube turns with the lens. Its back face is never sampled (a ≤165° fisheye stays within 83°
    * of the axis; rolling shutter / blur samples are capped at 29° beyond that), so it is skipped,
    * and each side face renders only the part facing forward: an off-axis frustum over that part of
-   * the face, so culling drops what lies behind as well. Saves ~45 % of the cube's pixels.
+   * the face, so culling drops what lies behind as well: ~32 % fewer cube pixels than 6 full faces.
    */
   private layoutFaces() {
     const r = this.renderer, n = this.cubeRT.width;
@@ -614,6 +624,8 @@ export class FpvCamera {
     u.kb.value.set(...v.fisheyeK);
     u.readout.value = v.rollingShutterMs / 1000;
     u.shutterMax.value = Math.min(SHUTTER_MAX, 1 / v.fps);
+    // digital cameras run spatial noise reduction before encoding: less grain, at the cost of detail
+    u.noiseK.value = this.tnrMat.uniforms.noiseK.value = NOISE_K * (v.kind === 'digital' ? 0.6 : 1);
     this.postMat?.dispose();
     this.postMat = new THREE.ShaderMaterial({
       vertexShader: quadVS, fragmentShader: v.kind === 'analog' ? analogFS : digitalFS, depthTest: false,
@@ -679,6 +691,7 @@ export class FpvCamera {
     let t = this.prevRT; this.prevRT = this.frameRT; this.frameRT = t;
     t = this.prevGlowRT; this.prevGlowRT = this.glowRT; this.glowRT = t;
     this.renderCube(scene, lensPos, lensQuat, near);
+    this.fisheyeMat.uniforms.hasNear.value = near ? 1 : 0;
     const expTex = this.expRT[this.expIdx].texture; // last frame's exposure (gain, shutter)
     const u = this.fisheyeMat.uniforms;
     // sun in camera space: is it in (or near) the picture, and how much of it does the cube show?
@@ -745,9 +758,11 @@ export class FpvCamera {
   private renderCube(scene: THREE.Scene, lensPos: THREE.Vector3, lensQuat: THREE.Quaternion, near?: THREE.Object3D) {
     const r = this.renderer, rt = this.cubeRT, tex = rt.texture, n = rt.width;
     for (const cc of [this.cubeCam, this.nearCam]) { cc.position.copy(lensPos); cc.quaternion.copy(lensQuat); cc.updateMatrixWorld(true); }
-    const gm = tex.generateMipmaps, xr = r.xr.enabled;
+    const gm = tex.generateMipmaps, xr = r.xr.enabled, au = scene.matrixWorldAutoUpdate;
     r.xr.enabled = false;
     tex.generateMipmaps = false; // once, after the last face
+    // every render() would walk the whole scene to update world matrices: once is enough
+    scene.updateMatrixWorld(); scene.matrixWorldAutoUpdate = false;
     const faces = this.faces, last = faces.length - 1;
     if (near) near.visible = false;
     faces.forEach((f, k) => {
@@ -763,32 +778,26 @@ export class FpvCamera {
       for (const c of scene.children) if (c !== near && c.visible && !(c as THREE.Light).isLight) { c.visible = false; hidden.push(c); }
       const bg = scene.background, ac = r.autoClear;
       scene.background = null; r.autoClear = false;
-      // its pixels are tagged alpha 0 (the world pass leaves alpha 1), so the fisheye can keep them
-      // out of the motion blur: colour pass with alpha masked, then an alpha-only pass over it
-      // (opaque parts only: the world behind a spinning prop disc still smears)
-      const gl = r.getContext(), clear: THREE.Object3D[] = [];
-      near.traverse((o) => { const m = (o as THREE.Mesh).material as THREE.Material | undefined; if (o.visible && m && !Array.isArray(m) && m.transparent) clear.push(o); });
+      // its pixels are tagged in alpha: the world's alpha is cleared to 0 together with the depth,
+      // the quad's opaque parts then write 1 (a spinning prop disc only its opacity, so the world
+      // behind it still smears), and the fisheye keeps them out of the motion blur
+      const gl = r.getContext(), cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha();
+      r.setClearColor(cc, 0);
       faces.forEach((f, k) => {
+        if (k === last) tex.generateMipmaps = gm;
         rt.viewport.copy(f.vp); rt.scissor.copy(f.vp); rt.scissorTest = true;
         r.setRenderTarget(rt, f.i);
-        r.clearDepth();
-        const cam = this.nearCam.children[f.i] as THREE.Camera;
-        gl.colorMask(true, true, true, false);
-        r.render(scene, cam);
-        if (k === last) tex.generateMipmaps = gm;
         gl.colorMask(false, false, false, true);
-        scene.overrideMaterial = this.tagMat;
-        for (const o of clear) o.visible = false;
-        r.render(scene, cam);
-        for (const o of clear) o.visible = true;
-        scene.overrideMaterial = null;
+        r.clear(true, true, false);
         gl.colorMask(true, true, true, true);
+        r.render(scene, this.nearCam.children[f.i] as THREE.Camera);
       });
+      r.setClearColor(cc, ca);
       r.autoClear = ac; scene.background = bg;
       for (const c of hidden) c.visible = true;
     }
     rt.viewport.set(0, 0, n, n); rt.scissor.set(0, 0, n, n); rt.scissorTest = false;
-    tex.generateMipmaps = gm; r.xr.enabled = xr;
+    tex.generateMipmaps = gm; r.xr.enabled = xr; scene.matrixWorldAutoUpdate = au;
   }
 
   /** Composite to the screen with link artefacts, OSD and the goggles' overlay. */
@@ -820,6 +829,7 @@ export class FpvCamera {
     const fw = u.screenFit.value.x * cw, fh = u.screenFit.value.y * ch;
     const f = this.layout.frame; f.x = (cw - fw) / 2; f.y = (ch - fh) / 2; f.w = fw; f.h = fh;
     const o = this.layout.osd; o.w = ow * fw; o.h = oh * fh; o.x = f.x + (0.5 - ow / 2) * fw; o.y = f.y + (0.5 - oh / 2) * fh;
+    const g = this.layout.goggle; g.x = f.x; g.y = f.y; g.w = fw; g.h = gogTex ? GOGGLE_BAND * fh : 0;
     this.quad.material = this.postMat;
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
@@ -829,7 +839,7 @@ export class FpvCamera {
     this.cubeRT.dispose(); this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose();
     this.glowTmp.dispose(); this.glowRT.dispose(); this.prevGlowRT.dispose(); this.sunRT.dispose(); this.voidRT.dispose();
     for (const e of this.expRT) e.dispose();
-    for (const m of [this.fisheyeMat, this.sunMat, this.expMat, this.brightMat, this.blurMat, this.tnrMat, this.postMat, this.tagMat]) m?.dispose();
+    for (const m of [this.fisheyeMat, this.sunMat, this.expMat, this.brightMat, this.blurMat, this.tnrMat, this.postMat]) m?.dispose();
   }
 }
 

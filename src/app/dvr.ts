@@ -47,12 +47,15 @@ export function initDvr(ctx: AppCtx, parent: HTMLElement = document.body): Dvr {
   Object.assign(dot.style, { color: '#ff3b30', marginLeft: '6px' });
   const clock = document.createElement('span');
   Object.assign(clock.style, { marginLeft: '8px', fontVariantNumeric: 'tabular-nums', opacity: '0.85' });
-  chip.append('REC', dot, clock);
+  const label = document.createElement('span');
+  label.textContent = 'REC';
+  chip.append(label, dot, clock);
   parent.append(chip);
-  let tick = 0;
+  let tick = 0, noteT = 0;
   const showChip = (on: boolean) => {
     chip.style.display = on ? 'block' : 'none';
-    clearInterval(tick);
+    label.textContent = 'REC'; dot.style.display = clock.style.display = '';
+    clearInterval(tick); clearTimeout(noteT);
     if (on) tick = window.setInterval(() => {
       const ms = performance.now() - dvrState.startedAt;
       clock.textContent = recClock(ms);
@@ -71,8 +74,16 @@ export function initDvr(ctx: AppCtx, parent: HTMLElement = document.body): Dvr {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   };
 
+  /** A short message in the chip instead of the timer (e.g. no MediaRecorder in this browser). */
+  const note = (text: string) => {
+    showChip(true); clearInterval(tick);
+    label.textContent = text; dot.style.display = clock.style.display = 'none';
+    noteT = window.setTimeout(() => showChip(false), 2500);
+    ctx.log(text);
+  };
   const start = (): boolean => {
-    if (rec || typeof MediaRecorder === 'undefined' || !canvas.captureStream) { if (!rec) ctx.log('DVR: this browser cannot record the canvas'); return false; }
+    if (rec) return false;
+    if (typeof MediaRecorder === 'undefined' || !canvas.captureStream) { note('DVR: this browser cannot record video'); return false; }
     const v = ctx.build.info.components.video;
     // record at the camera's frame rate (the canvas only changes on new camera frames anyway)
     stream = canvas.captureStream(Math.min(120, Math.round(v.fps)));
@@ -81,7 +92,7 @@ export function initDvr(ctx: AppCtx, parent: HTMLElement = document.body): Dvr {
     mime = pickMimeType((t) => MediaRecorder.isTypeSupported(t));
     try {
       rec = new MediaRecorder(stream, { ...(mime && { mimeType: mime }), videoBitsPerSecond: v.kind === 'analog' ? 6e6 : 16e6 });
-    } catch (e) { ctx.log(`DVR: ${(e as Error).message}`); stream = null; return false; }
+    } catch (e) { note(`DVR: ${(e as Error).message}`); stream = null; return false; }
     mime = rec.mimeType || mime;
     chunks = [];
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
