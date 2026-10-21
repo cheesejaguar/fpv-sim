@@ -17,6 +17,7 @@ import { focusEl, focusables, MenuNav } from './nav';
 
 export type GameMode = 'free' | 'race' | 'drill';
 type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide';
+type JoinFrom = 'host' | 'code' | 'browser';
 
 export interface SettingsTab { id: string; label: string; icon: IconName; render: () => HTMLElement }
 
@@ -103,7 +104,7 @@ export class GameMenu {
       scroller: () => this.screenEl,
     }, () => host.input.pads());
     this.nav.onDevice = () => this.renderFoot();
-    host.mp.listen(() => { if (this.openState) this.renderTop(); });
+    host.mp.listen(() => { this.onMp(); if (this.openState) this.renderTop(); });
     // warm the drone-card stats in the background so New Game opens with numbers already there
     const warm = () => { for (const p of PRESETS) void droneStats(p); };
     if ('requestIdleCallback' in window) (window as any).requestIdleCallback(warm, { timeout: 4000 }); else setTimeout(warm, 1500);
@@ -188,7 +189,7 @@ export class GameMenu {
       el('div', { class: 'gm-status', 'aria-live': 'polite' },
         chip(fw ? (/missing|fail|error/i.test(fw) ? 'err' : 'warn') : 'ok', fw ? 'Firmware loading' : 'Betaflight 4.5.5', fw),
         chip(pad ? 'ok' : 'warn', pad ? shortPad(pad.id) : 'Keyboard', pad?.id ?? 'No controller detected: press a button on it'),
-        chip(mp.connected ? 'ok' : mp.status === 'connecting' ? 'warn' : mp.status === 'error' ? 'err' : '', mp.connected ? `Room ${mp.room} · ${mp.peers.size + 1}` : mp.status === 'connecting' ? 'Connecting…' : 'Offline', mp.error || ''),
+        chip(mp.connected ? 'ok' : mp.status === 'connecting' || mp.status === 'reconnecting' ? 'warn' : mp.status === 'error' ? 'err' : '', mp.connected ? `Room ${mp.room} · ${mp.peers.size + 1}` : mp.status === 'connecting' ? 'Connecting…' : mp.status === 'reconnecting' ? 'Reconnecting…' : 'Offline', mp.error || ''),
       ),
     );
   }
@@ -239,7 +240,7 @@ export class GameMenu {
         this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.ng.mode); this.close(); } }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: 'Arming, modes, rates, PIDs, OSD', onClick: () => this.go('guide') }),
-        ...(mp.connected ? [this.item({ icon: 'logout', title: 'Leave room', sub: `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
+        ...(mp.room && mp.status !== 'idle' ? [this.item({ icon: 'logout', title: 'Leave room', sub: mp.connected ? `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)` : `Room ${mp.room}: ${mp.status === 'error' ? 'disconnected' : 'reconnecting…'}`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
         this.item({ icon: 'home', title: 'Main menu', sub: 'New game, server browser', onClick: () => { this.stack = ['title']; this.render(); } }),
       ]
       : [
@@ -257,6 +258,7 @@ export class GameMenu {
       el('div', {},
         paused ? el('h1', { class: 'gm-hero' }, 'PAUSED') : el('h1', { class: 'gm-hero' }, 'FPV SIM'),
         el('p', { class: 'gm-tagline' }, paused ? 'Disarmed · physics frozen' : 'Real Betaflight · real physics · real latency'),
+        paused ? null : this.roomCardView(),
         el('nav', { class: 'gm-mainnav gm-stagger', 'aria-label': 'Main' }, ...items)),
       el('aside', { class: 'gm-side gm-stagger' },
         el('div', { class: 'gm-card gm-pilot' },
@@ -386,28 +388,110 @@ export class GameMenu {
       el('div', {}, this.summary(launch)));
   }
 
+  // -------------------------------------------------------------------------------------------
+  // Multiplayer joins: Host, Join by code and the server browser wait in the menu for the room's
+  // welcome ("Joining…", failures inline with Retry); the menu closes into flight only once in.
+  private pending: { from: JoinFrom; code: string; room?: { name: string; public: boolean } } | null = null;
+  private joinViews: { from: JoinFrom; box: HTMLElement; btn?: HTMLButtonElement; label?: HTMLElement; idle?: string }[] = [];
+  private roomCardDraw: (() => void) | null = null;
+
+  private startJoin(from: JoinFrom, code: string, room?: { name: string; public: boolean }) {
+    this.pending = { from, code, room };
+    this.host.joinRoom(code, room);
+    this.drawJoin();
+  }
+
+  private cancelJoin() {
+    this.pending = null;
+    this.host.mp.leave(); history.replaceState(null, '', location.pathname);
+    this.drawJoin();
+  }
+
+  private onMp() {
+    const mp = this.host.mp, p = this.pending;
+    // menu closed meanwhile (e.g. Quick fly) or another join replaced this one: forget it
+    if (p && (!this.openState || mp.room !== p.code)) this.pending = null;
+    else if (p && mp.connected) { this.pending = null; this.host.startFlight('free'); this.inFlight = true; this.close(); return; }
+    this.drawJoin();
+    this.roomCardDraw?.();
+  }
+
+  /** A status slot for one join source (+ its button, which shows "Joining…" while it waits). */
+  private joinView(from: JoinFrom, btn?: HTMLButtonElement, label?: HTMLElement): HTMLElement {
+    const box = el('div', { role: 'status', 'aria-live': 'polite' });
+    this.joinViews.push({ from, box, btn, label, idle: label?.textContent ?? '' });
+    return box;
+  }
+
+  private drawJoin() {
+    const mp = this.host.mp, p = this.pending;
+    this.joinViews = this.joinViews.filter((v) => v.box.isConnected); // views of screens since left
+    const busy = !!p && mp.status === 'connecting';
+    for (const v of this.joinViews) {
+      const mine = !!p && p.from === v.from;
+      if (v.btn) { v.btn.disabled = busy; v.btn.setAttribute('aria-busy', String(busy && mine)); }
+      if (v.label) v.label.textContent = busy && mine ? 'Joining…' : v.idle!;
+      if (!mine || !p) { v.box.replaceChildren(); continue; }
+      const cancel = el('button', { class: 'gm-btn ghost', onclick: () => this.cancelJoin() }, 'Cancel');
+      if (busy) v.box.replaceChildren(el('p', { class: 'gm-room-sub', style: { margin: '10px 0 0' } }, `Joining room ${p.code}…`, ' ', cancel));
+      else if (mp.status === 'error') {
+        v.box.replaceChildren(el('div', { class: 'gm-callout warn', style: { margin: '12px 0 0' } }, icon('alert'),
+          el('div', {}, el('p', {}, mp.error || 'Could not join the room.'),
+            el('div', { class: 'gm-actions', style: { marginTop: '10px' } },
+              el('button', { class: 'gm-btn primary', 'data-key': `retry-${v.from}`, onclick: () => this.startJoin(p.from, p.code, p.room) }, icon('refresh'), 'Retry'), cancel))));
+      } else v.box.replaceChildren();
+    }
+  }
+
+  /** Title screen while in (or joining) a room, e.g. opened from an invite link: Fly / Leave. */
+  private roomCardView(): HTMLElement {
+    const mp = this.host.mp;
+    const title = el('h3', {}), sub = el('p', { class: 'gm-room-sub', style: { margin: '0 0 12px' } });
+    const fly = el('button', { class: 'gm-btn cta', 'data-key': 'room-fly', onclick: () => { this.host.startFlight('free'); this.inFlight = true; this.close(); } }, icon('play'), 'Fly') as HTMLButtonElement;
+    const retry = el('button', { class: 'gm-btn primary', 'data-key': 'room-retry', onclick: () => mp.retry() }, icon('refresh'), 'Retry') as HTMLButtonElement;
+    const leave = el('button', { class: 'gm-btn ghost', 'data-key': 'room-leave', onclick: () => { mp.leave(); history.replaceState(null, '', location.pathname); } }, icon('logout'), 'Leave');
+    const card = el('div', { class: 'gm-card', style: { margin: '0 0 18px', maxWidth: '520px' }, 'aria-live': 'polite' }, title, sub, el('div', { class: 'gm-actions' }, fly, retry, leave));
+    const draw = () => {
+      card.hidden = !mp.room || mp.status === 'idle';
+      if (card.hidden) return;
+      const s = mp.status;
+      title.textContent = s === 'connected' ? `In room ${mp.room}` : s === 'error' ? `Couldn’t join room ${mp.room}` : s === 'reconnecting' ? `Reconnecting to room ${mp.room}…` : `Joining room ${mp.room}…`;
+      sub.textContent = s === 'connected'
+        ? [`${mp.peers.size + 1} pilot${mp.peers.size ? 's' : ''}`, mp.latencyMs ? `ping ${Math.round(mp.latencyMs)} ms` : '', ...mp.versionNotes()].filter(Boolean).join(' · ')
+        : s === 'connecting' ? 'Connecting to the room server…' : mp.error;
+      fly.disabled = s !== 'connected';
+      retry.hidden = s !== 'error';
+    };
+    draw();
+    this.roomCardDraw = () => { if (card.isConnected) draw(); };
+    this.timers.push(window.setInterval(this.roomCardDraw, 1000)); // ping readout
+    return card;
+  }
+
   private multiBody(rerender: () => void): HTMLElement {
     const mp = this.host.mp, pilot = loadPilot();
     const nameIn = el('input', { class: 'gm-input', value: pilot.name, maxlength: 20, 'aria-label': 'Pilot name', oninput: () => { pilot.name = nameIn.value.trim() || 'Pilot'; savePilot(pilot); } }) as HTMLInputElement;
     const colorIn = el('input', { type: 'color', value: pilot.color, 'aria-label': 'Quad colour', oninput: () => { pilot.color = colorIn.value; savePilot(pilot); } }) as HTMLInputElement;
     const roomIn = el('input', { class: 'gm-input', value: `${pilot.name}'s room`, maxlength: 32, 'aria-label': 'Room name' }) as HTMLInputElement;
-    const pub = el('input', { type: 'checkbox', checked: true, role: 'switch', 'aria-label': 'List in server browser' }) as HTMLInputElement;
+    // unlisted unless the host opts in: a public room shows the host's callsign to everyone
+    const pub = el('input', { type: 'checkbox', checked: false, role: 'switch', 'aria-label': 'List publicly (shows your callsign)' }) as HTMLInputElement;
     const codeIn = el('input', { class: 'gm-input code', placeholder: 'CODE', maxlength: 8, 'aria-label': 'Room code', autocomplete: 'off', spellcheck: 'false' }) as HTMLInputElement;
     const msg = el('p', { class: 'gm-room-sub', role: 'status' });
-    const fly = () => { this.host.startFlight('free'); this.inFlight = true; this.close(); };
+    const hostLabel = el('span', {}, 'HOST ROOM'), joinLabel = el('span', {}, 'Join');
     const host = el('button', { class: 'gm-btn cta', style: { width: '100%' }, 'data-autofocus': true, onclick: () => {
       this.applyChoices();
-      this.host.joinRoom(randomRoomCode(), { name: roomIn.value.trim() || `${pilot.name}'s room`, public: pub.checked });
-      fly();
-    } }, icon('users'), 'HOST ROOM');
+      this.startJoin('host', randomRoomCode(), { name: roomIn.value.trim() || `${pilot.name}'s room`, public: pub.checked });
+    } }, icon('users'), hostLabel) as HTMLButtonElement;
     const join = el('button', { class: 'gm-btn primary', onclick: () => {
       const c = codeIn.value.trim().toUpperCase();
       if (!/^[A-Z0-9]{4,8}$/.test(c)) { msg.textContent = 'Room codes are 4–8 letters or digits.'; codeIn.focus(); return; }
+      msg.textContent = '';
       if (this.ng.preset !== -1) this.applyChoices();
-      this.host.joinRoom(c);
-      fly();
-    } }, icon('logout'), 'Join');
+      this.startJoin('code', c);
+    } }, icon('logout'), joinLabel) as HTMLButtonElement;
     codeIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') join.click(); });
+    const joinStatus = this.joinView('code', join, joinLabel), hostStatus = this.joinView('host', host, hostLabel);
+    queueMicrotask(() => this.drawJoin()); // a join still waiting shows again after a re-render
     return el('div', { class: 'gm-two' },
       el('div', {},
         el('h2', { class: 'gm-section-title' }, 'Pilot'),
@@ -417,15 +501,15 @@ export class GameMenu {
             el('label', { class: 'gm-field', style: { margin: '0' } }, el('span', {}, 'Colour'), colorIn))),
         el('h2', { class: 'gm-section-title' }, 'Join by code'),
         el('div', { class: 'gm-card' },
-          el('div', { style: { display: 'flex', gap: '12px' } }, codeIn, join), msg,
+          el('div', { style: { display: 'flex', gap: '12px' } }, codeIn, join), msg, joinStatus,
           el('p', { class: 'gm-room-sub', style: { margin: '10px 0 0' } }, 'Or open an invite link: it joins the room automatically.')),
         el('h2', { class: 'gm-section-title' }, 'Room map'),
         this.mapTiles(rerender),
         el('h2', { class: 'gm-section-title' }, 'Your drone'),
         this.droneTiles(rerender)),
-      el('div', {}, this.summary(host, el('div', {},
+      el('div', {}, this.summary(el('div', {}, host, hostStatus), el('div', {},
         el('label', { class: 'gm-field' }, el('span', {}, 'Room name'), roomIn),
-        el('label', { class: 'gm-switch', style: { marginBottom: '14px' } }, pub, el('span', {}, 'Public: list it in the server browser')),
+        el('label', { class: 'gm-switch', style: { marginBottom: '14px' } }, pub, el('span', {}, 'List publicly (shows your callsign)')),
         mp.connected ? el('p', { class: 'gm-room-sub' }, `You are in room ${mp.room}. Hosting a new room leaves it.`) : null)),
       el('button', { class: 'gm-btn ghost', style: { width: '100%', marginTop: '12px' }, onclick: () => this.go('browser') }, icon('server'), 'Browse public rooms')));
   }
@@ -454,7 +538,7 @@ export class GameMenu {
       const rows = r.list.filter((x) => (!q || x.name.toLowerCase().includes(q) || x.host.toLowerCase().includes(q) || x.code.toLowerCase().includes(q)) && (!f.map || x.map === f.map) && (!f.hideFull || x.players < x.max));
       tbody.replaceChildren(...rows.map((x) => {
         const full = x.players >= x.max;
-        const joinIt = () => { if (full) return; this.host.joinRoom(x.code); this.host.startFlight('free'); this.inFlight = true; this.close(); };
+        const joinIt = () => { if (full || (this.pending && this.host.mp.status === 'connecting')) return; this.startJoin('browser', x.code); };
         const tr = el('tr', { class: 'gm-row', tabindex: '0', role: 'button', 'aria-label': `Join ${x.name}, ${x.players} of ${x.max} pilots`, 'aria-disabled': full ? 'true' : undefined, onclick: joinIt, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); joinIt(); } } },
           el('td', {}, el('div', { class: 'gm-room-name' }, x.name), el('div', { class: 'gm-room-sub' }, `hosted by ${x.host}`)),
           el('td', {}, x.map ? MAP_LIST[x.map]?.name.split(' — ')[0] ?? x.map : '—'),
@@ -483,11 +567,14 @@ export class GameMenu {
     draw();
     void load();
     this.timers.push(window.setInterval(() => void load(), 10_000));
+    const joinStatus = this.joinView('browser');
+    queueMicrotask(() => this.drawJoin());
     return el('div', {},
       this.backBar(), el('h1', { class: 'gm-h1' }, 'Server browser'),
       el('p', { class: 'gm-lead' }, 'Public rooms on the FPV Sim relay. Up to 8 pilots per room, each on their own Betaflight. The list refreshes every 10 seconds.'),
       el('div', { class: 'gm-toolbar' }, search, mapSel, el('label', { class: 'gm-switch' }, hideFull, el('span', {}, 'Hide full')), el('span', { class: 'gm-spacer', style: { flex: '1' } }), meta, refreshBtn,
         el('button', { class: 'gm-btn primary', 'data-autofocus': true, onclick: () => { this.ngTab = 'multi'; this.stack[this.stack.length - 1] = 'new'; this.render(); } }, icon('plus'), 'Host')),
+      joinStatus,
       el('table', { class: 'gm-table' },
         el('thead', {}, el('tr', {}, el('th', {}, 'Room'), el('th', {}, 'Map'), el('th', {}, 'Pilots'), el('th', {}, 'Code'), el('th', {}, ''))),
         tbody),
