@@ -189,6 +189,24 @@ Pick a map in **Simulation → Map**:
 - **Quake E1M1, The Slipgate Complex**: freestyle map built from the original level source.
 - **Quake DM3, The Abandoned Base**: freestyle map built from the original level source.
 - **Freedoom MAP01, Hydroelectric Plant**: freestyle map built from the Freedoom level data.
+- **Community maps**: contributed map packages, listed with their author and licence.
+  - **Quarry Loop** (example, CC0): race loop in a gravel quarry.
+
+### Your own maps
+
+Maps are open data packages: a folder with a `map.json` (the versioned **fpvsim-map** format)
+plus PNG heightfields, textures, `.glb` meshes, or Quake `.map` / Doom-lump geometry.
+- The format and its budgets: [docs/MAP_FORMAT.md](docs/MAP_FORMAT.md). JSON Schema:
+  [schemas/map.v1.schema.json](schemas/map.v1.schema.json).
+- Try a map without a pull request: **Simulation → World → Load map (.zip / files)… / Load map
+  folder…**, or drop it on the box. It loads in your browser only.
+- Check a package with `npm run map:validate -- <folder or .zip>`.
+- Contribute it: add `public/maps/community/<id>/` in a pull request, following
+  [CONTRIBUTING.md](CONTRIBUTING.md#contributing-a-map). The map menu lists it automatically,
+  from `public/maps/community/index.json`, which `npm run map:index` and every dev / build run
+  regenerate.
+- Bando is itself a package ([public/maps/bando/](public/maps/bando/)), the reference port of
+  the procedural TypeScript map.
 
 The Quake maps load in the browser from the original `.map` brush sources (`src/maps/quakeMap.ts`):
 - Every convex brush is built by intersecting its planes.
@@ -320,6 +338,7 @@ The in-app map selector shows the same credits.
 | Open Field, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
 | Quake E1M1, Quake DM3: geometry | id Software's original 1996 `.map` sources, released by John Romero in 2006 ([rome.ro](https://rome.ro/resources)) | GNU GPL |
 | Quake E1M1, Quake DM3: textures | [LibreQuake](https://github.com/lavenderdotpet/LibreQuake) replacements; some are derived from Freedoom / Blasphemer | BSD-3-Clause |
+| Community maps (`public/maps/community/<id>/`) | Their authors, see each package's `ATTRIBUTION.md` | Per map (`meta.license`), shown in the map selector |
 | Freedoom MAP01: level and textures | [Freedoom](https://freedoom.github.io/) 0.13.0 Phase 2 MAP01 (`freedoom2.wad`), © 2001-2024 Contributors to the Freedoom project | BSD-3-Clause |
 
 - No original Quake textures, BSPs, models or sounds are included.

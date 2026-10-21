@@ -124,7 +124,8 @@ export function addQuakeLevel(scene: THREE.Scene, map: MapDef): { dispose(): voi
   const brushes = map.prims.filter((p): p is BrushPrim => p.kind === 'brush');
   const textures = level.textures ?? TEXTURES;
   for (const g of buildQuakeGeometry(level, brushes)) {
-    const tex = loader.load(base + textures[g.tex].file);
+    const file = textures[g.tex].file;
+    const tex = loader.load(level.textureUrl ? level.textureUrl(file) : base + file);
     tex.flipY = false; // Quake t runs down the image
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.colorSpace = THREE.SRGBColorSpace;

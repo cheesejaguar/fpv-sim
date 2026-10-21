@@ -1,5 +1,7 @@
 // Simulation + presentation settings.
-import { MAP_LIST } from '../maps/maps';
+import { filesFromDrop, filesFromList, loadLocalMap } from '../maps/localMaps';
+import { MapFormatError } from '../maps/mapFormat';
+import { MAP_LIST, MapEntry } from '../maps/maps';
 import { SimSettings } from '../worker/shared';
 import { checkbox, el, section, select, slider } from './dom';
 
@@ -23,15 +25,20 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
   const s = structuredClone(sim), v = structuredClone(view);
   const pushS = () => onSim(structuredClone(s)), pushV = () => onView(structuredClone(v));
   const credit = el('p', { class: 'note' }, MAP_LIST[s.mapId]?.credit ?? '');
+  const mapLabel = (m: MapEntry) => (m.community ? `${m.name} — ${m.community.local ? 'from disk' : `${m.community.author}, ${m.community.license}`}` : m.name);
+  const mapSelect = () => select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: mapLabel(m) })), s.mapId, (x) => { s.mapId = x; credit.textContent = MAP_LIST[x]?.credit ?? ''; pushS(); });
+  let mapRow = mapSelect();
+  const setMap = (id: string) => { s.mapId = id; credit.textContent = MAP_LIST[id]?.credit ?? ''; const r = mapSelect(); mapRow.replaceWith(r); mapRow = r; pushS(); };
   return el('div', { class: 'panel settings' },
     el('div', { class: 'cols' },
       el('div', { class: 'col' },
         section('World',
-          select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: m.name })), s.mapId, (x) => { s.mapId = x; credit.textContent = MAP_LIST[x]?.credit ?? ''; pushS(); }),
+          mapRow,
           credit,
           el('details', { class: 'note' }, el('summary', {}, 'Credits & licenses'),
             ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),
-            el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md and public/maps/freedoom/ATTRIBUTION.md in the source repository.')),
+            el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md, public/maps/freedoom/ATTRIBUTION.md and public/maps/community/<map>/ATTRIBUTION.md in the source repository.')),
+          localMapLoader(setMap),
           slider({ label: 'Wind (at 6 m)', min: 0, max: 15, step: 0.1, value: s.wind.speed, unit: 'm/s', onInput: (x) => { s.wind.speed = x; pushS(); } }).row,
           slider({ label: 'Wind from', min: 0, max: 359, step: 1, value: s.wind.direction, unit: '°', onInput: (x) => { s.wind.direction = x; pushS(); } }).row,
           slider({ label: 'Turbulence (Dryden) ×', min: 0, max: 3, step: 0.05, value: s.wind.turbulence, onInput: (x) => { s.wind.turbulence = x; pushS(); } }).row,
@@ -67,4 +74,37 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
       ),
     ),
   );
+}
+
+/** "Load map from disk": a map package (.zip, folder or files) picked or dropped, validated and selected. */
+function localMapLoader(select: (id: string) => void): HTMLElement {
+  const status = el('div', { class: 'note' });
+  const run = async (get: () => Promise<Map<string, Blob>>) => {
+    status.textContent = 'Loading map package…';
+    try {
+      const r = await loadLocalMap(await get());
+      status.replaceChildren(el('p', {}, `Loaded “${r.name}”: ${r.stats.primitives} primitives, ${r.stats.gates} gates, ${r.stats.trees} trees${r.stats.brushes ? `, ${r.stats.brushes} brushes` : ''}. Load it again after editing to reload.`),
+        ...r.warnings.map((w) => el('p', {}, `⚠ ${w}`)));
+      select(r.id);
+    } catch (e) {
+      const errs = e instanceof MapFormatError ? e.errors : [String((e as Error)?.message ?? e)];
+      status.replaceChildren(el('p', {}, 'The map package has problems:'), el('ul', {}, ...errs.map((x) => el('li', {}, x))));
+    }
+  };
+  const picker = (dir: boolean) => {
+    const i = el('input', { type: 'file', accept: dir ? undefined : '.zip,application/zip,.json,.png,.jpg,.jpeg,.webp,.glb,.map,.md,.txt', multiple: !dir, webkitdirectory: dir, style: { display: 'none' } }) as HTMLInputElement;
+    i.addEventListener('change', () => { if (i.files?.length) void run(() => filesFromList(i.files!)); i.value = ''; });
+    return i;
+  };
+  const zipIn = picker(false), dirIn = picker(true);
+  const box = el('div', { class: 'dropzone', style: { border: '1px dashed currentColor', borderRadius: '6px', padding: '8px', margin: '6px 0', opacity: '0.9' } },
+    el('div', { class: 'actions' },
+      el('button', { onclick: () => zipIn.click() }, 'Load map (.zip / files)…'),
+      el('button', { onclick: () => dirIn.click() }, 'Load map folder…')),
+    el('p', { class: 'note' }, 'Or drop a map package here. See docs/MAP_FORMAT.md for the format; nothing is uploaded.'),
+    zipIn, dirIn, status);
+  box.addEventListener('dragover', (e) => { e.preventDefault(); box.style.opacity = '1'; });
+  box.addEventListener('dragleave', () => { box.style.opacity = '0.9'; });
+  box.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer) { const dt = e.dataTransfer; void run(() => filesFromDrop(dt)); } });
+  return box;
 }

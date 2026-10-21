@@ -1,0 +1,46 @@
+# Validates map packages on pull requests that touch them: JSON Schema, structure, budgets,
+# licence files, assets, that every map builds, that the community index is up to date, and the
+# test suite (which also loads the example and Bando packages).
+name: Maps
+
+on:
+  pull_request:
+    paths:
+      - 'public/maps/community/**'
+      - 'public/maps/bando/**'
+      - 'schemas/**'
+      - 'src/maps/**'
+      - 'scripts/validate-map.mjs'
+      - 'scripts/build-map-index.mjs'
+      - '.github/workflows/maps.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'public/maps/community/**'
+      - 'schemas/**'
+      - 'src/maps/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate every community map package
+        run: npm run map:validate -- --all
+      - name: Validate the built-in package maps
+        run: npm run map:validate -- --local public/maps/bando
+      - name: Community index is up to date
+        run: node scripts/build-map-index.mjs --check
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Tests
+        run: npm test

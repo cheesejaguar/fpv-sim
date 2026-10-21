@@ -24,6 +24,7 @@ export interface QuakeLight { pos: Vec; value: number; range: number; color: Vec
 export interface QuakeLevel {
   faces: QuakeFace[]; lights: QuakeLight[]; ambient: number; scale: number; textureBase: string;
   textures?: Record<string, { file: string; w: number; h: number }>; // texture manifest (default: TEXTURES)
+  textureUrl?: (file: string) => string; // resolves manifest files (map packages); default BASE_URL + textureBase + file
 }
 
 /** id texture name -> vendored LibreQuake replacement (file + pixel size), written by scripts/vendor-quake.mjs. */

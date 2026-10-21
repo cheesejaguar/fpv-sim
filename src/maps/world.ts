@@ -9,7 +9,7 @@ import type { QuakeLevel } from './quakeMap';
 
 export type Material = keyof typeof MATERIALS;
 
-export interface BoxPrim { kind: 'box'; c: V3; half: V3; yaw: number; pitch?: number; mat: Material; color?: number; tag?: string; visual?: 'concrete' | 'brick' | 'metal' | 'wood' | 'gate' | 'pad' | 'glass' | 'plain' | BoxDecor; text?: string }
+export interface BoxPrim { kind: 'box'; c: V3; half: V3; yaw: number; pitch?: number; mat: Material; color?: number; tag?: string; visual?: 'concrete' | 'brick' | 'metal' | 'wood' | 'gate' | 'pad' | 'glass' | 'plain' | BoxDecor; text?: string; texture?: string } // texture: image URL (map packages), overrides visual
 /** Render looks for boxes: self-lit LED panel, printed banner / video screen (showing `text`), see-through safety net. */
 export type BoxDecor = 'led' | 'banner' | 'screen' | 'net';
 export interface CylPrim { kind: 'cyl'; c: V3; r: number; h: number; mat: Material; color?: number; tag?: string } // c = base centre, vertical
@@ -48,7 +48,13 @@ export interface MapDef {
   windScale?: number;                 // indoor maps: scale the configured wind
   quake?: QuakeLevel;                 // render data for maps loaded from Quake .map sources
   decor?: Prim[];                     // render-only scenery (crowds, screens, LED strips): no collision
+  fog?: { color: number; density: number }; // FogExp2 override (default: from sky)
+  groundTexture?: string;             // image URL for the terrain (default: from groundMat)
+  meshes?: MeshInstance[];            // glTF meshes to draw (their collision, if any, is in prims)
 }
+
+/** A .glb drawn by the renderer: placed at pos (ENU), rotated by yaw about +z, uniformly scaled. */
+export interface MeshInstance { url: string; pos: V3; yaw: number; scale: number }
 
 /** Floor height under the spawn point. */
 export const spawnGroundZ = (m: MapDef) => m.spawn.groundZ ?? m.terrain(m.spawn.pos.x, m.spawn.pos.y);
