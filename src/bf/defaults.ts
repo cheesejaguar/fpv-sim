@@ -58,11 +58,37 @@ export function batteryCli(build: DroneBuild): string[] {
   ];
 }
 
+/**
+ * The simulator's virtual peripherals on their UARTs (the same on every build): UART1 MSP + CLI,
+ * UART2 the native serial blackbox (2 Mbaud, 2 kHz at 8 kHz PID, captured by the worker), UART3
+ * the u-blox GPS. DShot beacon on RX loss and on the AUX beeper switch, as most pilots set it up.
+ */
+export function peripheralsCli(): string[] {
+  return [
+    'serial 1 128 115200 57600 0 2000000',
+    'set blackbox_device = SERIAL',
+    'set blackbox_sample_rate = 1/4',
+    'set blackbox_mode = NORMAL',
+    'feature GPS',
+    'serial 2 2 115200 115200 0 115200',
+    'set gps_provider = UBLOX',
+    'beacon RX_LOST',
+    'beacon RX_SET',
+  ];
+}
+
+/** Gyro / PID loop matching the simulated chip: a BMI270 runs gyro and PID at 3.2 kHz (denom 1). */
+export function loopCli(build: DroneBuild): string[] {
+  return build.params.imuChip.sampleRateHz < 8000 ? ['set pid_process_denom = 1'] : [];
+}
+
 export function simHardwareCli(build: DroneBuild, opts: { keepOsdLayout: boolean; propsOut: boolean | null }): string[] {
   const m = build.info.components.motor, v = build.info.components.video;
   const propsOut = opts.propsOut ?? build.spec.propDirection === 'props-out';
   const lines = [
     'feature OSD',
+    ...peripheralsCli(),
+    ...loopCli(build),
     `set motor_poles = ${m.poles}`,
     `set motor_kv = ${Math.round(m.kv)}`,
     `set yaw_motors_reversed = ${propsOut ? 'ON' : 'OFF'}`,
@@ -100,7 +126,12 @@ export function defaultCli(build: DroneBuild): string[] {
     'set current_meter = ADC',
     'set battery_meter = ADC',
     'set osd_units = METRIC',
-    'set small_angle = 180',
+    // arms only roughly level (Betaflight's own default), like a real quad on the pad
+    'set small_angle = 25',
+    'set pid_process_denom = 1',
+    ...peripheralsCli(),
+    // long range: GPS rescue brings it home on failsafe (arming then waits for a fix with 8+ sats)
+    `set failsafe_procedure = ${s.frame === 'f7-lr' ? 'GPS-RESCUE' : 'DROP'}`,
     // debug[0..2] = fully filtered gyro: the worker's spectrum overlay compares it with the raw IMU
     'set debug_mode = GYRO_FILTERED',
     // modes: AUX1 arm, AUX2 low=acro / mid=horizon / high=angle, AUX3 turtle, AUX4 beeper

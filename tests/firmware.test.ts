@@ -1,7 +1,7 @@
 // Firmware realism features of the Betaflight WASM build: accelerometer calibration, yaw spin
 // recovery, virtual gyro ODR (BMI270 3.2 kHz), beeper / DShot beacon, native serial blackbox,
 // u-blox GPS, CPU load, eRPM telemetry errors. Skipped when the firmware hasn't been built.
-// The UBX helpers at the bottom double as a reference receiver emulator.
+// GPS runs against the worker's own u-blox receiver emulator (src/worker/ubxGps.ts).
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, test } from 'vitest';
@@ -12,6 +12,7 @@ import { GroundPlane } from '../src/sim/contact';
 import { QuadEnv, QuadSim } from '../src/sim/quad';
 import { WakeField } from '../src/sim/wake';
 import { Wind } from '../src/sim/wind';
+import { UbxReceiver } from '../src/worker/ubxGps';
 
 const FW = new URL('../public/bf/betaflight.mjs', import.meta.url);
 const have = existsSync(FW);
@@ -244,7 +245,7 @@ describe.skipIf(!have)('Betaflight WASM firmware realism', () => {
   test('GPS: u-blox handshake on UART3, 3D fix from NAV-PVT, GPS rescue arming check, home point', async () => {
     const r = await rig();
     r.firstBoot(['feature GPS', 'serial 2 2 115200 115200 0 115200', 'set gps_provider = UBLOX', 'set failsafe_procedure = GPS-RESCUE']);
-    const gps = new UbxReceiver({ lat: 47.3977, lon: 8.5456, altM: 488 });
+    const gps = new UbxReceiver({ lat: 47.3977, lon: 8.5456, altM: 488 }); // the worker's receiver (1.5 m CEP)
     const t0 = r.time(); // the FC rebooted (save) and calibrated the accelerometer just before
     // cold start: no satellites for 4 s, a weak 6-satellite 3D fix until 8 s, then 12
     const sats = (t: number) => (t - t0 < 4 ? 0 : t - t0 < 8 ? 6 : 12);
@@ -253,7 +254,7 @@ describe.skipIf(!have)('Betaflight WASM firmware realism', () => {
       if (t - last < 0.001) return; last = t;
       gps.fromFc(r.bf.serialRead(BF_PORT.gps));
       const pos = r.quad.s.pos, vel = r.quad.s.vel;
-      const out = gps.tick(t, { e: pos.x, n: pos.y, u: pos.z, ve: vel.x, vn: vel.y, vu: vel.z }, sats(t));
+      const out = gps.tick(t, { e: pos.x, n: pos.y, u: pos.z, ve: vel.x, vn: vel.y, vu: vel.z }, undefined, sats(t));
       if (out.length) r.bf.serialWrite(BF_PORT.gps, out);
     });
     for (let s = 0; s < 30 && (tFix < 0 || r.bf.gpsInfo()!.numSat < 12); s += 0.25) {
@@ -295,110 +296,3 @@ describe.skipIf(!have)('Betaflight WASM firmware realism', () => {
     expect(bad / reads).toBeGreaterThan(0.0003); expect(bad / reads).toBeLessThan(0.003);
   }, 120000);
 });
-
-// ---------------------------------------------------------------------------------------------
-// Minimal u-blox M8 receiver (UBX protocol) for the GPS test. Answers MON-VER polls (hwVersion
-// 00080000 = M8, so Betaflight takes the CFG-MSG / NAV-PVT path), ACKs every CFG message, honours
-// CFG-RATE and sends NAV-PVT (+ NAV-SAT at 1:5 when enabled by CFG-MSG).
-
-/** UBX frame: B5 62 class id len16 payload ckA ckB (Fletcher-8 over class..payload). */
-export function ubx(cls: number, id: number, payload: Uint8Array = new Uint8Array(0)): Uint8Array {
-  const f = new Uint8Array(8 + payload.length);
-  f[0] = 0xb5; f[1] = 0x62; f[2] = cls; f[3] = id; f[4] = payload.length & 0xff; f[5] = payload.length >> 8;
-  f.set(payload, 6);
-  let a = 0, b = 0;
-  for (let i = 2; i < 6 + payload.length; i++) { a = (a + f[i]) & 0xff; b = (b + a) & 0xff; }
-  f[6 + payload.length] = a; f[7 + payload.length] = b;
-  return f;
-}
-
-export function ubxMonVer(hw = '00080000', sw = 'ROM CORE 3.01 (107888)'): Uint8Array {
-  const p = new Uint8Array(40);
-  p.set(new TextEncoder().encode(sw).subarray(0, 29), 0);
-  p.set(new TextEncoder().encode(hw).subarray(0, 9), 30);
-  return ubx(0x0a, 0x04, p);
-}
-
-export interface NavPvt { iTOW: number; lat: number; lon: number; hMSLmm: number; velN: number; velE: number; velD: number; numSV: number; fix3d: boolean; hAccMm: number; vAccMm: number; sAccMms: number; pDOP: number }
-
-export function ubxNavPvt(s: NavPvt): Uint8Array {
-  const p = new DataView(new ArrayBuffer(92));
-  p.setUint32(0, s.iTOW >>> 0, true);
-  p.setUint16(4, 2026, true); p.setUint8(6, 10); p.setUint8(7, 21); p.setUint8(8, 12); p.setUint8(9, 0); p.setUint8(10, 0);
-  p.setUint8(11, s.fix3d ? 0x07 : 0x00);            // valid: date, time, fully resolved
-  p.setUint32(12, 50, true); p.setInt32(16, 0, true); // tAcc ns, nano
-  p.setUint8(20, s.fix3d ? 3 : 0);                  // fixType 3 = 3D
-  p.setUint8(21, s.fix3d ? 0x01 : 0x00);            // flags: gnssFixOK
-  p.setUint8(22, 0); p.setUint8(23, s.numSV);
-  p.setInt32(24, Math.round(s.lon * 1e7), true); p.setInt32(28, Math.round(s.lat * 1e7), true);
-  p.setInt32(32, s.hMSLmm + 48000, true); p.setInt32(36, s.hMSLmm, true); // height (ellipsoid), hMSL
-  p.setUint32(40, s.hAccMm, true); p.setUint32(44, s.vAccMm, true);
-  p.setInt32(48, s.velN, true); p.setInt32(52, s.velE, true); p.setInt32(56, s.velD, true);
-  const gSpeed = Math.round(Math.hypot(s.velN, s.velE));
-  p.setInt32(60, gSpeed, true);
-  p.setInt32(64, Math.round((((Math.atan2(s.velE, s.velN) * 180) / Math.PI + 360) % 360) * 1e5), true); // headMot 1e-5 deg
-  p.setUint32(68, s.sAccMms, true); p.setUint32(72, 5e6, true); p.setUint16(76, s.pDOP, true);
-  return ubx(0x01, 0x07, new Uint8Array(p.buffer));
-}
-
-export class UbxReceiver {
-  private buf: number[] = [];
-  private measMs = 1000;    // until CFG-RATE says otherwise
-  private nextT = 0;
-  private navSatDiv = 0;
-  private navCount = 0;
-  monVerPolls = 0;
-  log: string[] = [];
-  constructor(private origin: { lat: number; lon: number; altM: number }) {}
-
-  /** Bytes the FC transmitted: answer polls, ACK configuration. */
-  fromFc(data: Uint8Array): Uint8Array[] {
-    const replies: Uint8Array[] = [];
-    for (const b of data) this.buf.push(b);
-    for (;;) {
-      const i = this.buf.indexOf(0xb5);
-      if (i < 0) { this.buf.length = 0; break; }
-      if (i > 0) this.buf.splice(0, i);     // NMEA / $PUBX text and noise
-      if (this.buf.length < 8) break;
-      if (this.buf[1] !== 0x62) { this.buf.shift(); continue; }
-      const len = this.buf[4] | (this.buf[5] << 8);
-      if (this.buf.length < 8 + len) break;
-      const cls = this.buf[2], id = this.buf[3], payload = this.buf.slice(6, 6 + len);
-      this.buf.splice(0, 8 + len);
-      if (cls === 0x0a && id === 0x04 && len === 0) { this.monVerPolls++; this.pending.push(ubxMonVer()); this.note('MON-VER?'); continue; }
-      if (cls === 0x06) {
-        if (id === 0x08 && len >= 2) { this.measMs = payload[0] | (payload[1] << 8); this.note(`CFG-RATE ${this.measMs}ms`); }
-        if (id === 0x01 && len >= 3 && payload[0] === 0x01 && payload[1] === 0x35) this.navSatDiv = payload[2];
-        if (id === 0x01) this.note(`CFG-MSG ${payload[0].toString(16)}-${payload[1].toString(16)}:${payload[2]}`); else if (id !== 0x08) this.note(`CFG-${id.toString(16)}`);
-        this.pending.push(ubx(0x05, 0x01, new Uint8Array([cls, id]))); // ACK-ACK
-      }
-    }
-    return replies;
-  }
-  private pending: Uint8Array[] = [];
-  private note(s: string) { if (this.log.length < 40 && this.log[this.log.length - 1] !== s) this.log.push(s); }
-
-  /** Called often; returns bytes to send to the FC (replies + navigation solutions due by now). */
-  tick(t: number, enu: { e: number; n: number; u: number; ve: number; vn: number; vu: number }, numSV: number): Uint8Array {
-    const out = this.pending.splice(0);
-    if (t >= this.nextT) {
-      this.nextT = t + this.measMs / 1000;
-      const mPerDegLat = 111320, mPerDegLon = 111320 * Math.cos((this.origin.lat * Math.PI) / 180);
-      const fix = numSV >= 4;
-      out.push(ubxNavPvt({
-        iTOW: Math.round(t * 1000) % 604800000, lat: this.origin.lat + enu.n / mPerDegLat, lon: this.origin.lon + enu.e / mPerDegLon,
-        hMSLmm: Math.round((this.origin.altM + enu.u) * 1000), velN: Math.round(enu.vn * 1000), velE: Math.round(enu.ve * 1000), velD: Math.round(-enu.vu * 1000),
-        numSV, fix3d: fix, hAccMm: fix ? 1500 : 99999, vAccMm: fix ? 2500 : 99999, sAccMms: fix ? 300 : 9999, pDOP: fix ? 140 : 9999,
-      }));
-      if (this.navSatDiv && ++this.navCount % this.navSatDiv === 0) {
-        const p = new Uint8Array(8 + 12 * numSV); p[5] = numSV; p[4] = 1;
-        for (let k = 0; k < numSV; k++) { p[8 + 12 * k] = 0; p[9 + 12 * k] = k + 1; p[10 + 12 * k] = 40; p[16 + 12 * k] = 0x0f; }
-        out.push(ubx(0x01, 0x35, p));
-      }
-    }
-    if (!out.length) return new Uint8Array(0);
-    const n = out.reduce((a, c) => a + c.length, 0), all = new Uint8Array(n);
-    let o = 0; for (const c of out) { all.set(c, o); o += c.length; }
-    return all;
-  }
-}

@@ -46,12 +46,14 @@ export class Betaflight {
     return new Betaflight(m, 'Betaflight 4.5.5 (WASM)');
   }
 
-  static async load(url = '/bf/betaflight.mjs'): Promise<Betaflight> {
+  /** bust: extra query token (a retry after a failed download bypasses any cached copy) */
+  static async load(url = '/bf/betaflight.mjs', opts: { signal?: AbortSignal; bust?: string } = {}): Promise<Betaflight> {
     // Load the Emscripten ES module through a Blob URL: the file lives in /public (served as-is),
     // which Vite refuses to import directly in dev. wasm is located via locateFile below.
     // versioned URLs: a new firmware build always reaches the browser (see vite.config.ts)
-    const v = typeof __FW_VERSION__ === 'string' ? `?v=${__FW_VERSION__}` : '';
-    const res = await fetch(url + v);
+    const q = [typeof __FW_VERSION__ === 'string' ? `v=${__FW_VERSION__}` : '', opts.bust ? `r=${opts.bust}` : ''].filter(Boolean).join('&');
+    const v = q ? `?${q}` : '';
+    const res = await fetch(url + v, { signal: opts.signal, cache: opts.bust ? 'reload' : 'default' });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     const blobUrl = URL.createObjectURL(new Blob([await res.text()], { type: 'text/javascript' }));
     const mod = await import(/* @vite-ignore */ blobUrl);
@@ -209,7 +211,7 @@ export class Betaflight {
     const h = this.m.HEAP32, b = this.pGps >> 2;
     return {
       state: h[b], fix: h[b + 1] !== 0, numSat: h[b + 2], lat: h[b + 3] / 1e7, lon: h[b + 4] / 1e7, altM: h[b + 5] / 100,
-      groundSpeed: h[b + 6] / 100, courseDeg: h[b + 7] / 10, homeFix: h[b + 8] !== 0, homeDistM: h[b + 9], homeDirDeg: h[b + 10],
+      groundSpeed: h[b + 6] / 100, courseDeg: h[b + 7] / 10, homeFix: h[b + 8] !== 0, homeDistM: h[b + 9], homeDirDeg: h[b + 10] / 10, // GPS_directionToHome is in decidegrees
     };
   }
 }

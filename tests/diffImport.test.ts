@@ -94,3 +94,9 @@ test('extracts CLI errors with the offending command', () => {
   expect(e.length).toBe(1);
   expect(e[0]).toContain('foo_bar');
 });
+
+test('the real board\'s accelerometer calibration and GPS receiver setup stay behind; the GPS rescue tune comes along', () => {
+  const p = planDiffImport('# Betaflight / STM32F7X2 (S7X2) 4.5.1 x\nset acc_calibration = 12,-30,4,1\nset gps_provider = UBLOX\nset gps_sbas_mode = AUTO\nset gps_rescue_min_sats = 10\nset failsafe_procedure = GPS-RESCUE');
+  expect(p.apply).toEqual(['set gps_rescue_min_sats = 10', 'set failsafe_procedure = GPS-RESCUE']);
+  expect(p.skipped.map((s) => s.line)).toEqual(['set acc_calibration = 12,-30,4,1', 'set gps_provider = UBLOX', 'set gps_sbas_mode = AUTO']);
+});

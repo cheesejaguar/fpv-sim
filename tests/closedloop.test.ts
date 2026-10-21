@@ -57,7 +57,7 @@ describe.skipIf(!have)('Betaflight WASM closed loop', () => {
   test('boots, takes defaults, arms, hovers level with little drift', async () => {
     const r = await rig();
     r.run(1);
-    const out = r.cli(defaultCli(r.build));
+    const out = r.cli(defaultCli(r.build)); r.bf.calibrateAcc(); // level accelerometer calibration (needed to arm with angle mode configured)
     expect(out).toContain('saving');
     expect(out).not.toMatch(/ERROR|INVALID/i); // every default setting exists in this firmware
     r.run(4); // boot grace + gyro calibration on the real (biased, noisy) IMU signal
@@ -81,7 +81,7 @@ describe.skipIf(!have)('Betaflight WASM closed loop', () => {
 
   test('roll stick produces a right roll at about the configured rate', async () => {
     const r = await rig();
-    r.run(1); r.cli(defaultCli(r.build)); r.run(4);
+    r.run(1); r.cli(defaultCli(r.build)); r.bf.calibrateAcc(); r.run(4);
     r.rc[4] = 1900; r.run(0.3);
     r.rc[2] = 1500; r.run(1.0);
     r.rc[0] = 2000; // full right roll
@@ -94,7 +94,7 @@ describe.skipIf(!have)('Betaflight WASM closed loop', () => {
 
   test.each(PRESETS.filter((p) => p.name.startsWith('Beginner')).map((p) => [p.name, p] as const))('%s flies stably on stock Betaflight PIDs', async (_n, spec) => {
     const r = await rig(spec);
-    r.run(1); r.cli(defaultCli(r.build)); r.run(4);
+    r.run(1); r.cli(defaultCli(r.build)); r.bf.calibrateAcc(); r.run(4);
     expect(r.bf.armingDisableFlags()).toBe(0);
     r.rc[4] = 1900; expect(r.run(0.3)).toBe(true);
     // climb out, then hold about the hover throttle with sticks centred (acro)
