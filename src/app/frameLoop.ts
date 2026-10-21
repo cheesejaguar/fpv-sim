@@ -6,6 +6,8 @@ import { enuToThree, quatEnuToThree } from '../render/coords';
 import { cameraMountZ } from '../render/droneMesh';
 import { bladeSolidity, mountVibration, propLook, SHUTTER_MAX } from '../render/fpvCamera';
 import { GoggleOverlay } from '../render/osdRenderer';
+import type { RemoteSound } from '../render/audio';
+import { TAG_LAYER } from '../render/remoteQuads';
 import { newestTime, R, REC, sampleRing } from '../worker/shared';
 import type { AppCtx } from './context';
 import { dvrState } from './dvr';
@@ -16,9 +18,6 @@ export interface FrameLoopDeps {
   /** HUD update, after the frame is drawn */
   afterFrame(): void;
 }
-
-/** Remote pilots' name tags live on this layer: spectator cameras see them, the FPV camera never does. */
-export const TAG_LAYER = 2;
 
 // The browser + monitor pipeline (rAF -> compositor -> scan-out) already adds ~1.5 frames plus the
 // panel's response; measure the frame interval and subtract that from the emulated video latency.
@@ -66,7 +65,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   const chaseCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 3000);
   // title-screen backdrop: a slow orbit around the quad sitting on the pad
   const orbitCam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 3000);
-  chaseCam.layers.enable(TAG_LAYER); orbitCam.layers.enable(TAG_LAYER);
+  chaseCam.layers.enable(TAG_LAYER); orbitCam.layers.enable(TAG_LAYER); // remote pilots' name tags: spectator views only
   const resize = () => { renderer.setSize(innerWidth, innerHeight); chaseCam.aspect = orbitCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); orbitCam.updateProjectionMatrix(); presentDue = true; };
   window.addEventListener('resize', resize);
   // moving the window to a monitor with another pixel density fires no resize: watch the resolution
@@ -80,7 +79,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   // the shadow map is a full scene pass: 30 Hz is plenty, in every view
   const shadowsDue = (now: number) => { if (now - lastShadowAt < 33) return false; lastShadowAt = now; return true; };
   // motor sound goes quiet in the menus and while the tab is hidden (rAF stops then, so listen too)
-  const setMuted = () => (ctx.audio as { setMuted?(m: boolean): void }).setMuted?.(ctx.menuOpen || document.hidden);
+  const setMuted = () => ctx.audio.setMuted(ctx.menuOpen || document.hidden);
   document.addEventListener('visibilitychange', setMuted);
 
   const poseAt = (t: number): boolean => {
@@ -114,7 +113,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
       const look = propLook(r, shutter, prop.blades, solidity.v);
       const disc = drone.blur[k];
       disc.visible = look.disc;
-      if (look.disc) (disc.material as THREE.MeshBasicMaterial).opacity = look.discOpacity;
+      if (look.disc) (disc.material as THREE.Material).opacity = look.discOpacity;
       for (const c of p.children) if (c !== disc) c.visible = look.blades;
     });
   };
@@ -138,11 +137,13 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     if (mp.connected && sampleRing(sh, newestTime(sh), mpRec)) {
       const rr = mpRec;
       mp.sendPose(now, [rr[R.px], rr[R.py], rr[R.pz]], [rr[R.qw], rr[R.qx], rr[R.qy], rr[R.qz]],
-        (Math.abs(rr[R.rpm0]) + Math.abs(rr[R.rpm1]) + Math.abs(rr[R.rpm2]) + Math.abs(rr[R.rpm3])) / 4, rr[R.armed] > 0.5);
+        [rr[R.rpm0], rr[R.rpm1], rr[R.rpm2], rr[R.rpm3]], rr[R.armed] > 0.5, ctx.menuOpen); // paused: sent at a trickle, shown parked
     }
     ctx.remotes.update(sceneB.scene, mp, now);
     // flags, trees and the windsock move with the configured wind
-    (sceneB as { setWind?(speedMs: number, dirDeg: number, t: number): void }).setWind?.(ctx.sim.wind.speed, ctx.sim.wind.direction, now / 1000);
+    sceneB.setWind(ctx.sim.wind.speed, ctx.sim.wind.direction, now / 1000);
+    // chipped / snapped blades show on the model (and on the FPV view of the quad's own props)
+    if (ctx.tel) drone.setDamage(ctx.tel.rotorDamage);
     if (fpv.cubeSize !== (view.cubeSize || 768)) fpv.setCubeSize(view.cubeSize || 768); // Settings → cube map resolution
     const v = build.info.components.video;
     const head = newestTime(sh);
@@ -220,7 +221,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
       osd.setHd(v.osd === 'hd');
       const osdChanged = !(v.kind === 'digital' && (link.state.freeze || link.state.lost)) && osd.update(sh, now);
       // the goggles' own overlay (signal, bitrate, latency, DVR): Settings can switch it off
-      const gogOn = (view as { goggleOverlay?: boolean }).goggleOverlay !== false;
+      const gogOn = view.goggleOverlay;
       const gogChanged = gogOn && gog.update({
         system: v.system, kind: v.kind, cnr: link.state.cnr, margin: link.state.margin, bitrateMbps: link.state.bitrateMbps,
         latencyMs: v.latencyMs + link.state.latencyExtraMs, lost: link.state.lost > 0, recording: dvrState.recording, recMs: now - dvrState.startedAt,
@@ -281,12 +282,20 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     if (view.view === 'chase') { const f = chaseCam.getWorldDirection(tmpV); fwd = { x: f.x, y: -f.z, z: f.y }; }
     else { const n = Math.hypot(quad.x - pilot.x, quad.y - pilot.y, quad.z - pilot.z) || 1; fwd = { x: (quad.x - pilot.x) / n, y: (quad.y - pilot.y) / n, z: (quad.z - pilot.z) / n }; } // the pilot faces the quad
     const hearD = view.view === 'chase' ? 2 : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z);
-    const tel = ctx.tel as (typeof ctx.tel & { beeper?: unknown; beacon?: unknown }) | null;
-    // trailing extras for the spatial / beeper audio (older MotorAudio ignores them)
-    (ctx.audio as unknown as { update(...a: unknown[]): void }).update([rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles, hearD, rec[R.vrs], {
-      beeper: tel?.beeper, beacon: tel?.beacon, quad, quadVel: { x: rec[R.vx], y: rec[R.vy], z: rec[R.vz] },
+    // Betaflight's own buzzer and DShot beacon (arming, RX loss, low battery, the beeper switch)
+    ctx.audio.update([rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles, hearD, rec[R.vrs], {
+      beeper: ctx.tel?.beeper ?? false, beacon: ctx.tel?.beacon ?? false, quad, quadVel: { x: rec[R.vx], y: rec[R.vy], z: rec[R.vz] },
       listener, listenerFwd: fwd, enclosed: 1 - skyOpen, view: view.view,
     });
+    // the other pilots' motors, from their newest pose
+    if (mp.connected) {
+      const others: RemoteSound[] = [];
+      for (const [id, peer] of mp.peers) {
+        const p = peer.poses[peer.poses.length - 1];
+        if (p) others.push({ id, pos: { x: p.p[0], y: p.p[1], z: p.p[2] }, rpm: p.r });
+      }
+      ctx.audio.updateRemote(others, listener, fwd);
+    }
     setMuted();
     deps.afterFrame();
   };

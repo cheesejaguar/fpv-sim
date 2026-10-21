@@ -18,10 +18,10 @@ const pad = (index: number, mapping = 'standard') => ({
 });
 const press = (p: ReturnType<typeof pad>, i: number, on = true) => { p.buttons[i] = { pressed: on, touched: on, value: on ? 1 : 0 }; };
 
-function rig(pads: ReturnType<typeof pad>[]) {
+function rig(pads: ReturnType<typeof pad>[], stick?: (g: Gamepad) => [number, number] | null) {
   const calls = { back: 0, tabs: [] as number[], scroll: 0 };
   const scope = { querySelectorAll: () => [], contains: () => false, closest: () => null } as unknown as HTMLElement;
-  const nav = new MenuNav({ scope: () => scope, back: () => calls.back++, tab: (d) => calls.tabs.push(d), scroller: () => ({ scrollBy: () => calls.scroll++ }) as unknown as HTMLElement }, () => pads as unknown as Gamepad[]);
+  const nav = new MenuNav({ scope: () => scope, back: () => calls.back++, tab: (d) => calls.tabs.push(d), scroller: () => ({ scrollBy: () => calls.scroll++ }) as unknown as HTMLElement }, () => pads as unknown as Gamepad[], stick);
   nav.start();
   const tick = () => (nav as any).tick();
   return { nav, calls, tick };
@@ -83,23 +83,50 @@ test('the menu follows the pad used last, not just the first one listed', () => 
   expect(calls.scroll).toBe(s + 1);
 });
 
-test('a radio (non-standard) never auto-repeats or scrolls from resting axes', () => {
+test('a radio never navigates or scrolls from raw axes, only from its set-up roll / pitch', () => {
   const radio = pad(0, '');
   radio.axes[1] = 1; radio.axes[3] = 0.9; // throttle at the bottom, a channel resting off-centre
   const { nav, calls, tick } = rig([radio]);
   const moves: string[] = [];
   nav.move = (d) => { moves.push(d); };
   for (let k = 0; k < 6; k++) tick();
+  radio.axes[1] = 0; tick(); radio.axes[1] = 1; for (let k = 0; k < 6; k++) tick(); // throttle swept
   expect(moves).toEqual([]); expect(calls.scroll).toBe(0);
-  radio.axes[1] = 0; tick(); radio.axes[1] = 1; for (let k = 0; k < 6; k++) tick();
-  expect(moves).toEqual(['down']); // one step per push
-  const gp = pad(1); gp.axes[1] = 1;
-  const r2 = rig([gp]), m2: string[] = [];
+  // once set up, its calibrated right stick (roll / pitch) moves focus like a gamepad's
+  let rp: [number, number] = [0, 0];
+  const r2 = rig([radio], () => rp), m2: string[] = [];
   r2.nav.move = (d) => { m2.push(d); };
-  r2.tick(); r2.tick();
-  expect(m2).toEqual([]); // held when the menu opened: wait for the stick to come back
-  gp.axes[1] = 0; r2.tick(); gp.axes[1] = 1; r2.tick();
-  expect(m2).toEqual(['down']); // a standard pad's stick moves (and repeats like the D-pad)
+  r2.tick(); rp = [0, -1]; r2.tick();
+  expect(m2).toEqual(['up']);
+  expect(r2.calls.scroll).toBe(0);
+});
+
+test('an ExpressLRS BLE joystick the browser labels "standard" is still a radio', () => {
+  const elrs = { ...pad(0), id: 'ELRS Joystick (STANDARD GAMEPAD)' };
+  elrs.axes = [0, 0, -1, -1]; // AUX1 arm switch and the throttle resting at an end
+  const { nav, calls, tick } = rig([elrs]);
+  const moves: string[] = [];
+  nav.move = (d) => { moves.push(d); };
+  for (let k = 0; k < 4; k++) tick();
+  elrs.axes[3] = 0; tick(); elrs.axes[3] = -1; for (let k = 0; k < 4; k++) tick(); // throttle moved
+  expect(calls.scroll).toBe(0); expect(moves).toEqual([]);
+});
+
+test('a standard pad: a stick held at open waits, then moves and repeats; the mouse wheel silences it', () => {
+  const gp = pad(1); gp.axes[1] = 1;
+  const r = rig([gp]), m: string[] = [];
+  r.nav.move = (d) => { m.push(d); };
+  r.tick(); r.tick();
+  expect(m).toEqual([]); // held when the menu opened: wait for the stick to come back
+  gp.axes[1] = 0; r.tick(); gp.axes[1] = 1; r.tick();
+  expect(m).toEqual(['down']);
+  gp.axes[1] = 0; gp.axes[3] = 0.8; r.tick();
+  const s = r.calls.scroll;
+  (r.nav as any).mouseTookOver(); // wheel / click
+  r.tick(); r.tick();
+  expect(r.calls.scroll).toBe(s); // no fight with the wheel while the stick stays pushed
+  gp.axes[3] = 0; r.tick(); gp.axes[3] = 0.8; r.tick();
+  expect(r.calls.scroll).toBe(s + 1); // let go and pushed again: scrolls
 });
 
 test('after a lock, a stick still pushed (the one just detected) does not move focus', () => {

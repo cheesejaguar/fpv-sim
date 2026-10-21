@@ -73,7 +73,8 @@ export interface InputProfile {
 const ax = (index: number, invert = false): AxisBind => ({ src: 'axis', index, invert, min: -1, center: 0, max: 1, deadzone: 0.02, expo: 0 });
 
 /** Mode 2, standard mapping (XInput / Steam Input / DualSense in Chrome & Edge). */
-export function standardProfile(id = '', name = 'Standard gamepad (Mode 2)'): InputProfile {
+const STANDARD_NAME = 'Standard gamepad (Mode 2)';
+export function standardProfile(id = '', name = STANDARD_NAME): InputProfile {
   return {
     id, name,
     yaw: ax(0), throttle: ax(1, true), roll: ax(2), pitch: ax(3, true),
@@ -145,8 +146,19 @@ export function controllerKind(pad: { id: string }): ControllerKind {
   return 'generic';
 }
 
-/** Button / axis indices follow the W3C standard layout (browser mapping, or our WebHID driver). */
-export const isStandard = (pad: { mapping: string }) => pad.mapping === 'standard';
+/**
+ * RC radios and flight joysticks: ExpressLRS in BLE joystick mode ("ELRS Joystick"), EdgeTX / OpenTX
+ * radios over USB ("<radio> Joystick"), TBS / FrSky / RadioMaster / Jumper transmitters. Their axes
+ * are RC channels in the radio's (and the receiver firmware's) own order, and switches rest at an
+ * end, even where the browser labels the device with the standard gamepad mapping (macOS can).
+ * Gamepad presets, stick geometry and menu stick navigation must never apply to them.
+ */
+const RADIO_ID = /elrs|expresslrs|edgetx|opentx|frsky|taranis|radiomaster|jumper|tbs|crossfire|joystick/i;
+export const isRadio = (pad: { id: string }) => RADIO_ID.test(pad.id) && controllerKind(pad) !== 'dji';
+
+/** Button / axis indices follow the W3C standard layout (a real gamepad in the browser's standard
+ *  mapping, or our WebHID driver), not a radio the browser happens to label "standard". */
+export const isStandard = (pad: { mapping: string; id: string }) => pad.mapping === 'standard' && !isRadio(pad);
 
 export function guessProfile(pad: Gamepad): InputProfile {
   const kind = controllerKind(pad);
@@ -156,7 +168,11 @@ export function guessProfile(pad: Gamepad): InputProfile {
   // generic and ask for the stick setup. A known gamepad family keeps its self-centring throttle.
   if (!isStandard(pad)) {
     const p: InputProfile = { ...genericJoystickProfile(pad.id), kind: 'generic', needsSetup: true };
-    if (kind !== 'generic') { p.name = 'Gamepad, non-standard browser mapping'; p.throttleMode = 'upper'; }
+    if (isRadio(pad)) {
+      // as on the real quad: Betaflight's deadband is 0, the radio's own calibration centres the sticks
+      p.name = 'RC radio (set up its channels)';
+      for (const k of ['roll', 'pitch', 'yaw', 'throttle'] as const) p[k] = { ...p[k], deadzone: 0, expo: 0 };
+    } else if (kind !== 'generic') { p.name = 'Gamepad, non-standard browser mapping'; p.throttleMode = 'upper'; }
     return p;
   }
   switch (kind) {
@@ -236,7 +252,7 @@ export function stick2d(x: number, y: number, dz: number, square: boolean): [num
 const sameStick = (a: AxisBind, b: AxisBind) => a.src === 'axis' && b.src === 'axis' && a.index !== b.index && a.index >> 1 === b.index >> 1;
 
 /** Square sticks on? Saved profiles from before the option: on for standard pads, off for radios. */
-export function squareSticks(pad: { mapping: string }, p: InputProfile): boolean {
+export function squareSticks(pad: { mapping: string; id: string }, p: InputProfile): boolean {
   return p.circleToSquare ?? (isStandard(pad) && p.kind !== 'dji');
 }
 
@@ -326,6 +342,10 @@ export class InputManager {
     } else if (p.kind === 'xbox' || p.kind === 'playstation' || p.kind === 'steam') {
       // saved from a vendor preset on a non-standard mapping: names and sticks don't match the layout
       p.kind = 'generic'; p.needsSetup ??= true; this.save();
+    } else if (isRadio(pad) && p.needsSetup === undefined && p.name === STANDARD_NAME) {
+      // a radio the browser labels "standard" was given the Xbox-style preset before radios were
+      // recognised (its arm switch became roll): start over with the setup prompt
+      p = guessProfile(pad); this.profiles[pad.id] = p; this.save();
     }
     return p;
   }
@@ -342,6 +362,12 @@ export class InputManager {
     if (pad) {
       this.lastRaw = { axes: [...pad.axes], buttons: pad.buttons.map((b) => b.value) };
       p = this.profileFor(pad);
+    }
+    // a radio whose channel order isn't set up yet: any guess could put a switch on throttle or roll,
+    // so it flies nothing (the keyboard still does) until the setup or "My sticks already work"
+    this.blocked = !!pad && !!p?.needsSetup && isRadio(pad);
+    if (this.blocked) p = null;
+    if (pad && p) {
       const s = readSticks(pad, p);
       let thr: number;
       if (p.throttleMode === 'trigger') thr = Math.max(0, Math.min(1, readRaw(pad, p.throttle)));
@@ -362,6 +388,22 @@ export class InputManager {
     }
     if (pad && p?.passthrough) this.passthrough(pad);
     return ch;
+  }
+
+  /** The active pad is a radio waiting for its stick setup (its sticks are ignored meanwhile). */
+  blocked = false;
+
+  /**
+   * Menu navigation for pads off the standard layout (radios, joysticks): their set-up roll and pitch
+   * (right stick on a Mode 2 radio), calibrated so a centred stick reads 0. Never raw axes, where a
+   * throttle or switch rests at an end. Null before the setup, and for standard pads (raw sticks).
+   */
+  navStick(pad: Gamepad): [number, number] | null {
+    if (isStandard(pad)) return null;
+    const p = this.profileFor(pad);
+    if (p.needsSetup) return null;
+    const s = readSticks(pad, p);
+    return [s.roll, -s.pitch]; // screen y grows downward: pitch forward = up
   }
 
   /** Radio passthrough: axis i -> CH i+1 as the radio mixed it. Arming still drops while suspended. */
@@ -408,8 +450,8 @@ export class InputManager {
   }
 
   /** Button for each sim action on this pad (none on radios / unmapped joysticks). */
-  actionButtons(pad: { mapping: string }, p: InputProfile): Partial<Record<SimAction, number>> {
-    const std = pad.mapping === 'standard' || p.kind === 'steam' || p.kind === 'xbox' || p.kind === 'playstation';
+  actionButtons(pad: { mapping: string; id: string }, p: InputProfile): Partial<Record<SimAction, number>> {
+    const std = isStandard(pad) || p.kind === 'steam' || p.kind === 'xbox' || p.kind === 'playstation';
     const binds: ({ index: number; src?: string } | null | undefined)[] = [p.arm, p.mode, p.turtle, p.beeper, ...(p.aux ?? [])];
     const taken = new Set(binds.filter((b) => b && (b.src ?? 'button') === 'button').map((b) => b!.index).concat([p.reset, p.menu].filter((x): x is number => x != null)));
     const out: Partial<Record<SimAction, number>> = {};

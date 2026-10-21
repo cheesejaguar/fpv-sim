@@ -1,7 +1,7 @@
 // Gamepad -> RC channel mapping: first-flight defaults, stick geometry, presets vs browser mapping,
 // AUX5-12 bindings and radio passthrough.
 import { beforeEach, describe, expect, test } from 'vitest';
-import { auxMicros, genericJoystickProfile, guessProfile, InputManager, InputProfile, MODE_ANGLE, readSticks, standardProfile, stick2d, xboxProfile } from '../src/input/gamepad';
+import { auxMicros, genericJoystickProfile, guessProfile, InputManager, InputProfile, isRadio, isStandard, MODE_ANGLE, readSticks, standardProfile, stick2d, xboxProfile } from '../src/input/gamepad';
 import { RadioWizard } from '../src/input/radioWizard';
 
 const store = new Map<string, string>();
@@ -190,5 +190,63 @@ describe('radio passthrough and capture', () => {
     setPads(mkPad({ index: 0, id: 'radio', mapping: '' }), mkPad({ index: 1 }));
     im.activeIndex = 1;
     expect(im.pads().map((g) => g.index)).toEqual([1, 0]);
+  });
+});
+
+// ExpressLRS in BLE joystick mode: X / Y = CH1 / CH2, then AUX1 (arm switch), throttle, yaw, AUX2 …
+// in an order that depends on the library version and the OS. Some browsers label it "standard".
+describe('radios the browser presents as gamepads', () => {
+  const ELRS = 'ELRS Joystick (STANDARD GAMEPAD Vendor: e502 Product: bbab)';
+  const elrs = (axes = [0, 0, -1, -1, 0, -1, 0, 0]) => mkPad({ id: ELRS, mapping: 'standard', axes });
+
+  test.each([
+    [ELRS, true], ['ELRS Joystick', true], ['RadioMaster TX16S Joystick (Vendor: 1209 Product: 4f54)', true],
+    ['FrSky Taranis Joystick (Vendor: 0483 Product: 5710)', true], ['EdgeTX Radiomaster Boxer Joystick', true],
+    ['Xbox 360 Controller (XInput STANDARD GAMEPAD)', false], ['DualSense Wireless Controller (STANDARD GAMEPAD Vendor: 054c Product: 0ce6)', false],
+    ['Steam Controller (2026) — WebHID Puck (Vendor: 28de Product: 1304)', false],
+    ['DJI Virtual Joystick (Vendor: 2ca3 Product: 1021)', false], // has its own radio profile
+  ])('%s is a radio: %s', (id, radio) => expect(isRadio({ id })).toBe(radio));
+
+  test('is never treated as the standard layout, so it gets no Xbox-style preset', () => {
+    const pad = elrs();
+    expect(isStandard(pad)).toBe(false);
+    const p = guessProfile(pad);
+    expect(p.needsSetup).toBe(true);
+    expect(p.circleToSquare).toBe(false);
+  });
+
+  test('flies nothing until set up: its arm switch on axis 2 cannot roll it, its throttle cannot spin the motors', () => {
+    const im = new InputManager();
+    setPads(elrs());
+    const ch = im.poll();
+    expect(im.blocked).toBe(true);
+    expect(ch[0]).toBe(1500); expect(ch[1]).toBe(1500); expect(ch[3]).toBe(1500);
+    expect(ch[2]).toBe(1000);
+    expect(ch[4]).toBe(1000); // disarmed
+    expect(im.navStick(elrs())).toBeNull(); // and the menu ignores its sticks
+  });
+
+  test('a saved Xbox-style preset from before radios were recognised is replaced by the setup prompt', () => {
+    store.set('fpv-input-profiles', JSON.stringify({ [ELRS]: { ...standardProfile(ELRS) } }));
+    const im = new InputManager();
+    const p = im.profileFor(elrs());
+    expect(p.needsSetup).toBe(true);
+    expect(p.name).not.toBe(standardProfile().name);
+  });
+
+  test('after the setup it flies, and its calibrated right stick drives the menu', () => {
+    const im = new InputManager();
+    const pad = elrs();
+    const p = im.profileFor(pad);
+    // as the wizard leaves it: roll X, pitch Y (forward = -1), throttle axis 3 (up = +1), yaw axis 4
+    Object.assign(p, { needsSetup: false, roll: { ...p.roll, index: 0 }, pitch: { ...p.pitch, index: 1, invert: true }, throttle: { ...p.throttle, index: 3, invert: false }, yaw: { ...p.yaw, index: 4 } });
+    im.setProfile(pad, p);
+    const flying = elrs([0.5, 0, -1, -1, 0, -1, 0, 0]);
+    setPads(flying);
+    const ch = im.poll();
+    expect(im.blocked).toBe(false);
+    expect(ch[0]).toBe(1750); // roll stick half right, no gamepad radial deadzone or square-corner stretch
+    expect(ch[2]).toBe(1000); // throttle at the bottom
+    expect(im.navStick(elrs([0, -1, -1, -1, 0, -1, 0, 0]))).toEqual([0, -1]); // pitch forward = up
   });
 });

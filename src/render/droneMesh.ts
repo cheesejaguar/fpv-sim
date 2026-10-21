@@ -71,7 +71,9 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   const R = (prop.diameterIn * 0.0254) / 2;
   const bladeGeo = T(makeBladeGeometry(R, prop.chordFracs, prop.hubFrac));
   const propMat = T(new THREE.MeshStandardMaterial({ color: propColor(spec.name || spec.prop), roughness: 0.4, side: THREE.DoubleSide })); // opaque: transparent blades sort badly up close
-  const blurMat = T(new THREE.MeshBasicMaterial({ color: propMat.color, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
+  // one per disc (the frame loop sets each prop's opacity from its own rpm), lit like the blades
+  // so a disc doesn't glow in a dark room at full camera gain
+  const blurMat = () => T(new THREE.MeshLambertMaterial({ color: propMat.color, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
   rotorPos.forEach((rp, k) => {
     const hx = rp.x + cg.x / 1000, hy = rp.y + cg.y / 1000; // back to frame coordinates
     const L = Math.hypot(hx, hy);
@@ -90,7 +92,7 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
       blade.castShadow = true;
       hub.add(blade);
     }
-    const disc = new THREE.Mesh(T(new THREE.RingGeometry(R * 0.15, R, 32)), blurMat);
+    const disc = new THREE.Mesh(T(new THREE.RingGeometry(R * 0.15, R, 32)), blurMat());
     disc.rotation.x = -Math.PI / 2; disc.visible = false;
     hub.add(disc);
     root.add(hub); props.push(hub); blur.push(disc); dirs.push(rp.dir);

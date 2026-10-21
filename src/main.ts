@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import './style.css';
 import { WorkerBridge } from './app/bridge';
 import { AppCtx, makeLog } from './app/context';
+import { initDvr } from './app/dvr';
 import { startFrameLoop } from './app/frameLoop';
 import { HudController } from './app/hudController';
 import { SpectrumView, SticksView } from './app/instruments';
@@ -323,6 +324,7 @@ appEl.append(gameMenu.root);
 
 // ---------------------------------------------------------------------------------------------
 startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => hudCtl.update() });
+initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 
 // invite links: ?room=CODE joins that room on load
 {

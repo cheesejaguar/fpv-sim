@@ -20,6 +20,7 @@ export interface ViewSettings {
   linkEffects: boolean;
   highlightGate: boolean;  // make the next race gate glow
   timeOfDay: TimeOfDay;    // 'map' = lit as the map was authored
+  goggleOverlay: boolean;  // the goggles' own signal / bitrate / DVR readout
 }
 
 export const TIMES_OF_DAY: { value: TimeOfDay; label: string }[] = [
@@ -28,7 +29,7 @@ export const TIMES_OF_DAY: { value: TimeOfDay; label: string }[] = [
 ];
 
 // the training telemetry overlay is opt-in (H / D-pad down): new pilots see the OSD, not a wall of numbers
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map' };
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map', goggleOverlay: true };
 
 /** What the latency readout needs from the running app (no readout without it). */
 export interface LatencySource {
@@ -84,6 +85,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
         section('Video',
           select('OSD font', ['betaflight', 'default', 'bold', 'clarity', 'digital', 'impact', 'large', 'vision'].map((f) => ({ value: f, label: f })), v.osdFont, (x) => { v.osdFont = x; pushV(); }),
           checkbox('Show OSD', v.osd, (x) => { v.osd = x; pushV(); }),
+          checkbox('Goggle overlay (signal, bitrate, DVR)', v.goggleOverlay, (x) => { v.goggleOverlay = x; pushV(); }),
           checkbox('Video link degradation (range, walls, multipath)', v.linkEffects, (x) => { v.linkEffects = x; pushV(); }),
           el('p', { class: 'note photo' }, '⚠ Photosensitivity: analog snow, static and 1S brownout dropouts flicker rapidly. If flashing images affect you, turn video link degradation off.'),
           slider({ label: 'Render scale', min: 0.5, max: 2, step: 0.25, value: v.renderScale, onInput: (x) => { v.renderScale = x; pushV(); } }).row,

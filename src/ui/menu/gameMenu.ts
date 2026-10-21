@@ -146,7 +146,7 @@ export class GameMenu {
       back: () => this.back(),
       tab: (d) => { if (!topModal()) this.tabs?.go(d); },
       scroller: () => this.screenEl,
-    }, () => host.input.pads());
+    }, () => host.input.pads(), (g) => host.input.navStick(g));
     this.nav.onDevice = () => this.renderFoot();
     host.mp.listen(() => { this.onMp(); if (this.openState) this.renderTop(); });
     for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, () => { if (this.openState) this.renderFoot(); });

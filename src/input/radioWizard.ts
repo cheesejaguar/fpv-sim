@@ -2,7 +2,7 @@
 // in USB-joystick mode (DJI FPV Remote Controller 3, EdgeTX/OpenTX radios), HID joysticks, or any
 // pad the pilot wants to remap. Each step asks for one movement and detects which axis (and which
 // direction) or which button / switch responded, then records endpoints for calibration.
-import type { AxisBind, ButtonBind, InputProfile } from './gamepad';
+import { isStandard, type AxisBind, type ButtonBind, type InputProfile } from './gamepad';
 
 export type WizardStepKey = 'center' | 'throttle' | 'yaw' | 'pitch' | 'roll' | 'sweep' | 'arm' | 'mode' | 'done';
 
@@ -83,7 +83,7 @@ export class RadioWizard {
       this.profile[st.key] = { ...b, src: 'axis', index: hit.index, invert: hit.delta < 0, min: -1, center: 0, max: 1 };
       // a radio's throttle doesn't spring back: full travel. A standard gamepad keeps its (self-
       // centring) mode, unless it was the trigger, which this step just replaced with a stick
-      if (st.key === 'throttle' && (pad.mapping !== 'standard' || this.profile.throttleMode === 'trigger')) this.profile.throttleMode = pad.mapping === 'standard' ? 'upper' : 'full';
+      if (st.key === 'throttle' && (!isStandard(pad) || this.profile.throttleMode === 'trigger')) this.profile.throttleMode = isStandard(pad) ? 'upper' : 'full';
       this.used.add(hit.index);
       this.message = `${st.key} → axis ${hit.index}${hit.delta < 0 ? ' (reversed)' : ''}`;
       this.next(pad);

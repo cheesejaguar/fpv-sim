@@ -10,7 +10,7 @@ import type { AppCtx } from './context';
 import type { SpectrumView, SticksView } from './instruments';
 import { raceInfo, updateDrill } from './race';
 
-const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['W S', 'Throttle'], ['A D', 'Yaw'], ['↑↓←→', 'Pitch / roll'], ['Space', 'Arm'], ['1-3', 'Mode'], ['T', 'Turtle'], ['R', 'Respawn'], ['B', 'Fresh battery'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
+const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['W S', 'Throttle'], ['A D', 'Yaw'], ['↑↓←→', 'Pitch / roll'], ['Space', 'Arm'], ['1-3', 'Mode'], ['T', 'Turtle'], ['R', 'Respawn'], ['B', 'Fresh battery'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum'], ['V', 'DVR']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
 // phones / tablets without a keyboard or controller: only the (tappable) menu chip makes sense
 const TOUCH_HINTS: KeyHint[] = [{ glyph: '☰', cls: 'key', label: 'Menu' }];
 const KB_GLYPHS: CoachGlyphs = { arm: 'Space', respawn: 'R', throttleUp: 'W', throttleDown: 'S', keyboard: true };
@@ -30,6 +30,7 @@ export class HudController {
   private touchNotice = el('div', { class: 'card notice warn' }, el('b', {}, 'No controller'), el('p', {}, 'Pair a Bluetooth gamepad, then press a button on it. FPV Sim has no touch controls: tap Menu to go back.'));
   // Radios / HID joysticks with an unknown stick layout: point at the setup wizard.
   private setupNotice = el('div', { class: 'card notice' }, el('b', {}, 'New controller'), el('p', {}, 'Run the stick & switch setup once: Esc, Settings, Controller.'));
+  private radioNotice = el('div', { class: 'card notice' }, el('b', {}, 'Radio connected'), el('p', {}, 'Set up its sticks and switches once (Esc, Settings, Controller): every radio orders its channels differently. Until then it flies nothing; the keyboard still works.'));
   private fwNotice = el('div', { class: 'card notice status' });
   private lostNotice = el('div', { class: 'card notice warn status' }, el('b', {}, 'VIDEO SIGNAL LOST'), el('p', {}, 'Fly back toward yourself, or respawn: A / ✕ on a controller, R on the keyboard.'));
   // Browsers block audio until a click / key press on the page (controller buttons don't count).
@@ -70,6 +71,7 @@ export class HudController {
     add(p.menu, 'Menu'); if (!out.length) out.push({ glyph: 'Esc', cls: 'key', label: 'Menu' });
     add(sw(p.arm), 'Arm'); add(sw(p.mode), 'Mode'); add(p.reset, 'Respawn'); add(acts.battery, 'Fresh battery');
     add(sw(p.turtle), 'Turtle'); add(acts.camera, 'Camera'); add(acts.telemetry, 'Telemetry'); add(acts.drill, 'Drill'); add(acts.spectrum, 'Spectrum');
+    p.aux?.forEach((b, i) => { if (b?.src === 'button') add(b.index, `AUX${i + 5}`); });
     return out;
   }
 
@@ -101,7 +103,8 @@ export class HudController {
     if (vLost && this.lostSince < 0) this.lostSince = now; else if (!vLost) this.lostSince = -1;
     if (vLost && now - this.lostSince > 1200) notices.push(this.lostNotice);
     if (!input.active && !armed) notices.push(touchOnly() ? this.touchNotice : this.padNotice);
-    if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(this.setupNotice);
+    if (input.blocked) notices.push(this.radioNotice);
+    else if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(this.setupNotice);
     if (ctx.audio.blocked) notices.push(this.soundChip);
     { // multiplayer connection notice
       const mp = ctx.mp;
@@ -158,10 +161,12 @@ export class HudController {
     }
   }
 
-  /** Screen rects of the drawn Betaflight OSD characters (none in spectator views). */
+  /** Screen rects the HUD keeps clear of: the drawn Betaflight OSD characters and the goggles' own
+   *  overlay (signal, bitrate, DVR); none in spectator views. */
   osdCells() {
     const ctx = this.ctx, osd = ctx.osd;
-    return ctx.view.view === 'fpv' && ctx.view.osd && osd.hasContent ? osdRects(osd.occupied, osd.cols, osd.rows, ctx.fpv.layout.osd) : [];
+    if (ctx.view.view !== 'fpv') return [];
+    return [...(ctx.view.osd && osd.hasContent ? osdRects(osd.occupied, osd.cols, osd.rows, ctx.fpv.layout.osd) : []), ...ctx.fpv.layout.goggle];
   }
 }
 

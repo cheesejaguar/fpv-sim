@@ -176,6 +176,7 @@ export function validView(raw: unknown): ViewSettings {
     linkEffects: bool,
     highlightGate: bool,
     timeOfDay: oneOf('map', 'morning', 'noon', 'golden', 'dusk', 'night'),
+    goggleOverlay: bool,
   });
 }
 

@@ -331,11 +331,13 @@ Any line Betaflight 4.5.5 rejects, such as a setting renamed in another version,
 
 ## Multiplayer (live rooms)
 
-New game → **Multiplayer**: host a room (name it, and make it public to list it in the server
-browser), share the invite link (`?room=CODE`), or join by code. **Server browser** on the title
-screen lists every public room with its map and pilot count; it refreshes every 10 seconds.
+New game → **Multiplayer**: host a room, share the invite link (`?room=CODE`), or join by code.
+Rooms are unlisted unless the host makes them public; **Server browser** on the title screen lists
+every public room with its map and pilot count, and refreshes every 10 seconds.
 
 - Up to 8 pilots per room.
+- A dropped connection reconnects by itself (5 tries over about 30 s) and rejoins the same room;
+  pilots who open the menu stay in the room, parked.
 - Each pilot runs their own full simulation, physics and Betaflight; the room relay only shares
   poses at 30 Hz, the roster, the shared map and lap times.
 - Remote quads are drawn about 100 ms in the past and interpolated, which hides network jitter.
@@ -348,23 +350,29 @@ Public rooms report to a single `Lobby` Durable Object, which serves the server 
 `GET /rooms`. A room reports when pilots join or leave and every 20 s while occupied, so entries
 that stop reporting expire after 60 s. `server/src/roomCore.ts` and `server/src/lobbyCore.ts` hold
 the logic, unit-tested in `tests/roomCore.test.ts` and `tests/lobby.test.ts`. It has:
-- message validation;
+- message validation (protocol version 2), on the relay and again in the client;
 - a 1 KB message limit;
-- a 40 messages/s per-pilot rate limit;
-- an origin allow-list (`ALLOWED_ORIGINS` in `server/wrangler.toml`).
+- a 40 messages/s per-pilot rate limit, at most one map change per room every 5 s, and 12 sockets
+  per room (8 pilots plus connections that haven't said hello within 10 s);
+- an origin allow-list (`ALLOWED_ORIGINS` in `server/wrangler.toml`; the Steam / desktop build
+  connects from `app://fpv-sim`);
+- optional abuse limits, each used only if its binding exists: `RATE_LIMITER` (connections per
+  client IP), a `DENYLIST` KV namespace (room codes or IPs), and an `IP_SALT` secret for the
+  hashed IPs that cap listed rooms at 3 per host. `server/wrangler.toml` shows how to create each.
 
 Run these from the `server` folder, one per line. They work in Windows PowerShell too; if
 PowerShell blocks `npm` / `npx` scripts, use `npm.cmd` / `npx.cmd`.
 
 ```
 npm install
-npx wrangler dev
+npx wrangler dev --env dev
 npx wrangler login
 npx wrangler deploy
 ```
 
-- `npx wrangler dev` starts a local relay on `ws://127.0.0.1:8787`, which the sim uses
-  automatically when it runs on localhost.
+- `npx wrangler dev --env dev` starts a local relay on `ws://127.0.0.1:8787`, which the sim uses
+  automatically when it runs on localhost. The `dev` environment allows localhost pages; the
+  production relay refuses them.
 - `npx wrangler deploy` prints the relay address, `https://fpv-sim-rooms.<subdomain>.workers.dev`.
 
 If you deploy your own relay, set `VITE_MP_URL=wss://fpv-sim-rooms.<subdomain>.workers.dev` in the Vercel project's

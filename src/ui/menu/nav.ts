@@ -3,8 +3,10 @@
 // tabs, the right stick scrolls. Sliders are adjusted with left / right; A on a dropdown opens a list
 // to pick from and A on a text field opens the on-screen keyboard (osk.ts), so passing over either
 // never changes it. Gamepads use the standard mapping (Xbox, DualSense, Steam Input, and our WebHID
-// Steam driver); other pads (radios, joysticks) get buttons and single stick steps. The menu follows
-// whichever pad was used last.
+// Steam driver); other pads (radios, joysticks) get buttons, and once set up their calibrated roll /
+// pitch stick, never raw axes (a throttle or switch rests at an end). The menu follows whichever pad
+// was used last; the mouse wheel or a click silences a held stick until it is let go.
+import { isStandard } from '../../input/gamepad';
 import { el } from '../dom';
 import { Osk } from './osk';
 
@@ -259,14 +261,20 @@ export class MenuNav {
   usingPad = false;
   onDevice: (() => void) | null = null;
 
-  constructor(private hooks: NavHooks, private pads: () => Gamepad[]) {
+  /** stick: a non-standard pad's set-up roll / pitch (-1..1, y down), or null (see InputManager.navStick) */
+  constructor(private hooks: NavHooks, private pads: () => Gamepad[], private stick: (g: Gamepad) => [number, number] | null = () => null) {
     window.addEventListener('keydown', (e) => this.key(e), true);
     // a click anywhere else dismisses an open list / keyboard (mouse users)
     window.addEventListener('pointerdown', (e) => {
       const o = this.overlay, t = e.target as Node | null;
       if (o && t && !o.el.contains(t) && !o.target.contains(t)) o.close();
+      this.mouseTookOver();
     }, true);
+    window.addEventListener('wheel', () => this.mouseTookOver(), { capture: true, passive: true });
   }
+
+  /** Mouse / trackpad in use: a stick held now must not fight it (scrolling, moving focus) until let go. */
+  private mouseTookOver() { this.muteStick = true; this.held = null; }
 
   start() { if (!this.enabled) { this.enabled = true; this.padPrev.clear(); this.held = null; this.raf = requestAnimationFrame(() => this.tick()); } }
   stop() { this.enabled = false; cancelAnimationFrame(this.raf); this.overlay?.close(); }
@@ -343,7 +351,7 @@ export class MenuNav {
   private pick(pads: Gamepad[]): { g: Gamepad; b: boolean[]; prev: PadState | null } | null {
     const snaps = pads.map((g) => ({
       g, k: `${g.index}|${g.id}`, b: g.buttons.map((x) => x.pressed || x.value > 0.6),
-      stick: g.mapping === 'standard' && Math.hypot(g.axes[0] ?? 0, g.axes[1] ?? 0) > 0.6, dir: axisDir(g.axes[0], g.axes[1]),
+      stick: isStandard(g) && Math.hypot(g.axes[0] ?? 0, g.axes[1] ?? 0) > 0.6, dir: axisDir(g.axes[0], g.axes[1]),
     }));
     const before = this.padKey;
     for (const s of snaps) {
@@ -365,20 +373,22 @@ export class MenuNav {
     if (this.overlay && !this.overlay.target.isConnected) this.overlay.close();
     const cur = this.pick(this.pads());
     if (!cur) return;
-    const { g: pad, b } = cur, std = pad.mapping === 'standard', ax = pad.axes;
-    const stickDir = axisDir(ax[0], ax[1]), ry = ax[3] ?? 0;
+    const { g: pad, b } = cur, std = isStandard(pad), ax = pad.axes;
+    // the left stick on a standard pad; elsewhere the set-up roll / pitch stick, or nothing
+    const xy = std ? [ax[0] ?? 0, ax[1] ?? 0] : this.stick(pad);
+    const stickDir = xy ? axisDir(xy[0], xy[1]) : null, ry = std ? ax[3] ?? 0 : 0;
     const lock = navLockLevel();
     // a fresh menu, a pad seen for the first time, or a lock: what is held now must be let go first
     if (!cur.prev || lock) {
       this.mute = new Set([12, 13, 14, 15].filter((i) => b[i]));
-      this.muteStick = std && (!!stickDir || Math.abs(ry) > 0.25);
+      this.muteStick = !!stickDir || Math.abs(ry) > 0.25;
       this.held = null;
     }
     if (!cur.prev || lock === 'all') return;
     const prev = cur.prev.b;
     const rise = (i: number) => b[i] && !prev[i];
     const now = performance.now();
-    if (b.some((x, i) => x && !prev[i]) || (std && !!stickDir)) this.setPad(true);
+    if (b.some((x, i) => x && !prev[i]) || (!!stickDir && !this.muteStick)) this.setPad(true);
     if (rise(0)) this.activate();
     if (rise(1)) { if (this.overlay) this.overlay.back(); else this.hooks.back(); }
     if (lock === 'sticks') return;
@@ -386,13 +396,12 @@ export class MenuNav {
     else { if (rise(4)) this.hooks.tab(-1); if (rise(5)) this.hooks.tab(1); }
     for (const i of this.mute) if (!b[i]) this.mute.delete(i);
     if (this.muteStick && !stickDir && Math.abs(ry) <= 0.25) this.muteStick = false;
-    // directional input with key-repeat (350 ms delay, then every 110 ms). Off the standard layout
-    // axes 0 / 1 may be a radio's throttle resting at an end: one step per push, no repeat.
-    const on = (i: number) => b[i] && !this.mute.has(i);
+    // directional input with key-repeat (350 ms delay, then every 110 ms). Indices 12-15 are the
+    // D-pad only on the standard layout (a radio's buttons are its channels 9-16)
+    const on = (i: number) => std && b[i] && !this.mute.has(i);
     const btnDir: Dir | null = on(12) ? 'up' : on(13) ? 'down' : on(14) ? 'left' : on(15) ? 'right' : null;
-    const dir = btnDir ?? (std && !this.muteStick ? stickDir : null);
-    if (!btnDir && !std && stickDir && stickDir !== cur.prev.dir) { this.held = null; this.move(stickDir); }
-    else if (!dir) this.held = null;
+    const dir = btnDir ?? (this.muteStick ? null : stickDir);
+    if (!dir) this.held = null;
     else if (!this.held || this.held.key !== dir) { this.held = { key: dir, next: now + 350 }; this.move(dir); }
     else if (now >= this.held.next) { this.held.next = now + 110; this.move(dir); }
     // right stick scrolls long pages (standard pads: elsewhere axis 3 can be any resting channel)
