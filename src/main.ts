@@ -180,6 +180,13 @@ window.addEventListener('keydown', (e) => {
 // Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the
 // browser may suspend the context later (tab switch, audio device change).
 for (const ev of ['pointerdown', 'keydown', 'touchstart'] as const) window.addEventListener(ev, () => ctx.audio.unlock(), { capture: true });
+// Tab hidden while flying: pause (the sim keeps running in its worker otherwise) and silence the
+// motors. Coming back stays paused on the pause menu; sound resumes with the next click or key.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (!ctx.menuOpen) { gameMenu.inFlight = true; gameMenu.open('pause'); }
+  ctx.audio.update([0, 0, 0, 0], 0, 2, 14); // no frames run while hidden: ramp the motor voices down now
+});
 
 // ---------------------------------------------------------------------------------------------
 // Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
@@ -254,8 +261,10 @@ startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => hudCt
 gameMenu.open('title');
 bootDone();
 
-// debugging handle (inspect from devtools)
-(window as any).__fpv = {
+// debugging handle (inspect from devtools): in dev builds, or with ?debug in the URL, or after
+// localStorage.setItem('fpv-debug', '1') in the console
+const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
+if (debug) (window as any).__fpv = {
   ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime,
   teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); },
   osdCells: () => hudCtl.osdCells(), frameRect: () => ctx.fpv.layout.frame,
