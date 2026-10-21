@@ -7,9 +7,10 @@ compatibility_date = "2025-06-01"
 # "*" is an exact origin (any scheme: "app://fpv-sim" is the desktop build). In http(s) entries "*"
 # stands for part of ONE host label, or for the port; a "*" that is a whole label or sits in the
 # registrable domain ("https://*.vercel.app" would admit anyone's Vercel site) is refused.
-# Production, this project's own Vercel previews (<project>-<hash>-<scope> and
-# <project>-git-<branch>-<scope>), and the desktop build.
-ALLOWED_ORIGINS = "https://fpv-sim-gamma.vercel.app,https://fpv-sim-*-cheesejaguar-2353s-projects.vercel.app,https://fpv-sim-git-*-cheesejaguar-2353s-projects.vercel.app,app://fpv-sim"
+# Production, this project's own Vercel previews (deployments are fpv-<hash>-<scope>, branches
+# fpv-sim-git-<branch>-<scope>; Vercel shortens the project name in deployment URLs), and the
+# desktop build.
+ALLOWED_ORIGINS = "https://fpv-sim-gamma.vercel.app,https://fpv-*-cheesejaguar-2353s-projects.vercel.app,app://fpv-sim"
 
 [[durable_objects.bindings]]
 name = "ROOMS"

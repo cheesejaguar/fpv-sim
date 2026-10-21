@@ -37,6 +37,10 @@ import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { settingsPanel, ViewSettings } from './ui/settingsPanel';
 import { createShared, newestTime, R, REC, sampleRing, SimSettings } from './worker/shared';
 
+// debugging handle window.__fpv (installed at the end): in dev builds, with ?debug in the URL, or
+// after localStorage.setItem('fpv-debug', '1'). Read now: joining an invite link rewrites the URL.
+const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
+
 // ---------------------------------------------------------------------------------------------
 // saved settings are versioned and validated (src/app/persist.ts)
 const store = (k: string, v: unknown) => save(k, v);
@@ -334,9 +338,7 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 gameMenu.open('title');
 bootDone();
 
-// debugging handle (inspect from devtools): in dev builds, or with ?debug in the URL, or after
-// localStorage.setItem('fpv-debug', '1') in the console
-const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
+// debugging handle (inspect from devtools), see `debug` above
 if (debug) (window as any).__fpv = {
   ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime,
   teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); },

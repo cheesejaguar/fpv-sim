@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { HELLO_TIMEOUT_MS, MAP_COOLDOWN_MS, MAX_PLAYERS, MAX_SOCKETS, originAllowed, originPattern, PING, PONG, PROTOCOL, RoomCore, sanitizeName, sanitizeRoomName, Sock } from '../server/src/roomCore';
 import { blocked } from '../server/src/sanitize';
@@ -228,6 +229,17 @@ describe('RoomCore', () => {
     expect(a.last('pong')).toEqual({ t: 'pong', c: 1234.5 });
     room.message(a, PING);
     expect(a.sent[a.sent.length - 1]).toEqual(JSON.parse(PONG));
+  });
+
+  test('the deployed allow-list (server/wrangler.toml) admits production, real preview URLs and the desktop build only', () => {
+    const toml = readFileSync(new URL('../server/wrangler.toml', import.meta.url), 'utf8');
+    const prod = /^ALLOWED_ORIGINS = "([^"]+)"/m.exec(toml)![1].split(',');
+    const yes = ['https://fpv-sim-gamma.vercel.app', 'https://fpv-kqd0hqcnc-cheesejaguar-2353s-projects.vercel.app', // a real deployment URL
+      'https://fpv-sim-git-main-cheesejaguar-2353s-projects.vercel.app', 'app://fpv-sim'];
+    const no = ['http://localhost:5173', 'http://127.0.0.1:5173', 'https://evil.vercel.app', 'https://fpv-x-other-scope.vercel.app',
+      'https://fpv-x-cheesejaguar-2353s-projects.vercel.app.evil.com', 'https://evil-fpv-x-cheesejaguar-2353s-projects.vercel.app'];
+    for (const o of yes) expect(originAllowed(o, prod), o).toBe(true);
+    for (const o of no) expect(originAllowed(o, prod), o).toBe(false);
   });
 
   test('origin allow-list: exact origins, this project\'s preview patterns, never a whole-label wildcard', () => {
