@@ -78,24 +78,66 @@ export function stickAt(sh: Shared, tMs: number, out: Float32Array | number[]): 
   return true;
 }
 
+const EV_N = 32;   // stick-change events kept by StickSampler (≥ 40 ms of a 4 ms input)
+const GAP_N = 15;  // gaps in the input-rate median
+
 /**
- * Per-packet stick sampling for the RC link (worker). Each packet takes the newest sample taken at
- * least latencyMs + offsetMs before its slot: no interpolation, a near-constant latency.
- * The input updates at its own rate (Chrome reads gamepads at 250 Hz on its own clock, like the
- * 250 Hz packets); sampling right at an update edge would pick the older or the newer report at
- * random (timer jitter), duplicating / skipping packets, which Betaflight's feedforward turns into
- * spikes. Like ELRS "mixer sync" aligning a handset's stick sampling to the RF packets, offsetMs
- * slowly moves the sampling instant to the middle between input updates (and wraps by one update
- * period if the clocks drift). Inputs updating much faster than the packets (gaps < minGapMs) don't
- * have that problem: there the offset stays put.
+ * Per-packet stick sampling for the RC link (worker), as a real handset + ELRS receiver hand the FC
+ * a fresh stick value in every packet.
+ *
+ * Fast inputs (updating about as often as the packets or faster: Chrome reads XInput / USB pads at
+ * 250 Hz on its own clock): each packet takes the newest sample taken at least latencyMs + offsetMs
+ * before its slot, no interpolation, a near-constant latency. Sampling right at an update edge
+ * would pick the older or the newer report at random (timer jitter), duplicating / skipping
+ * packets, which Betaflight's feedforward turns into spikes. Like ELRS "mixer sync" aligning a
+ * handset's stick sampling to the RF packets, offsetMs slowly moves the sampling instant to the
+ * middle between input updates (and wraps by one update period if the clocks drift). Inputs
+ * updating much faster than the packets (gaps < minGapMs) don't have that problem: there the offset
+ * stays put.
+ *
+ * Slow inputs (a radio in BLE joystick mode reports at ~30-90 Hz, irregularly): the newest sample
+ * would hand Betaflight a staircase, 2-6 identical packets and then a jump, which no real quad sees
+ * (its receiver gets a fresh value every packet). Betaflight's feedforward treats the jump as the
+ * stick moving 2-6 packets' worth in one packet interval (it assumes at most one duplicate) and its
+ * 250 Hz RC smoothing passes the steps: ~2-3x feedforward spikes at the input rate, the motors
+ * slammed from idle to full on yaw (no D, no feedforward rate limit there), a "snap" turn. The
+ * update interval is measured (median gap between stick changes, inputMs) and the stick channels
+ * are reconstructed between reports: the stick is taken to move linearly from one report to the
+ * next over at most about one update interval (a longer gap is a pause, then a move), and each
+ * packet gets that reconstruction interpMs = inputMs + visMarginMs in the past, so the next report
+ * is normally already in. Latency trade-off: the staircase was already late by half an interval on
+ * average plus the mixer-sync offset, so the reconstruction costs only a few ms more (measured in
+ * tests/stickPath.test.ts: 13.5 -> 17.1 ms at 90 Hz, 21.2 -> 23.3 ms at 60 Hz, 25.6 -> 32.2 ms at
+ * 40 Hz); a missed or late report holds the last value until it arrives, then catches up (no
+ * jump). AUX channels (switches) are never delayed or interpolated. The delay switches in and out
+ * slowly (slewMs per packet), so the device being recognised never steps the sticks.
  */
 export class StickSampler {
   offsetMs = 0;
-  constructor(public latencyMs = 2.5, public gain = 0.05, public maxOffsetMs = 10, public minGapMs = 2.5) {}
+  /** RC packet interval (ms); the worker keeps it at 1000 / rcLinkHz. */
+  packetMs = 4;
+  /** Measured update interval of the input device (ms): median gap between stick changes; 0 = not yet known. */
+  inputMs = 0;
+  /** Reconstruction delay in use (ms); 0 = fast input, newest sample. */
+  interpMs = 0;
+  private wantMs = 0;
+  private evT = new Float64Array(EV_N); private evV = new Float64Array(EV_N * 4); private evN = 0;
+  private seen = 0;
+  private gaps: number[] = [];
+  private sorted: number[] = [];
+  /**
+   * visMarginMs: a report reaches the ring up to ~5 ms after its timestamp (the browser stamps an HID
+   * report when it arrives, then polls gamepads every 4 ms on Windows, then our poll); latencyMs covers
+   * 2.5 of it, this the rest, so the next report is in before the reconstruction needs it.
+   */
+  constructor(public latencyMs = 2.5, public gain = 0.05, public maxOffsetMs = 10, public minGapMs = 2.5,
+    public maxInterpMs = 40, public slewMs = 0.25, public visMarginMs = 3) {}
+
   /** Fill `out` for the packet slot at tMs (ms since the epoch); false if no sample exists. */
   sample(sh: Shared, tMs: number, out: Float32Array | number[]): boolean {
     const n = Atomics.load(sh.ctrl, 8), s = sh.sticks;
     if (n <= 0) return false;
+    this.track(sh, n);
     const T = tMs - this.latencyMs - this.offsetMs;
     const oldest = Math.max(0, n - (STICK_N - 1));
     let i = n - 1;
@@ -104,7 +146,7 @@ export class StickSampler {
     // the next update after the chosen one (equal timestamps = the same report polled again)
     let j = i + 1;
     while (j < n && s[(j % STICK_N) * STICK_REC] <= ti) j++;
-    if (j < n && ti <= T) {
+    if (this.interpMs === 0 && j < n && ti <= T) {
       const gap = s[(j % STICK_N) * STICK_REC] - ti;
       if (gap >= this.minGapMs && gap < 50) {
         this.offsetMs += this.gain * ((T - ti) - gap / 2); // aim for mid-way between updates
@@ -116,7 +158,55 @@ export class StickSampler {
     }
     const o = (i % STICK_N) * STICK_REC;
     for (let k = 0; k < 16; k++) out[k] = s[o + 1 + k];
+    // slow input: sticks from the reconstruction, interpMs in the past
+    if (this.interpMs > 0 && this.evN > 0) for (let c = 0; c < 4; c++) out[c] = this.recon(T - this.interpMs, c);
+    // the delay follows the measured input rate, with hysteresis; pads the browser polls at 250 Hz
+    // (4 ms) always keep the newest-sample path, whatever the link rate
+    if (this.inputMs > Math.max(1.5 * this.packetMs, 6)) this.wantMs = Math.min(this.inputMs + this.visMarginMs, this.maxInterpMs);
+    else if (this.inputMs < Math.max(1.25 * this.packetMs, 5)) this.wantMs = 0;
+    this.interpMs = Math.max(0, this.interpMs + Math.max(-this.slewMs, Math.min(this.slewMs, this.wantMs - this.interpMs)));
     return true;
+  }
+
+  /** Consume new ring samples: stick-change events (channels 0..3) and the input's update interval. */
+  private track(sh: Shared, n: number): void {
+    const s = sh.sticks;
+    for (let i = Math.max(this.seen, n - (STICK_N - 1)); i < n; i++) {
+      const o = (i % STICK_N) * STICK_REC, t = s[o];
+      const last = this.evN - 1, lo = (last % EV_N) * 4;
+      if (this.evN > 0 && s[o + 1] === this.evV[lo] && s[o + 2] === this.evV[lo + 1] && s[o + 3] === this.evV[lo + 2] && s[o + 4] === this.evV[lo + 3]) continue;
+      const gap = this.evN > 0 ? t - this.evT[last % EV_N] : Infinity;
+      if (gap < 0.3) { for (let c = 0; c < 4; c++) this.evV[lo + c] = s[o + 1 + c]; continue; } // same report, value settled
+      if (gap < 60) {
+        this.gaps.push(gap);
+        if (this.gaps.length > GAP_N) this.gaps.shift();
+        if (this.gaps.length >= 5) {
+          const g = this.sorted; g.length = 0; for (const x of this.gaps) g.push(x);
+          g.sort((a, b) => a - b);
+          this.inputMs = g[g.length >> 1];
+        }
+      }
+      const k = this.evN % EV_N;
+      this.evT[k] = t; for (let c = 0; c < 4; c++) this.evV[k * 4 + c] = s[o + 1 + c];
+      this.evN++;
+    }
+    this.seen = n;
+  }
+
+  /**
+   * Stick channel c at time tau: linear from each report to the next over at most interpMs (a longer
+   * gap was a pause: hold, then the move); the newest report holds until the next one arrives.
+   */
+  private recon(tau: number, c: number): number {
+    const first = Math.max(0, this.evN - EV_N);
+    let k = this.evN - 1;
+    while (k > first && this.evT[k % EV_N] > tau) k--;
+    const v0 = this.evV[(k % EV_N) * 4 + c];
+    if (k === this.evN - 1 || this.evT[k % EV_N] > tau) return v0;
+    const t0 = this.evT[k % EV_N], t1 = this.evT[(k + 1) % EV_N], v1 = this.evV[((k + 1) % EV_N) * 4 + c];
+    const start = Math.max(t0, t1 - this.interpMs), d = t1 - start;
+    const f = d > 1e-9 ? Math.max(0, Math.min(1, (tau - start) / d)) : 1;
+    return v0 + (v1 - v0) * f;
   }
 }
 

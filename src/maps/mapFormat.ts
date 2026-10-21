@@ -11,7 +11,7 @@ import type { WakeZone, WindVolume } from '../sim/wind';
 import { doomMapDef } from './doomMap';
 import { buildGatePrims, type MapEntry } from './maps';
 import { quakeMapDef } from './quakeMap';
-import { BoxPrim, BrushPrim, fbm, GateDef, MapDef, Material, MeshInstance, Prim } from './world';
+import { BoxPrim, BrushPrim, fbm, GateDef, MapDef, Material, MAX_MAP_LIGHTS, MeshInstance, Prim } from './world';
 import { inflate } from './zip';
 
 export const FORMAT = 'fpvsim-map';
@@ -28,6 +28,7 @@ export const BUDGETS = {
   trees: 3000,
   wakeZones: 32,
   indoor: 32,                     // indoor wind volumes
+  lights: MAX_MAP_LIGHTS,         // point lights (fixtures, floodlights)
   geometry: 16,                   // geometry entries
   brushes: 20000,                 // convex brushes from Quake / Doom sources + mesh collision slabs
   meshTriangles: 150000,          // drawn glTF triangles, all meshes
@@ -73,6 +74,8 @@ export type PrimDoc =
 export interface GateDoc { kind: GateDef['kind']; pos: Vec2 | Vec3; yawDeg?: number; width?: number; height?: number; stack?: number; onTop?: boolean }
 export interface TreeDoc { pos: Vec2; height: number; radius: number; type: 'pine' | 'oak' }
 export interface WakeDoc { pos: Vec2; radius: number; height: number; intensity: number }
+/** Point light (interior fixture, floodlight): illuminance ~ intensity / d² (the sun is ~4.5), cut off at range. */
+export interface LightDoc { pos: Vec3; color?: string; intensity: number; range: number }
 /** Enclosed space (axis-aligned box, min / max corners): wind inside is scaled by windScale. */
 export interface IndoorDoc { min: Vec3; max: Vec3; windScale?: number }
 export type GeometryDoc =
@@ -97,6 +100,7 @@ export interface MapDocV1 {
   trees?: TreeDoc[];
   wakeZones?: WakeDoc[];
   indoor?: IndoorDoc[];
+  lights?: LightDoc[];
   geometry?: GeometryDoc[];
 }
 
@@ -206,7 +210,7 @@ const IMG = /\.(png|jpe?g|webp)$/i;
 export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[] } {
   const c = new Checker();
   const R = 'map.json';
-  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'geometry'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
+  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'lights', 'geometry'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
   const d = raw;
   if (d.format !== undefined && d.format !== FORMAT) c.err(`${R}.format`, `must be "${FORMAT}" (got ${show(d.format)})`);
   if (d.formatVersion !== undefined && d.formatVersion !== FORMAT_VERSION) c.err(`${R}.formatVersion`, typeof d.formatVersion === 'number' && d.formatVersion > FORMAT_VERSION ? `${d.formatVersion} is newer than this simulator supports (${FORMAT_VERSION}); update the simulator` : `must be ${FORMAT_VERSION}`);
@@ -240,7 +244,7 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
   const E = `${R}.environment`;
   if (d.environment !== undefined && c.obj(d.environment, E, ['sky', 'sun', 'fog', 'windScale'])) {
     const e = d.environment;
-    c.str(e, 'sky', E, { oneOf: ['clear', 'overcast', 'dusk'] });
+    c.str(e, 'sky', E, { oneOf: ['clear', 'overcast', 'dusk', 'night'] });
     if (e.sun !== undefined && c.obj(e.sun, `${E}.sun`, ['azimuthDeg', 'elevationDeg'], ['azimuthDeg', 'elevationDeg'])) {
       c.num(e.sun, 'azimuthDeg', `${E}.sun`, { min: 0, max: 360 }); c.num(e.sun, 'elevationDeg', `${E}.sun`, { min: -10, max: 90 });
     }
@@ -313,6 +317,11 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
     if (!c.obj(w, P, ['min', 'max', 'windScale'], ['min', 'max'])) return;
     const a = c.vec(w, 'min', P, 3), b = c.vec(w, 'max', P, 3); c.num(w, 'windScale', P, { min: 0, max: 1 });
     if (a && b && a.length === 3 && b.length === 3 && !(a[0] < b[0] && a[1] < b[1] && a[2] < b[2])) c.err(P, 'min must be below max on every axis');
+  });
+  c.arr(d, 'lights', R, BUDGETS.lights, (l, P) => {
+    if (!c.obj(l, P, ['pos', 'color', 'intensity', 'range'], ['pos', 'intensity', 'range'])) return;
+    c.vec(l, 'pos', P, 3); c.str(l, 'color', P, { re: COLOR, hint: 'must be a colour like "#fff1dc"' });
+    c.num(l, 'intensity', P, { gt: 0, max: 10000 }); c.num(l, 'range', P, { gt: 0, max: 1000 });
   });
   let bases = 0;
   c.arr(d, 'geometry', R, BUDGETS.geometry, (g, P) => {
@@ -754,6 +763,7 @@ export async function loadMapPackage(src: PackageSource, opts: LoadOptions = {})
     if (windScale !== undefined) def.windScale = windScale;
     if (base?.quake) def.quake = base.quake;
     if (env.fog) def.fog = { color: hex(env.fog.color)!, density: env.fog.density };
+    if (doc.lights?.length) def.lights = doc.lights.map((l) => ({ pos: { x: l.pos[0], y: l.pos[1], z: l.pos[2] }, color: hex(l.color) ?? 0xffffff, intensity: l.intensity, range: l.range }));
     if (doc.ground?.texture) def.groundTexture = src.url(doc.ground.texture);
     if (meshes.length) def.meshes = meshes.map((m) => ({ ...m.inst, pos: { ...m.inst.pos } }));
     return def;

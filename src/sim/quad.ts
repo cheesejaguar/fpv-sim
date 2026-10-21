@@ -124,7 +124,9 @@ export class QuadSim {
   private cState: Uint8Array; private cN: Float64Array; private cD: Float64Array; private cVin: Float64Array;
   private hD: Float64Array; private hN: Float64Array; private hMat: SurfaceMaterial[];
   private boundR = 0;
-  private cC: Float64Array; private cW = new Float64Array(36); private cJ = new Float64Array(6); private cEig = new Float64Array([1, 0, 0, 0, 0, 0]);
+  private cC: Float64Array; private cK: Float64Array; private cJall: Float64Array;
+  private cW = new Float64Array(36); private cJ = new Float64Array(6);
+  private cEig = new Float64Array([1, 0, 0, 0, 0, 0]); private cEigK = new Float64Array([0, 0, 1, 0, 0, 0]);
   // per-rotor impact event: compression work at prop / motor / arm spheres, rotor energy lost to strikes
   private evAge: Float64Array; private evProp: Float64Array; private evStrike: Float64Array;
   private evMotor: Float64Array; private evArm: Float64Array; private evMat: SurfaceMaterial[]; private evTouch: Uint8Array;
@@ -139,6 +141,7 @@ export class QuadSim {
     this.rotorWind = p.rotors.map(() => v3());
     const nc = p.colliders.length, nr = p.rotors.length;
     this.cState = new Uint8Array(nc); this.cN = new Float64Array(nc * 3); this.cD = new Float64Array(nc); this.cVin = new Float64Array(nc); this.cC = new Float64Array(nc);
+    this.cK = new Float64Array(nc); this.cJall = new Float64Array(nc * 6);
     this.hD = new Float64Array(nc); this.hN = new Float64Array(nc * 3); this.hMat = p.colliders.map(() => MATERIALS.grass);
     for (const c of p.colliders) this.boundR = Math.max(this.boundR, Math.hypot(c.pos.x, c.pos.y, c.pos.z) + c.radius);
     this.evAge = new Float64Array(nr); this.evProp = new Float64Array(nr); this.evStrike = new Float64Array(nr);
@@ -476,46 +479,46 @@ export class QuadSim {
       nTouch++;
     }
     this.evTouch.fill(0);
-    // Hunt–Crossley / Flores damping per contact (e from the impact speed of that contact), floored at
-    // ζ ≈ 0.3 so resting contact stays quiet. Together the dampers must stay inside the explicit
-    // integrator's limit, dt·λmax(M⁻¹·Σ cᵢ jᵢjᵢᵀ) < 2 (jᵢ = [n, r×n] in body axes): λmax by power
-    // iteration on the 6x6, then all scaled by 1/(1 + dt·λ). Symmetric multi-contact hits (flat
-    // landings) are not over-limited the way a per-contact bound would be, a single sphere still gets
-    // all the damping it needs, and no per-contact force clamp is needed (the old 600 N clamp let a
-    // single sphere tunnel through a gate bar).
+    // Springs: the explicit integrator needs dt²·λmax(M⁻¹·Σ kᵢ jᵢjᵢᵀ) well under 4 (jᵢ = [n, r×n] in
+    // body axes). Surface stiffnesses are per sphere, so a tiny whoop (I ~ 1e-5 kg·m²) standing on
+    // several spheres a few cm from its CG, or a 2 kHz physics rate, went past it and the contact
+    // pumped energy in (bounces, spins of thousands of °/s). All springs of a step are scaled so that
+    // ω·dt ≤ 1 for the stiffest mode; a 5" at 8 kHz is never limited.
+    // Dampers: Hunt–Crossley / Flores per contact (e from the impact speed of that contact), floored at
+    // ζ ≈ 0.3 so resting contact stays quiet. Together they must stay inside the explicit
+    // integrator's limit, dt·λmax(M⁻¹·Σ cᵢ jᵢjᵢᵀ) < 2: λmax by power iteration on the 6x6, then all
+    // scaled by 1/(1 + dt·λ). Symmetric multi-contact hits (flat landings) are not over-limited the
+    // way a per-contact bound would be, a single sphere still gets all the damping it needs, and no
+    // per-contact force clamp is needed (the old 600 N clamp let a single sphere tunnel through a
+    // gate bar).
     let lam = 0;
     if (nTouch > 0) {
-      const W = this.cW; W.fill(0);
-      const jj = this.cJ;
+      const W = this.cW, jall = this.cJall, kk = this.cK;
+      W.fill(0);
+      for (let i = 0; i < nc; i++) {
+        if (this.hD[i] <= 0) continue;
+        const c = cs[i], mat = this.hMat[i];
+        kk[i] = c.kind === 'prop' ? mat.stiffness * 0.15 : mat.stiffness;
+        const nw = this.t2; nw.x = hN[i * 3]; nw.y = hN[i * 3 + 1]; nw.z = hN[i * 3 + 2];
+        const nb = rotateInv(this.t3, s.q, nw), rn = cross(this.t4, c.pos, nb), o = i * 6;
+        jall[o] = nb.x; jall[o + 1] = nb.y; jall[o + 2] = nb.z; jall[o + 3] = rn.x; jall[o + 4] = rn.y; jall[o + 5] = rn.z;
+        for (let a = 0; a < 6; a++) { const ka = kk[i] * jall[o + a]; for (let b = 0; b < 6; b++) W[a * 6 + b] += ka * jall[o + b]; }
+      }
+      const lamK = this.lamMax(W, this.cEigK);
+      const sk = lamK * dt * dt > 1 ? 1 / (lamK * dt * dt) : 1;
+      W.fill(0);
       for (let i = 0; i < nc; i++) {
         const depth = this.hD[i];
         if (depth <= 0) continue;
-        const c = cs[i], mat = this.hMat[i];
-        const k = c.kind === 'prop' ? mat.stiffness * 0.15 : mat.stiffness;
+        const c = cs[i], mat = this.hMat[i], o = i * 6;
+        const k = (kk[i] *= sk);
         const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
         const vin = Math.max(this.cVin[i], 0.5), e = restitutionAt(mat, vin);
         const cc = Math.max((8 * (1 - e)) / (5 * e * vin) * k * depth, 0.6 * Math.sqrt(k / (1 / p.mass + r2 / this.iMin)));
         this.cC[i] = cc;
-        const nw = this.t2; nw.x = hN[i * 3]; nw.y = hN[i * 3 + 1]; nw.z = hN[i * 3 + 2];
-        const nb = rotateInv(this.t3, s.q, nw), rn = cross(this.t4, c.pos, nb);
-        jj[0] = nb.x; jj[1] = nb.y; jj[2] = nb.z; jj[3] = rn.x; jj[4] = rn.y; jj[5] = rn.z;
-        for (let a = 0; a < 6; a++) { const ca = cc * jj[a]; for (let b = 0; b < 6; b++) W[a * 6 + b] += ca * jj[b]; }
+        for (let a = 0; a < 6; a++) { const ca = cc * jall[o + a]; for (let b = 0; b < 6; b++) W[a * 6 + b] += ca * jall[o + b]; }
       }
-      const x = this.cEig, y = this.cJ, Ii = this.Iinv;
-      // warm start from last step's eigenvector, nudged so it is never orthogonal to the new one
-      let xn = 0;
-      for (let a = 0; a < 6; a++) { x[a] += 0.05; xn += x[a] * x[a]; }
-      xn = Math.sqrt(xn); for (let a = 0; a < 6; a++) x[a] /= xn;
-      for (let it = 0; it < 6; it++) {
-        for (let a = 0; a < 6; a++) { let sum = 0; for (let b = 0; b < 6; b++) sum += W[a * 6 + b] * x[b]; y[a] = sum; }
-        const z0 = y[0] / p.mass, z1 = y[1] / p.mass, z2 = y[2] / p.mass;
-        const z3 = Ii[0] * y[3] + Ii[1] * y[4] + Ii[2] * y[5], z4 = Ii[3] * y[3] + Ii[4] * y[4] + Ii[5] * y[5], z5 = Ii[6] * y[3] + Ii[7] * y[4] + Ii[8] * y[5];
-        const nz = Math.sqrt(z0 * z0 + z1 * z1 + z2 * z2 + z3 * z3 + z4 * z4 + z5 * z5);
-        if (nz < 1e-12) break;
-        lam = nz; // |x| = 1
-        x[0] = z0 / nz; x[1] = z1 / nz; x[2] = z2 / nz; x[3] = z3 / nz; x[4] = z4 / nz; x[5] = z5 / nz;
-      }
-      lam *= 1.1; // power iteration converges from below
+      lam = this.lamMax(W, this.cEig);
     }
     const dScale = 1 / (1 + dt * lam);
     // pass 2: forces
@@ -551,8 +554,9 @@ export class QuadSim {
         vx += tvW.x; vy += tvW.y; vz += tvW.z;
       }
       const mat = this.hMat[i];
-      // prop blades flex: much softer than the frame against the same surface
-      const k = isProp ? mat.stiffness * 0.15 : mat.stiffness;
+      // prop blades flex: much softer than the frame against the same surface (pass 1, incl. the
+      // integrator's stiffness limit)
+      const k = this.cK[i];
       // effective inverse mass at this point incl. rotation (r²/I), shared by all touching spheres
       const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
       const invM = 1 / p.mass + r2 / this.iMin;
@@ -625,6 +629,28 @@ export class QuadSim {
         this.evAge[k] = 0; this.evProp[k] = this.evStrike[k] = this.evMotor[k] = this.evArm[k] = 0;
       }
     }
+  }
+
+  /**
+   * λmax(M⁻¹·A) for a symmetric 6x6 contact matrix A (body axes, [force; torque]) by power iteration,
+   * warm-started from (and updating) x, last step's eigenvector; 10 % margin (it converges from below).
+   */
+  private lamMax(A: Float64Array, x: Float64Array): number {
+    const y = this.cJ, Ii = this.Iinv, m = this.p.mass;
+    // nudged so the start is never orthogonal to the new eigenvector
+    let xn = 0, lam = 0;
+    for (let a = 0; a < 6; a++) { x[a] += 0.05; xn += x[a] * x[a]; }
+    xn = Math.sqrt(xn); for (let a = 0; a < 6; a++) x[a] /= xn;
+    for (let it = 0; it < 6; it++) {
+      for (let a = 0; a < 6; a++) { let sum = 0; for (let b = 0; b < 6; b++) sum += A[a * 6 + b] * x[b]; y[a] = sum; }
+      const z0 = y[0] / m, z1 = y[1] / m, z2 = y[2] / m;
+      const z3 = Ii[0] * y[3] + Ii[1] * y[4] + Ii[2] * y[5], z4 = Ii[3] * y[3] + Ii[4] * y[4] + Ii[5] * y[5], z5 = Ii[6] * y[3] + Ii[7] * y[4] + Ii[8] * y[5];
+      const nz = Math.sqrt(z0 * z0 + z1 * z1 + z2 * z2 + z3 * z3 + z4 * z4 + z5 * z5);
+      if (nz < 1e-12) break;
+      lam = nz; // |x| = 1
+      x[0] = z0 / nz; x[1] = z1 / nz; x[2] = z2 / nz; x[3] = z3 / nz; x[4] = z4 / nz; x[5] = z5 / nz;
+    }
+    return lam * 1.1;
   }
 
   /** Tree canopies / hedges: porous drag growing with depth, leaves dragging on (and nicking) the props. */

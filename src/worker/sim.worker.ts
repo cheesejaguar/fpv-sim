@@ -24,6 +24,7 @@ import { rotateInv, V3 } from '../sim/math';
 import { QuadEnv, QuadSim } from '../sim/quad';
 import { WakeField } from '../sim/wake';
 import { Wind } from '../sim/wind';
+import { ACC_CAL_KEY, accBoardKey, calibrateAccLevel, sampleLevelRest } from './accCal';
 import { BblRecorder } from './bbl';
 import { BaroModel, Brownout, CurrentSensor, OverloadGovernor, seedOf } from './fcHardware';
 import { EepromStore, runCliBatch } from './fwCli';
@@ -243,7 +244,8 @@ async function bootFirmware() {
     return;
   }
   try {
-    const [saved, applied, fwSeen] = await Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version')]);
+    const [saved, applied, fwSeen, accKey] = await Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY)]);
+    accCalKey = typeof accKey === 'string' ? accKey : undefined;
     if (saved) bf.eepromSet(saved);
     powerOnFirmware();
     const dt = 1 / settings.physicsHz;
@@ -257,7 +259,8 @@ async function bootFirmware() {
       await cliBatch(defaultCli(build), true);
       await kv.set('bf-defaults-version', DEFAULTS_VERSION);
     }
-    if (why || !bf.accCalibrated()) calibrateAcc(true);
+    // new defaults, another board, or trims from before the level calibration (ACC_CAL_REV)
+    if (why || accCalStale()) await calibrateAcc();
     if (FW_VERSION !== 'dev') await kv.set('bf-fw-version', FW_VERSION);
     eeprom.check(bf); await eeprom.flush();
     fwState = 2; Atomics.store(sh.ctrl, 7, 2);
@@ -278,17 +281,28 @@ function primeSensors() {
   bf.setRc(rcBuf);
 }
 
+/** The board the stored accelerometer trims were made for (accBoardKey; persisted under ACC_CAL_KEY). */
+let accCalKey: string | undefined;
+/** A CLI save happened: check that the accelerometer is still calibrated (`defaults` clears it). */
+let accRecheck = false;
+
 /**
- * Accelerometer level calibration (as "Calibrate accelerometer" in the Configurator), quad still
- * on its spawn: Betaflight averages 400 samples and saves the offsets itself (persisted on the next
- * EEPROM check). live: the plant flies meanwhile (boot), else it holds still.
+ * Accelerometer level calibration (as "Calibrate accelerometer" in the Configurator, on a level
+ * surface): the plant is frozen and Betaflight is fed a level, still quad while it averages its 400
+ * samples and saves the trims (src/worker/accCal.ts). Never calibrate wherever the quad happens to
+ * lie: a whoop resting on one duct taught Betaflight a 13° roll as level.
  */
-function calibrateAcc(live: boolean): boolean {
-  if (!bf || !bf.calibrateAcc()) return false;
-  const dt = 1 / settings.physicsHz;
-  for (let i = 0; i < 3 / dt && bf.accCalibrating(); i++) { if (live) physicsStep(dt); else heldStep(dt); }
-  return !bf.accCalibrating();
+async function calibrateAcc(): Promise<boolean> {
+  if (!bf) return false;
+  const ok = calibrateAccLevel(bf, settings.physicsHz, (dt) => heldStep(dt, true));
+  if (ok) { accCalKey = accBoardKey(quad.imu); await kv.set(ACC_CAL_KEY, accCalKey); }
+  eeprom.check(bf); await eeprom.flush();
+  resyncClock();
+  return ok;
 }
+
+/** The stored trims don't fit the simulated board: never calibrated, another build's IMU errors, or an older calibration. */
+const accCalStale = () => !!bf && (!bf.accCalibrated() || accCalKey !== accBoardKey(quad.imu));
 
 /** Firmware time passes by ms; live: the plant flies (boot), else it holds still (CLI batches). */
 function advanceFirmware(ms: number, live: boolean) {
@@ -335,8 +349,10 @@ function fcInputs(dt: number, held: boolean) {
     rcAcc -= 1 / settings.rcLinkHz;
     // a lost packet is really lost: Betaflight sees no new frame (and fails safe if it persists)
     if (rcLink.packet()) {
-      // the newest stick sample taken a fixed latency before this packet's slot (timestamped by the
-      // main thread); outside real-time stepping (boot, CLI batches) simply the newest poll
+      // the stick sample taken a fixed latency before this packet's slot (timestamped by the main
+      // thread; a slow input such as a BLE radio is interpolated between its reports, see
+      // StickSampler); outside real-time stepping (boot, CLI batches) simply the newest poll
+      sticks.packetMs = 1000 / settings.rcLinkHz;
       if (!(realtime && sticks.sample(sh, wallAt(simT), rcBuf))) for (let i = 0; i < 16; i++) rcBuf[i] = sh.rc[i];
       for (let i = 0; i < 16; i++) if (!(rcBuf[i] >= 800 && rcBuf[i] <= 2200)) rcBuf[i] = 1500;
       bf.setRc(rcBuf);
@@ -402,13 +418,14 @@ function noteImuSample(dt: number) {
 const ZERO: V3 = { x: 0, y: 0, z: 0 }, UP_G: V3 = { x: 0, y: 0, z: G0 }, restForce: V3 = { x: 0, y: 0, z: G0 };
 /**
  * The plant holds still (no integration) while firmware time passes: the IMU reads the quad at rest
- * in its current attitude (gravity only, the chip's own bias and noise), the motors don't act.
+ * in its current attitude, or sitting level (accelerometer calibration), with gravity only and the
+ * chip's own bias and noise; the motors don't act.
  */
-function heldStep(dt: number) {
+function heldStep(dt: number, level = false) {
   if (!bf) return;
   fcInputs(dt, true);
-  rotateInv(restForce, quad.s.q, UP_G);
-  quad.imu.sample(ZERO, restForce, ZERO, ZERO, quad.p.mass, dt);
+  if (level) sampleLevelRest(quad.imu, quad.p.mass, dt);
+  else { rotateInv(restForce, quad.s.q, UP_G); quad.imu.sample(ZERO, restForce, ZERO, ZERO, quad.p.mass, dt); }
   noteImuSample(dt);
   for (let k = 0; k < 4; k++) erpm[k] = Math.abs(quad.motors[k]?.erpm() ?? 0);
   bf.setErpm(erpm);
@@ -592,7 +609,7 @@ function pumpSideChannels(dt: number) {
     const r = bf.serialRead(0);
     if (r.length) cliOutBuf += dec.decode(r, { stream: true });
     if (cliOutBuf) { post({ type: 'cliOut', text: cliOutBuf }); cliOutBuf = ''; }
-    eeprom.check(bf); // CLI / OSD-menu / MSP `save`: store the new image
+    if (eeprom.check(bf)) accRecheck = true; // CLI / OSD-menu / MSP `save`: store the new image
   }
 }
 
@@ -628,6 +645,12 @@ function tick(): number {
   }
   telAcc += n * dt;
   if (telAcc >= 0.05) { telAcc = 0; sendTelemetry(); }
+  // a CLI `defaults` / acc_calibration change left the accelerometer uncalibrated: the simulator has
+  // no Calibrate button, so redo the level calibration (disarmed, after any queued firmware work)
+  if (accRecheck && !armed && fwState === 2) {
+    accRecheck = false;
+    if (accCalStale()) fwOps = fwOps.then(() => guarded(async () => { if (bf && fwState === 2 && !armed && accCalStale()) await calibrateAcc(); }));
+  }
   return 1;
 }
 
@@ -699,8 +722,8 @@ async function firmwareOp(m: ToWorker) {
         if ((old.frame === 'f7-lr') !== (spec.frame === 'f7-lr')) lines.push(`set failsafe_procedure = ${spec.frame === 'f7-lr' ? 'GPS-RESCUE' : 'DROP'}`);
         lines.push('save');
         await cliBatch(lines);
-        // another board: calibrate its accelerometer on the pad (the quad was just respawned level)
-        if (old.fc !== spec.fc || old.frame !== spec.frame) { calibrateAcc(false); eeprom.check(bf); await eeprom.flush(); resyncClock(); }
+        // another board (its own accelerometer offsets and misalignment): calibrate it level
+        if (accCalStale()) await calibrateAcc();
       }
       break;
     }
@@ -710,6 +733,8 @@ async function firmwareOp(m: ToWorker) {
     }
     case 'cliBatch': {
       const out = bf && fwState === 2 ? await cliBatch(m.lines) : '';
+      // (an imported diff never carries acc_calibration, but `defaults` in a batch clears it)
+      if (bf && fwState === 2 && !armed && accCalStale()) await calibrateAcc();
       post({ type: 'cliBatchDone', id: m.id, output: out });
       break;
     }
@@ -718,7 +743,7 @@ async function firmwareOp(m: ToWorker) {
       if (bf && fwState === 2) {
         await cliBatch(['defaults nosave']);
         await cliBatch(defaultCli(build));
-        calibrateAcc(false); eeprom.check(bf); await eeprom.flush(); resyncClock();
+        await calibrateAcc();
         await kv.set('bf-defaults-version', DEFAULTS_VERSION);
       }
       break;

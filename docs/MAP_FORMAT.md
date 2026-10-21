@@ -78,7 +78,7 @@ public/maps/community/<id>/
   "spawn": { "pos": [0, -34, 0.25], "yawDeg": 90, "groundZ": 0 }, // groundZ optional: floor height at the spawn
   "pilot": [-2, -36, 1.6],               // optional: where the pilot / video receiver stands
   "environment": {
-    "sky": "clear",                      // clear | overcast | dusk
+    "sky": "clear",                      // clear | overcast | dusk | night
     "sun": { "azimuthDeg": 160, "elevationDeg": 42 },   // azimuth clockwise from north
     "fog": { "color": "#c9d3dc", "density": 0.003 },   // optional, exponential-squared, 1/m
     "windScale": 1                       // optional: multiplies the configured wind (indoor: 0.1-0.3)
@@ -89,6 +89,7 @@ public/maps/community/<id>/
   "trees": [ … ],
   "wakeZones": [ … ],
   "indoor": [ … ],
+  "lights": [ … ],
   "geometry": [ … ]
 }
 ```
@@ -209,6 +210,21 @@ an updraft at the windward roof edge. `intensity` 1 is a typical building.
 `indoor` boxes (`min` / `max` corners) are enclosed spaces in an outdoor map: the wind inside
 is multiplied by `windScale` (default 0.1). For a fully indoor map use `environment.windScale`.
 
+### lights
+
+```json
+{ "pos": [-9.4, -3.2, 5.25], "color": "#fff1dc", "intensity": 18, "range": 18 }
+```
+
+Up to 8 point lights: ceiling fixtures in a hall, floodlight towers round a night course. `pos`
+is where the light sits (put a lit `led` box there so you can see the fixture). `color` defaults
+to white. The light falls off with the square of the distance: at `d` metres it lights a surface
+about as much as `intensity / d²`, where the sun is about 4.5. So a ceiling fixture 4.5 m above
+the floor wants `intensity` 15-20, a floodlight on a 14 m tower lighting a field 40 m away a few
+hundred. `range` cuts the light off (m). With `"sky": "night"` the sky is dark, the sun direction
+is the moon, and the course is lit by these lights and the self-lit `led` / `screen` boxes and
+gate LEDs.
+
 ### geometry: external sources
 
 ```json
@@ -267,7 +283,7 @@ the numbers.
 | any single file | 8 MiB |
 | `size` (half-extent) | 2000 m |
 | primitives (including the 3-8 parts each gate generates) | 5 000 |
-| gates / trees / wake zones / indoor boxes / geometry entries | 64 / 3 000 / 32 / 32 / 16 |
+| gates / trees / wake zones / indoor boxes / lights / geometry entries | 64 / 3 000 / 32 / 32 / 8 / 16 |
 | convex brushes (Quake / Doom geometry + mesh collision) | 20 000 |
 | glTF triangles drawn, all meshes | 150 000 |
 | glTF triangles with `collision: "mesh"` | 20 000 |
