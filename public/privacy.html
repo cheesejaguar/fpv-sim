@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Privacy — FPV Sim</title>
-    <meta name="description" content="What data FPV Sim handles: what stays in your browser, what the multiplayer relay, the lap leaderboard and the web host see, and how to delete it." />
+    <meta name="description" content="What data FPV Sim handles: what stays in your browser, what the multiplayer relay, the lap leaderboard and its replays, and the web host see, and how to delete it." />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
     <meta name="theme-color" content="#0f0f23" />
@@ -37,7 +37,7 @@
     <main>
       <a class="back" href="/">&larr; Back to FPV Sim</a>
       <h1>Privacy</h1>
-      <p class="sub">Short version: no accounts, no cookies, no analytics, no ads. Your settings stay in your browser. Multiplayer sends only what other pilots need to see you fly. The lap leaderboard stores only laps you choose to post, under three initials.</p>
+      <p class="sub">Short version: no accounts, no cookies, no analytics, no ads. Your settings stay in your browser. Multiplayer sends only what other pilots need to see you fly. The lap leaderboard stores only laps you choose to post, under three initials, each with a public replay of the lap.</p>
 
       <section>
         <h2>In your browser</h2>
@@ -45,7 +45,8 @@
         <ul>
           <li><b>Local storage</b> (keys starting with <code>fpv-</code>): drone build, simulation and video settings, new-game choices, controller profiles and rumble, pilot callsign and colour, a custom multiplayer server address, and which guide chapters you finished. Also your personal best laps, the initials you last entered, the ids of the leaderboard entries you posted, and a random leaderboard token (see below).</li>
           <li><b>IndexedDB</b> (database <code>fpv-sim</code>): the Betaflight flight controller's EEPROM, so your CLI changes and tune survive a reload.</li>
-          <li>Maps you load from disk and blackbox recordings stay in memory. They are gone when you close the tab, unless you download them yourself.</li>
+          <li><b>IndexedDB</b> (database <code>fpv-sim-replays</code>): the replay of your personal best on each leaderboard track and drone class (see below), so you can watch it later and post it.</li>
+          <li>Maps you load from disk, blackbox recordings and the replay of your last lap stay in memory. They are gone when you close the tab, unless you download them yourself.</li>
         </ul>
       </section>
 
@@ -69,9 +70,10 @@
           <li>your three initials (letters A to Z only);</li>
           <li>the lap time and the time at each gate, the map (and course), and your drone class with a short summary of the build (a preset's name, or frame size, motor and battery cells);</li>
           <li>a random token this browser made up for the leaderboard. It is not linked to your callsign or anything else, and keeps your entries to one per board.</li>
+          <li>the lap's <b>replay</b>: your quad's flight path and orientation through the lap, many times a second; your stick and throttle inputs; motor speeds, armed state and flight mode; battery voltage and current; the flight controller's on-screen display (OSD) as you saw it; and your drone build (its parts and settings, such as the camera angle). It also says which version of FPV Sim recorded it and when.</li>
         </ul>
-        <p>The relay stores, per entry: the initials, lap and gate times, drone class and summary, map, the date, and two salted hashes: one of your IP address, one of the random token. The hashes cannot be turned back into the address or token. They are used only to keep one entry per pilot per board and to limit how many entries one network can post, and they are never shown. Anyone can see an entry's initials, lap time, drone summary and date.</p>
-        <p>An entry stays until a faster lap of yours replaces it, it drops out of the board's top 100, or it is removed on request. To have an entry removed, <a href="https://github.com/cheesejaguar/fpv-sim/issues" rel="noopener">open an issue</a> with the map, drone class, initials, lap time and date. You don't need to say anything else about yourself.</p>
+        <p>The relay checks that the replay flies the lap it came with, then stores, per entry: the initials, lap and gate times, drone class and summary, map, the date, the replay, and two salted hashes: one of your IP address, one of the random token. The hashes cannot be turned back into the address or token. They are used only to keep one entry per pilot per board and to limit how many entries one network can post, and they are never shown. Anyone can see an entry's initials, lap time, drone summary and date, and <b>anyone can watch and download its replay</b>, including your flight path and stick inputs. The OSD in a replay shows whatever you set it to show, such as a craft name or pilot name you entered in Betaflight.</p>
+        <p>An entry and its replay stay until a faster lap of yours replaces them, the entry drops out of the board's top 100, or it is removed on request. To have an entry removed, <a href="https://github.com/cheesejaguar/fpv-sim/issues" rel="noopener">open an issue</a> with the map, drone class, initials, lap time and date. You don't need to say anything else about yourself. A removed replay can still be served from caches (the edge and browsers) for up to a day, and anyone who already downloaded it keeps their copy.</p>
       </section>
 
       <section>
@@ -81,7 +83,7 @@
 
       <section>
         <h2>Deleting your data</h2>
-        <p>Everything FPV Sim saves is in your browser, so you delete it there, except leaderboard entries you posted (see above for removing those). If the game ever fails to start, its error page has a <b>Reset saved settings</b> button that clears all of it. Otherwise use your browser's site data controls:</p>
+        <p>Everything FPV Sim saves is in your browser, so you delete it there, except leaderboard entries and their replays you posted (see above for removing those). If the game ever fails to start, its error page has a <b>Reset saved settings</b> button that clears all of it. Otherwise use your browser's site data controls:</p>
         <ul>
           <li>Chrome / Edge: click the icon left of the address bar, <b>Site settings</b>, then <b>Delete data</b>.</li>
           <li>Firefox: click the padlock, then <b>Clear cookies and site data</b>.</li>

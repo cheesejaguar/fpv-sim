@@ -400,6 +400,29 @@ describe.skipIf(!sqlite)('Worker /leaderboard', () => {
     expect((await (await get(e.env, 'map=quarry-loop&class=all')).json()).entries[0]).toMatchObject({ id, replay: true });
   });
 
+  test('the edge cache: a replay is served from it, and dropped when a faster lap replaces its entry', async () => {
+    const store = new Map<string, Response>();
+    vi.stubGlobal('caches', { default: {
+      match: async (k: Request) => store.get(k.url)?.clone(),
+      put: async (k: Request, r: Response) => { store.set(k.url, r); },
+      delete: async (k: Request) => store.delete(k.url),
+    } });
+    try {
+      const e = env();
+      const first = await (await post(e.env, (await flown()).body)).json();
+      const read = () => mod.default.fetch(new Request(`https://relay.example/leaderboard/${first.id}/replay`, { headers: { Origin: ORIGIN } }), e.env);
+      expect((await read()).status).toBe(200);
+      const calls = e.calls();
+      expect((await read()).status).toBe(200);
+      expect(e.calls()).toBe(calls); // the second read never reached the object
+      const l = await syntheticLap('quarry-loop', 'freestyle5', { speed: 1.1 * (await syntheticLap('quarry-loop')).speed });
+      const better = await (await post(e.env, packLap(JSON.stringify(lap({ map: 'quarry-loop', lapMs: l.lapMs, splitsMs: l.splitsMs })), l.replay))).json();
+      expect(better).toMatchObject({ stored: true, rank: 1 });
+      expect(better.removed).toBeUndefined(); // (for the Worker only)
+      expect((await read()).status).toBe(404);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   test('DELETE needs the admin token', async () => {
     const e = env({ ADMIN_TOKEN: 'sekrit' });
     const { id } = await (await post(e.env, (await flown({ initials: 'DEL' })).body)).json();

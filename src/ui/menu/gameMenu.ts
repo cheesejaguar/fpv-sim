@@ -824,7 +824,7 @@ export class GameMenu {
       wait.remove();
       if (!this.player) this.watching = false;
     }
-    if (fail) await confirmDialog({ title: 'Can’t play this replay', body: fail, ok: 'OK', cancel: 'Close' });
+    if (fail) await confirmDialog({ title: 'Can’t play this replay', body: fail.charAt(0).toUpperCase() + fail.slice(1), ok: 'OK', cancel: 'Close' });
   }
 
   // -------------------------------------------------------------------------------------------

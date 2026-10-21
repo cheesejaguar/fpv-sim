@@ -6,6 +6,25 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Lap replays
+- **Every timed lap is recorded**, from just before gate 0 to just after the finish: the flight
+  path and attitude, motor speeds, the sticks Betaflight received, armed state and flight mode,
+  battery, every gate's time and Betaflight's OSD, in a compact `.fpvreplay` file (about
+  40 KB for a one-minute lap). Your personal best's replay on each board is kept in the browser.
+- **Watch** any leaderboard lap posted with a replay, your own best (also offline, posted or not),
+  or the last lap you flew (pause menu → **Replay last lap**). Replays can be downloaded and
+  opened from a file.
+- **A full replay player**: play / pause, a timeline with the gate splits to scrub, 0.1× to 4×,
+  frame step, restart and loop; FPV through the real camera (fisheye, rolling shutter, the
+  recorded OSD, optional video-link breakup), chase, line of sight and an orbit camera; stick,
+  speed / altitude, split and battery overlays; motor sound at 1×. Keyboard and controller
+  shortcuts are shown in the player. The live session waits paused behind it and comes back as it
+  was.
+- **Laps are posted with their replay**, and the relay checks that the replay really flies the
+  lap: each gate's opening passed in order at its split time, no jumps, and speed and acceleration
+  the drone class can manage. A faster lap now replaces your entry with a new one. Entries posted
+  before replays show "No replay". The privacy notice says what a replay contains: it is public.
+
 ### Flight feel (from a pilot flying a tiny whoop with an ExpressLRS radio)
 - **No more phantom roll in Angle mode.** Whoops fell over onto one duct on the pad, and the
   accelerometer was calibrated on that 13° tilt, so Angle mode held it as "level" and drifted.

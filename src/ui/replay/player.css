@@ -65,8 +65,13 @@
 .rp-segbtn[aria-pressed='true'] { background: var(--gm-primary); color: #fff; }
 .rp-hints { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
 .rp-hints .gm-hint { font-size: 13px; }
+/* playing untouched: the bars fade out (a move, key or button brings them back) */
+.rp-top, .rp-bar { transition: opacity 300ms var(--gm-ease); }
+.rp.idle .rp-top, .rp.idle .rp-bar { opacity: 0; pointer-events: none; }
+.rp.idle .rp-stage { cursor: none; }
 .rp-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
+@media (prefers-reduced-motion: reduce) { .rp-top, .rp-bar { transition: none; } }
 @media (max-width: 900px) {
   .rp-cards { bottom: 190px; max-width: calc(100% - 24px); }
   .rp-splits { display: none; }

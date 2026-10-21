@@ -207,7 +207,17 @@ async function leaderboard(req: Request, env: Env, url: URL, ctx?: ExecutionCont
   const r = await boardStub(env).fetch('https://board/submit', { method: 'POST', body: packBoard({ raw, owner, net }, lap.replay) });
   const track = trackKey(p.sub.map, p.sub.course);
   for (const k of boardCache.keys()) if (k.startsWith(`${track}|`)) boardCache.delete(k);
-  return reply(await r.text(), r.status);
+  // entries this lap replaced or pushed off the board: their replays leave this data centre's cache now
+  let text = await r.text();
+  try {
+    const j = JSON.parse(text);
+    if (Array.isArray(j?.removed)) {
+      const cache = edgeCache();
+      if (cache) await Promise.all(j.removed.map((id: number) => cache.delete(replayKey(id)).catch(() => false)));
+      delete j.removed; text = JSON.stringify(j);
+    }
+  } catch { /* not JSON: pass it on */ }
+  return reply(text, r.status);
 }
 
 export default {
@@ -527,6 +537,7 @@ export class Leaderboard implements DurableObject {
     if (replay) this.sql.exec('INSERT OR REPLACE INTO replays (lap_id, data, bytes) VALUES (?, ?, ?)', id, replay.slice().buffer, replay.length);
     for (const e of d.evict) this.remove(e);
     const list = ranked(this.track(s.map, s.course), s.cls);
-    return out({ ok: true, stored: true, id, rank: rankOf(list, id), entries: list.map(toPublic) });
+    // removed: for the Worker (it drops their replays from the edge cache), never sent to clients
+    return out({ ok: true, stored: true, id, rank: rankOf(list, id), entries: list.map(toPublic), removed: [...(d.update !== null ? [d.update] : []), ...d.evict] });
   }
 }

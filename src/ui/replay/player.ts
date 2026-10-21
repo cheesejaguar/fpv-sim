@@ -49,6 +49,9 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
   const orbit = { az: Math.PI * 0.75, el: 0.35, dist: 2.4 };
   let link = prefs.link ?? ctx.view.linkEffects, muted = false, closed = false, lastNow = 0;
   let exit = () => {};
+  // the bars fade out while it plays untouched (they would cover the OSD's top and bottom rows)
+  let lastActive = performance.now(), idle = false;
+  const wake = () => { lastActive = performance.now(); };
 
   // ---- DOM ----------------------------------------------------------------------------------
   const btn = (key: string, label: string, ico: Parameters<typeof icon>[0] | null, onclick: () => void, cls = 'gm-btn rp-btn') =>
@@ -132,11 +135,12 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
   const allOverlays = () => { const on = !OVERLAYS.some(([k]) => prefs.show[k]); for (const [k] of OVERLAYS) prefs.show[k] = on; drawToggles(); layoutCards(); };
   const overlay: NavOverlay = {
     target: root, el: root, onClose: null,
-    move(dir: Dir) { if (dir === 'left') seekBy(-1); else if (dir === 'right') seekBy(1); else clock.step(dir === 'up' ? 1 : -1); },
-    activate() { clock.toggle(); },
+    move(dir: Dir) { wake(); if (dir === 'left') seekBy(-1); else if (dir === 'right') seekBy(1); else clock.step(dir === 'up' ? 1 : -1); },
+    activate() { wake(); clock.toggle(); },
     back() { close(); },
-    button(i: number) { if (i === 2) setCam(CAMS[(CAMS.indexOf(prefs.cam) + 1) % CAMS.length]); else if (i === 3) allOverlays(); else if (i === 4) clock.slower(); else if (i === 5) clock.faster(); },
+    button(i: number) { wake(); if (i === 2) setCam(CAMS[(CAMS.indexOf(prefs.cam) + 1) % CAMS.length]); else if (i === 3) allOverlays(); else if (i === 4) clock.slower(); else if (i === 5) clock.faster(); },
     key(e: KeyboardEvent) {
+      wake();
       if (e.ctrlKey || e.metaKey || e.altKey) return false;
       const k = e.key;
       if (k === ' ' || k === 'k' || k === 'K') clock.toggle();
@@ -157,6 +161,8 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
     },
     close() { close(); },
   };
+
+  for (const ev of ['pointermove', 'pointerdown', 'wheel'] as const) root.addEventListener(ev, wake, { passive: true });
 
   // timeline: click / drag to scrub (paused while dragging)
   let scrub: { id: number; was: boolean } | null = null;
@@ -247,6 +253,8 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
     }
     const pad = ui.usingPad();
     if (pad !== shown.pad) { shown.pad = pad; drawHints(pad); }
+    const quiet = clock.playing && !scrub && !drag && performance.now() - lastActive > 2500;
+    if (quiet !== idle) { idle = quiet; root.classList.toggle('idle', idle); }
   };
 
   // ---- the view the frame loop renders -------------------------------------------------------

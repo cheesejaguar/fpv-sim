@@ -59,8 +59,8 @@ export interface ReplayHeader {
 /** Columns the sim records (units: m, unit quaternion, rpm, RC µs, V, A, mAh, 0/1, flag bits, 0..1). */
 export const COLUMNS: readonly ColumnDef[] = Object.freeze([
   { id: 'px', q: 0.001, d: 2 }, { id: 'py', q: 0.001, d: 2 }, { id: 'pz', q: 0.001, d: 2 },
-  { id: 'qw', q: 1 / 16384, d: 2 }, { id: 'qx', q: 1 / 16384, d: 2 }, { id: 'qy', q: 1 / 16384, d: 2 }, { id: 'qz', q: 1 / 16384, d: 2 },
-  { id: 'rpm0', q: 10, d: 1 }, { id: 'rpm1', q: 10, d: 1 }, { id: 'rpm2', q: 10, d: 1 }, { id: 'rpm3', q: 10, d: 1 },
+  { id: 'qw', q: 1 / 8192, d: 2 }, { id: 'qx', q: 1 / 8192, d: 2 }, { id: 'qy', q: 1 / 8192, d: 2 }, { id: 'qz', q: 1 / 8192, d: 2 },
+  { id: 'rpm0', q: 25, d: 1 }, { id: 'rpm1', q: 25, d: 1 }, { id: 'rpm2', q: 25, d: 1 }, { id: 'rpm3', q: 25, d: 1 },
   { id: 'rc0', q: 1, d: 1 }, { id: 'rc1', q: 1, d: 1 }, { id: 'rc2', q: 1, d: 1 }, { id: 'rc3', q: 1, d: 1 },
   { id: 'vbus', q: 0.01, d: 1 }, { id: 'ibus', q: 0.1, d: 1 }, { id: 'mah', q: 0.1, d: 1 },
   { id: 'armed', q: 1, d: 1 }, { id: 'modes', q: 1, d: 1 }, { id: 'vrs', q: 0.01, d: 1 },
