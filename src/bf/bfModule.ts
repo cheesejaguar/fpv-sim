@@ -48,13 +48,15 @@ export class Betaflight {
   static async load(url = '/bf/betaflight.mjs'): Promise<Betaflight> {
     // Load the Emscripten ES module through a Blob URL: the file lives in /public (served as-is),
     // which Vite refuses to import directly in dev. wasm is located via locateFile below.
-    const res = await fetch(url);
+    // versioned URLs: a new firmware build always reaches the browser (see vite.config.ts)
+    const v = typeof __FW_VERSION__ === 'string' ? `?v=${__FW_VERSION__}` : '';
+    const res = await fetch(url + v);
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     const blobUrl = URL.createObjectURL(new Blob([await res.text()], { type: 'text/javascript' }));
     const mod = await import(/* @vite-ignore */ blobUrl);
     URL.revokeObjectURL(blobUrl);
     const factory = mod.default ?? mod.createBetaflight ?? mod;
-    const m: EmModule = await factory({ locateFile: (p: string) => new URL(url.replace(/[^/]+$/, '') + p, self.location.origin).href, print: () => {}, printErr: () => {} });
+    const m: EmModule = await factory({ locateFile: (p: string) => new URL(url.replace(/[^/]+$/, '') + p + v, self.location.origin).href, print: () => {}, printErr: () => {} });
     const fn = (m as any)._bf_version;
     let version = 'Betaflight 4.5.5 (WASM)';
     if (typeof fn === 'function') {

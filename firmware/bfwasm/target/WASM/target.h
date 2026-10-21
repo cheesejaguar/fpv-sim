@@ -132,6 +132,8 @@
 #undef USE_RX_PWM
 #undef USE_SERIALRX
 #undef USE_SERIALRX_CRSF
+// LQ / RSSI dBm are reported by the simulator (bf_set_link_stats); keep Betaflight's RSSI dBm support
+#define USE_SIM_RX_LINK_STATS
 #undef USE_SERIALRX_GHST
 #undef USE_SERIALRX_IBUS
 #undef USE_SERIALRX_SBUS

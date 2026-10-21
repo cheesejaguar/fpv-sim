@@ -21,6 +21,7 @@ export function osdLayout(video: { osd: 'sd' | 'hd'; fps: number }): Record<stri
     osd_throttle_pos: osdPos(1, 1),
     osd_tim_2_pos: osdPos(r - 6, 1),
     osd_link_quality_pos: osdPos(1, 2),
+    osd_rssi_dbm_pos: osdPos(1, 3),      // uplink RSSI in dBm, under LQ (as on an ExpressLRS quad)
     osd_vbat_pos: osdPos(1, H - 2),
     osd_current_pos: osdPos(1, H - 3),
     osd_mah_drawn_pos: osdPos(r - 6, H - 3),

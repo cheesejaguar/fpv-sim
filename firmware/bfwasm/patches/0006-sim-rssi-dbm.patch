@@ -1,0 +1,14 @@
+diff --git a/src/main/target/common_post.h b/src/main/target/common_post.h
+--- a/src/main/target/common_post.h
++++ b/src/main/target/common_post.h
+@@ -254,7 +254,9 @@
+ #undef USE_CRSF_V3
+ #endif
+ 
+-#if !defined(USE_RX_EXPRESSLRS) && !defined(USE_SERIALRX_CRSF)
++// fpv-sim: the simulator reports CRSF-style link statistics (LQ, RSSI dBm) without a serial
++// receiver, so keep the RSSI dBm support when the target asks for it.
++#if !defined(USE_RX_EXPRESSLRS) && !defined(USE_SERIALRX_CRSF) && !defined(USE_SIM_RX_LINK_STATS)
+ #undef USE_RX_RSSI_DBM
+ #endif
+ 

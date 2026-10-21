@@ -21,7 +21,7 @@ import { Wind } from '../sim/wind';
 import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, OSD_MAX_COLS, OSD_MAX_ROWS, R, REC, RING_DT, RING_N, Shared, SimSettings, Telemetry, ToWorker } from './shared';
 
 /** Bump when defaultCli() changes so existing users get the new baseline. */
-const DEFAULTS_VERSION = 3;
+const DEFAULTS_VERSION = 4; // 4: RSSI dBm OSD element
 
 const post = (m: FromWorker) => (self as unknown as Worker).postMessage(m);
 
