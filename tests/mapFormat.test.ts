@@ -191,7 +191,7 @@ describe('example community map: quarry-loop', async () => {
     return path;
   };
   test('a quad flies through the arch untouched', () => {
-    const p = flight({ x: 0, y: 8, z: 2.4 }, Math.PI / 2, 15);
+    const p = flight({ x: 0, y: 8, z: 2.4 }, Math.PI / 2, 18); // (coasting now loses speed to real rotor drag)
     expect(p.at(-1)!.y).toBeGreaterThan(20); // passed through (falling, but clear of the walls)
     expect(Math.min(...p.filter((q) => Math.abs(q.y - 18) < 1.5).map((q) => Math.abs(q.x)))).toBeLessThan(0.5);
   });

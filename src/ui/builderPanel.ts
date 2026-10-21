@@ -107,7 +107,7 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
           ),
         ),
         el('div', { class: 'col' },
-          section('Motor', ov('kv', 'KV', 800, 4500, 10, m.kv, 'rpm/V'), ov('rmMohm', 'Winding resistance', 10, 400, 1, m.rmMohm, 'mΩ'), ov('i0A', 'No-load current @10V', 0.2, 3, 0.05, m.i0A, 'A'), ov('escCurrentLimitA', 'ESC current limit', 10, 90, 1, Math.min(esc.burstA, m.maxCurrentA * 1.25), 'A')),
+          section('Motor', ov('kv', 'KV', 800, 4500, 10, m.kv, 'rpm/V'), ov('rmMohm', 'Winding resistance', 10, 400, 1, m.rmMohm, 'mΩ'), ov('i0A', 'No-load current @10V', 0.2, 3, 0.05, m.i0A, 'A'), ov('escCurrentLimitA', 'ESC current limit (0 = off, as ESCs ship)', 0, 90, 1, 0, 'A')),
           section('Propeller', ov('propPitchIn', 'Pitch', 2, 6, 0.05, pr.pitchIn, 'in', 'Re-solves the BEMT tables'), ov('propThrustScale', 'Thrust coefficient ×', 0.6, 1.4, 0.01, 1), ov('propTorqueScale', 'Torque coefficient ×', 0.6, 1.4, 0.01, 1), ov('propImbalance', 'Static imbalance', 0, 5e-6, 1e-8, 2e-7, 'kg·m', 'Bent or unbalanced props feed vibration into the gyro')),
           section('Battery', ov('cells', 'Cells (S)', 1, 8, 1, bt.cells, 'S'), ov('capacityMah', 'Capacity', 300, 6000, 10, bt.capacityMah, 'mAh'), ov('irPerCellMohm', 'IR per cell', 1, 30, 0.1, bt.irPerCellMohm, 'mΩ')),
           section('Airframe', ov('massScale', 'Mass ×', 0.7, 1.5, 0.01, 1), ov('inertiaScale', 'Inertia ×', 0.6, 1.6, 0.01, 1), ov('cdAScale', 'Drag area ×', 0.5, 2, 0.01, 1), ov('frameFreqHz', 'Frame resonance', 60, 400, 1, 160, 'Hz'), ov('vibrationScale', 'Vibration coupling ×', 0, 4, 0.05, 1), ov('auxPowerW', 'Aux power (VTX/FC/cam)', 1, 20, 0.5, 6, 'W')),
