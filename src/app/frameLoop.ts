@@ -1,5 +1,7 @@
 // The render loop: emulated glass-to-glass latency and camera cadence, the FPV capture (cubemap +
 // fisheye + link artefacts + OSD), the title-screen orbit, spectator views, multiplayer poses, audio.
+// The quad's state comes from the worker's ring, or from a lap replay while one is watched
+// (ctx.replay: no latency, its own clock, an orbit camera besides the pilot's views).
 import * as THREE from 'three';
 import { pilotPos, spawnGroundZ } from '../maps/world';
 import { enuToThree, quatEnuToThree } from '../render/coords';
@@ -11,6 +13,7 @@ import { TAG_LAYER } from '../render/remoteQuads';
 import { newestTime, R, REC, sampleRing } from '../worker/shared';
 import type { AppCtx } from './context';
 import { dvrState } from './dvr';
+import { PRE_S } from './replayRecorder';
 
 export interface FrameLoopDeps {
   /** true while the title screen wants the orbiting quad behind it */
@@ -50,9 +53,14 @@ function losMarker(): THREE.Sprite {
 }
 
 export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
-  const { renderer, sh, rec, pilot } = ctx;
+  const { renderer, sh, pilot } = ctx;
   const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), lensPos = new THREE.Vector3(), lensQ = new THREE.Quaternion();
   const mpRec = new Float64Array(REC), motionRec = new Float64Array(REC);
+  // the state being drawn: the ring (into ctx.rec, which the HUD shares), or a replay (its own record)
+  const replayRec = new Float64Array(REC);
+  const ringState = (t: number, o: Float64Array) => sampleRing(sh, t, o);
+  const replayState = (t: number, o: Float64Array) => ctx.replay?.sample(t, o) ?? false;
+  let rec = ctx.rec, stateAt = ringState, lastSeq = -1, wasReplay = false;
   const display = new DisplayLatency();
   const gog = new GoggleOverlay();
   let lastCap = -1, lastCapWall = performance.now(), jitter = 0, lastNow = performance.now();
@@ -79,18 +87,18 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   // the shadow map is a full scene pass: 30 Hz is plenty, in every view
   const shadowsDue = (now: number) => { if (now - lastShadowAt < 33) return false; lastShadowAt = now; return true; };
   // motor sound goes quiet in the menus and while the tab is hidden (rAF stops then, so listen too)
-  const setMuted = () => ctx.audio.setMuted(ctx.menuOpen || document.hidden);
+  const setMuted = () => ctx.audio.setMuted(ctx.replay ? !ctx.replay.sound || document.hidden : ctx.menuOpen || document.hidden);
   document.addEventListener('visibilitychange', setMuted);
 
   const poseAt = (t: number): boolean => {
-    if (!sampleRing(sh, t, rec)) return false;
+    if (!stateAt(t, rec)) return false;
     enuToThree(rec[R.px], rec[R.py], rec[R.pz], ctx.drone.root.position);
     quatEnuToThree(rec[R.qw], rec[R.qx], rec[R.qy], rec[R.qz], ctx.drone.root.quaternion);
     return true;
   };
   /** Lens orientation at sim time t (three world): ring pose (extrapolated with the body rates past the newest sample) × camera mount. */
   const lensAt = (t: number, head: number, q: THREE.Quaternion) => {
-    if (!sampleRing(sh, Math.min(t, head), motionRec)) { q.copy(lensQ); return; }
+    if (!stateAt(Math.min(t, head), motionRec)) { q.copy(lensQ); return; }
     quatEnuToThree(motionRec[R.qw], motionRec[R.qx], motionRec[R.qy], motionRec[R.qz], q);
     if (t > head) {
       // little or no emulated latency: the end of the frame lies past the newest physics step
@@ -130,37 +138,46 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
 
   const animate = (now: number) => {
     requestAnimationFrame(animate);
+    ctx.replay?.frame(now);
+    const rp = ctx.replay;
     const { view, build, link, fpv, osd, mp } = ctx, sceneB = ctx.scene, drone = ctx.drone;
     const dtFrame = Math.min(0.1, Math.max(0, (now - lastNow) / 1000)); lastNow = now;
     const backdrop = deps.backdrop();
+    rec = rp ? replayRec : ctx.rec; stateAt = rp ? replayState : ringState;
+    // a replay opened / closed, or playback jumped: the camera's frames start over
+    if (!!rp !== wasReplay || (rp && rp.seq !== lastSeq)) { wasReplay = !!rp; lastSeq = rp?.seq ?? -1; lastCap = -Infinity; presentDue = true; }
     // multiplayer: publish our newest pose, place the other pilots before anything is rendered
     if (mp.connected && sampleRing(sh, newestTime(sh), mpRec)) {
       const rr = mpRec;
       mp.sendPose(now, [rr[R.px], rr[R.py], rr[R.pz]], [rr[R.qw], rr[R.qx], rr[R.qy], rr[R.qz]],
         [rr[R.rpm0], rr[R.rpm1], rr[R.rpm2], rr[R.rpm3]], rr[R.armed] > 0.5, ctx.menuOpen); // paused: sent at a trickle, shown parked
     }
-    ctx.remotes.update(sceneB.scene, mp, now);
-    // flags, trees and the windsock move with the configured wind
-    sceneB.setWind(ctx.sim.wind.speed, ctx.sim.wind.direction, now / 1000);
+    if (rp) ctx.remotes.hide(); else ctx.remotes.update(sceneB.scene, mp, now);
+    // flags, trees and the windsock move with the configured wind (a replay's: the wind it was flown in)
+    const wind = rp ? rp.wind : ctx.sim.wind;
+    sceneB.setWind(wind.speed, wind.direction, now / 1000);
     // chipped / snapped blades show on the model (and on the FPV view of the quad's own props)
-    if (ctx.tel) drone.setDamage(ctx.tel.rotorDamage);
+    if (ctx.tel && !rp) drone.setDamage(ctx.tel.rotorDamage);
     if (fpv.cubeSize !== (view.cubeSize || 768)) fpv.setCubeSize(view.cubeSize || 768); // Settings → cube map resolution
     const v = build.info.components.video;
-    const head = newestTime(sh);
+    const head = rp ? rp.time : newestTime(sh);
     pilotPos(ctx.map, pilot);
     // ---- emulated glass-to-glass latency + camera frame cadence ----
-    const baseLat = (view.latencyOverrideMs || v.latencyMs) + link.state.latencyExtraMs;
+    // (a replay has none: it shows what the camera saw, when it saw it)
+    const baseLat = rp ? 0 : (view.latencyOverrideMs || v.latencyMs) + link.state.latencyExtraMs;
     const comp = display.comp(now, view.displayCompAuto, view.displayCompMs);
-    fpv.effectiveLatencyMs = Math.max(0, baseLat - comp);
-    const lat = Math.max(0, baseLat + jitter - comp) / 1000;
+    fpv.effectiveLatencyMs = rp ? 0 : Math.max(0, baseLat - comp);
+    const lat = rp ? 0 : Math.max(0, baseLat + jitter - comp) / 1000;
     const period = 1 / v.fps;
-    const tCap = Math.floor((head - lat) / period) * period;
-    sceneB.setGateHighlight(ctx.race.nextGate, view.highlightGate, now / 1000);
-    if (view.view !== 'fpv' || backdrop) sceneB.hemi.intensity = sceneB.hemiBase; // spectators: true lighting
-    const mode = backdrop ? 'title' : view.view;
+    // a replay in slow motion still gets a new picture every camera frame of wall time; paused, one at the playhead
+    const per = rp ? (rp.playing ? period * Math.min(1, rp.speed) : 0) : period;
+    const tCap = per > 0 ? Math.floor((head - lat) / per) * per : head;
+    sceneB.setGateHighlight(rp ? rp.nextGate : ctx.race.nextGate, view.highlightGate, now / 1000);
+    const mode = rp ? rp.cam : backdrop ? 'title' : view.view;
+    if (mode !== 'fpv') sceneB.hemi.intensity = sceneB.hemiBase; // spectators: true lighting
     if (mode !== lastMode) { presentDue = true; lastMode = mode; }
-    applyPixelRatio(mode === 'chase' || mode === 'los' ? Math.min(devicePixelRatio, 2) : 1);
-    if (backdrop) {
+    applyPixelRatio(mode === 'chase' || mode === 'los' || mode === 'orbit' ? Math.min(devicePixelRatio, 2) : 1);
+    if (mode === 'title') {
       if (poseAt(head)) {
         const p = drone.root.position;
         const r = Math.max(0.28, build.info.components.frame.wheelbaseMm / 225 * 0.85);
@@ -173,7 +190,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         renderer.setRenderTarget(null);
         renderer.render(sceneB.scene, orbitCam);
       }
-    } else if (view.view === 'fpv') {
+    } else if (mode === 'fpv') {
       // (frames only move forward: per-frame jitter must never re-capture an older pose)
       // a frozen digital decoder shows its last frame, but the link itself keeps being evaluated
       // every camera frame, or it could never recover (fly back / respawn)
@@ -197,9 +214,10 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           sceneB.hemi.intensity = sceneB.hemiBase * (0.04 + 0.96 * skyOpen);
           spinProps(rpmNow, dtw, fpv.shutter);
           // the camera's orientation through readout + exposure, and the props shaking its mount
-          const hd = newestTime(sh);
+          // (a replay has the whole recording: no extrapolation past the newest sample)
+          const hd = rp ? Infinity : newestTime(sh);
           fpv.setMotion((t, q) => lensAt(tCap + t, hd, q));
-          fpv.setVibration(mountVibration(rpmNow, ctx.tel?.rotorDamage, build.info.hoverRpm), tCap);
+          fpv.setVibration(mountVibration(rpmNow, rp ? undefined : ctx.tel?.rotorDamage, build.info.hoverRpm), tCap);
           // shadow map at <= 30 Hz, rendered while the whole quad is still visible (the capture
           // hides it for the world pass, so its own shadow would be missing otherwise)
           if (shadowsDue(now)) fpv.renderShadows(sceneB.scene);
@@ -210,16 +228,16 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         }
         // link budget at capture time
         const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
-        if (view.linkEffects) link.update(v, ctx.world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]));
+        if (rp ? rp.link : view.linkEffects) link.update(v, ctx.world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]));
         else link.clean(v);
       }
       // 1S brownout: on a punch a whoop's pack sags below what the camera / VTX regulators need
       // (~2.9-3.0 V), and the video drops out for about a second while they restart
-      if (build.info.components.battery.cells === 1 && rec[R.vbus] > 0.5 && rec[R.vbus] < 2.95 && now > brownoutUntil + 400) brownoutUntil = now + 800 + Math.random() * 600;
+      if ((rp ? rp.link : true) && build.info.components.battery.cells === 1 && rec[R.vbus] > 0.5 && rec[R.vbus] < 2.95 && now > brownoutUntil + 400) brownoutUntil = now + 800 + Math.random() * 600;
       if (now < brownoutUntil) { if (v.kind === 'analog') link.state.cnr = -8; else link.state.lost = 1; }
       // digital HD OSD is sent over the video link: it freezes with the picture
       osd.setHd(v.osd === 'hd');
-      const osdChanged = !(v.kind === 'digital' && (link.state.freeze || link.state.lost)) && osd.update(sh, now);
+      const osdChanged = !(v.kind === 'digital' && (link.state.freeze || link.state.lost)) && osd.update(rp ? rp.osd : sh, now);
       // the goggles' own overlay (signal, bitrate, latency, DVR): Settings can switch it off
       const gogOn = view.goggleOverlay;
       const gogChanged = gogOn && gog.update({
@@ -239,7 +257,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         spinProps([rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]], dtFrame, SHUTTER_MAX); // ~ the eye's integration time
         updateSky(dtFrame);
         const p = drone.root.position;
-        if (view.view === 'chase') {
+        if (mode === 'chase') {
           // chase distance scales with the quad (1.6 m behind a 5", ~0.5 m behind a 65 mm whoop)
           const cs = Math.max(0.3, Math.min(1.3, build.info.components.frame.wheelbaseMm / 225));
           const back = tmpV.set(-1.6 * cs, 0.6 * cs, 0).applyQuaternion(tmpQ.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOf(drone.root.quaternion)));
@@ -247,6 +265,12 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           chaseCam.position.lerp(back.add(p), 1 - Math.exp(-dtFrame / 0.1026));
           chaseCam.lookAt(p);
           if (chaseCam.fov !== 70) { chaseCam.fov = 70; chaseCam.updateProjectionMatrix(); }
+        } else if (mode === 'orbit' && rp) {
+          // replay: a camera on a sphere around the quad (the player turns and zooms it)
+          const o = rp.orbit, ce = Math.cos(o.el);
+          chaseCam.position.set(p.x + o.dist * ce * Math.sin(o.az), p.y + o.dist * Math.sin(o.el), p.z + o.dist * ce * Math.cos(o.az));
+          chaseCam.lookAt(p);
+          if (chaseCam.fov !== 60) { chaseCam.fov = 60; chaseCam.updateProjectionMatrix(); }
         } else {
           enuToThree(pilot.x, pilot.y, pilot.z, chaseCam.position);
           chaseCam.lookAt(p);
@@ -272,23 +296,26 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
       }
     }
     ctx.blackbox.pump(sh, ctx.input.channels);
+    ctx.replays.pump(sh, ctx.race.lapStart >= 0 ? ctx.race.lapStart - PRE_S : null, ctx.tel?.modeFlags ?? 0, now);
     if (drillMesh.parent !== sceneB.scene) sceneB.scene.add(drillMesh);
-    drillMesh.visible = ctx.drill.on;
+    drillMesh.visible = ctx.drill.on && !rp;
     if (ctx.drill.on) enuToThree(ctx.map.spawn.pos.x, ctx.map.spawn.pos.y, spawnGroundZ(ctx.map) + 3, drillMesh.position);
     // where the listener is: the pilot (FPV / line of sight) or the chase camera
     const quad = { x: rec[R.px], y: rec[R.py], z: rec[R.pz] };
-    const cp = chaseCam.position, listener = view.view === 'chase' ? { x: cp.x, y: -cp.z, z: cp.y } : { x: pilot.x, y: pilot.y, z: pilot.z };
+    const earView = rp ? (rp.cam === 'orbit' ? 'chase' : rp.cam) : view.view, cam = earView === 'chase';
+    const cp = chaseCam.position, listener = cam ? { x: cp.x, y: -cp.z, z: cp.y } : { x: pilot.x, y: pilot.y, z: pilot.z };
     let fwd: { x: number; y: number; z: number };
-    if (view.view === 'chase') { const f = chaseCam.getWorldDirection(tmpV); fwd = { x: f.x, y: -f.z, z: f.y }; }
+    if (cam) { const f = chaseCam.getWorldDirection(tmpV); fwd = { x: f.x, y: -f.z, z: f.y }; }
     else { const n = Math.hypot(quad.x - pilot.x, quad.y - pilot.y, quad.z - pilot.z) || 1; fwd = { x: (quad.x - pilot.x) / n, y: (quad.y - pilot.y) / n, z: (quad.z - pilot.z) / n }; } // the pilot faces the quad
-    const hearD = view.view === 'chase' ? 2 : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z);
+    const hearD = cam ? (rp?.cam === 'orbit' ? rp.orbit.dist : 2) : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z);
     // Betaflight's own buzzer and DShot beacon (arming, RX loss, low battery, the beeper switch)
     ctx.audio.update([rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles, hearD, rec[R.vrs], {
-      beeper: ctx.tel?.beeper ?? false, beacon: ctx.tel?.beacon ?? false, quad, quadVel: { x: rec[R.vx], y: rec[R.vy], z: rec[R.vz] },
-      listener, listenerFwd: fwd, enclosed: 1 - skyOpen, view: view.view,
+      beeper: !rp && (ctx.tel?.beeper ?? false), beacon: !rp && (ctx.tel?.beacon ?? false), quad, quadVel: { x: rec[R.vx], y: rec[R.vy], z: rec[R.vz] },
+      listener, listenerFwd: fwd, enclosed: 1 - skyOpen, view: earView,
     });
-    // the other pilots' motors, from their newest pose
-    if (mp.connected) {
+    // the other pilots' motors, from their newest pose (not over a replay)
+    if (mp.connected && rp) ctx.audio.updateRemote([], listener, fwd);
+    else if (mp.connected) {
       const others: RemoteSound[] = [];
       for (const [id, peer] of mp.peers) {
         const p = peer.poses[peer.poses.length - 1];

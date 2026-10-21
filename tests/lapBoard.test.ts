@@ -2,8 +2,9 @@
 // which laps count (every gate in order, real time, time scale 1), personal bests and the optional
 // post (never opened by itself), and the stored values.
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { CUSTOM_SUMMARY_RE, parseSubmission } from '../server/src/leaderboardCore';
-import { courseOf, defaultInitials, LapBoard, onBoard } from '../src/app/leaderboard';
+import { CUSTOM_SUMMARY_RE, parseSubmission, unpackLap } from '../server/src/leaderboardCore';
+import { courseOf, defaultInitials, LapBoard, NO_REPLAY, onBoard } from '../src/app/leaderboard';
+import { MemoryKv } from '../src/worker/kv';
 import { KEYS, KV, validPbs } from '../src/app/persist';
 import { lapInvalid, newRace, onGate } from '../src/app/race';
 import { BATTERIES, FRAMES, MOTORS } from '../src/data/catalog';
@@ -74,21 +75,24 @@ describe('arcade initials', () => {
 // Laps
 
 function rig(timeScale = 1) {
-  const sent: number[] = [];
+  const sent: number[] = [], laps: any[] = [];
   const lb = new LapBoard(memKv());
   const gates = [0, 1, 2].map((id) => ({ id, kind: 'square', c: { x: id * 10, y: 0, z: 0 }, yaw: 0, width: 2, height: 2 }));
   const ctx: any = {
     map: { id: 'field', gates }, race: newRace(), sim: { timeScale }, spec: DEFAULT_SPEC, build: { spec: DEFAULT_SPEC, info: {} },
-    mp: { sendLap: (n: number) => sent.push(n) }, lb,
+    mp: { sendLap: (n: number) => sent.push(n) }, lb, replays: { finishLap: (l: any) => { laps.push(l); return Promise.resolve(null); } },
   };
   const pass = (gate: number, t: number, wall = t * 1000) => onGate(ctx, gate, t, wall);
-  return { ctx, lb, sent, pass };
+  return { ctx, lb, sent, laps, pass };
 }
 
 describe('lap validity', () => {
   test('a lap passes every gate in order and records the splits', () => {
-    const { ctx, lb, sent, pass } = rig();
+    const { ctx, lb, sent, laps, pass } = rig();
     pass(0, 10); pass(1, 14); pass(2, 18.5); pass(0, 22.25);
+    // its replay: from the start through gate 0, every pass in lap time, the lap as the board keeps it
+    expect(laps).toEqual([expect.objectContaining({ start: 10, gates: [{ id: 0, t: 0 }, { id: 1, t: 4 }, { id: 2, t: 8.5 }, { id: 0, t: 12.25 }] })]);
+    expect(laps[0].meta).toMatchObject({ map: 'field', course: '', cls: 'freestyle5', lapMs: 12_250, splitsMs: [4000, 8500, 12_250], timeScale: 1, invalid: null });
     expect(ctx.race.lapCount).toBe(1);
     expect(ctx.race.lastLap).toBeCloseTo(12.25);
     expect(sent).toEqual([1]);
@@ -128,7 +132,7 @@ describe('lap validity', () => {
 
 describe('personal bests and posting', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
-  const lap = (lapMs: number, extra: object = {}) => ({ map: 'field', course: '', cls: 'freestyle5', summary: '5" Freestyle 6S', lapMs, splitsMs: [lapMs / 2, lapMs], invalid: null, ...extra });
+  const lap = (lapMs: number, extra: object = {}) => ({ map: 'field', course: '', cls: 'freestyle5', summary: '5" Freestyle 6S', lapMs, splitsMs: [lapMs / 2, lapMs], invalid: null, replay: Promise.resolve(Uint8Array.of(7, 7, lapMs % 256)), ...extra });
 
   test('only a faster lap is a new best; it waits for the pilot (nothing opens by itself)', () => {
     const kv = memKv(), lb = new LapBoard(kv);
@@ -157,7 +161,8 @@ describe('personal bests and posting', () => {
     let sent: any = null;
     vi.stubGlobal('location', { hostname: 'example.com' });
     vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-      sent = { url, body: JSON.parse(String(init.body)) };
+      const env = unpackLap(init.body as Uint8Array)!;
+      sent = { url, type: (init.headers as Record<string, string>)['Content-Type'], body: JSON.parse(env.json), replay: [...env.replay] };
       return new Response(JSON.stringify({ ok: true, stored: true, id: 42, rank: 3, entries: [{ id: 7, initials: 'TOP', lapMs: 20_000, cls: 'freestyle5', summary: '5" Freestyle 6S', at: 1 }] }));
     });
     const kv = memKv(), lb = new LapBoard(kv);
@@ -165,13 +170,39 @@ describe('personal bests and posting', () => {
     const r = await lb.submit(lb.pending!, 'ACE');
     expect(r).toMatchObject({ ok: true, stored: true, id: 42, rank: 3 });
     expect(sent.url).toBe('https://fpv-sim-rooms.newsanjose.workers.dev/leaderboard');
+    expect(sent.type).toBe('application/vnd.fpv-sim.lap');
     expect(parseSubmission(sent.body).ok).toBe(true);
+    expect(sent.replay).toEqual([7, 7, 24_000 % 256]); // the lap's replay goes with it
     expect(lb.pending).toBeNull();
     expect(lb.isMine(42)).toBe(true);
     lb.onLap(lap(23_000), 10_000); // a newer best, not posted (yet): the entry on the board is still the pilot's
     expect(new LapBoard(kv).isMine(42)).toBe(true);
     expect(lb.initials).toBe('ACE');
     expect(lb.record('field', '', 'freestyle5')).toMatchObject({ initials: 'TOP' });
+  });
+
+  test('a best’s replay is kept (one per board), watched and posted later; none, no post', async () => {
+    const replays = new MemoryKv(), kv = memKv();
+    const lb = new LapBoard(kv, replays);
+    lb.onLap(lap(30_000), 0);
+    await new Promise((r) => setTimeout(r));
+    expect([...(await lb.localReplay('field', '', 'freestyle5'))!]).toEqual([7, 7, 30_000 % 256]);
+    // a later session posts it from the board: the stored replay goes along
+    const later = new LapBoard(kv, replays);
+    let posted: number[] = [];
+    vi.stubGlobal('location', { hostname: 'example.com' });
+    vi.stubGlobal('fetch', async (_: string, init: RequestInit) => { posted = [...unpackLap(init.body as Uint8Array)!.replay]; return new Response(JSON.stringify({ ok: true, stored: true, id: 5, rank: 1, entries: [] })); });
+    expect((await later.submit(later.offer('field', '', 'freestyle5')!, 'ACE')).ok).toBe(true);
+    expect(posted).toEqual([7, 7, 30_000 % 256]);
+    // a lap without a recording (flown before replays existed, or lost to a stall) can't be posted
+    const bare = new LapBoard(memKv(), new MemoryKv());
+    bare.onLap(lap(28_000, { replay: Promise.resolve(null) }), 0);
+    vi.stubGlobal('fetch', async () => { throw new Error('must not post'); });
+    expect(await bare.submit(bare.pending!, 'ACE')).toMatchObject({ ok: false, error: NO_REPLAY });
+    // a slower lap's replay never replaces the best's
+    lb.onLap(lap(31_000), 1000);
+    await new Promise((r) => setTimeout(r));
+    expect([...(await lb.localReplay('field', '', 'freestyle5'))!]).toEqual([7, 7, 30_000 % 256]);
   });
 
   test('offline: the best stays pending to post later', async () => {

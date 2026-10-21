@@ -1,12 +1,14 @@
-// Global lap leaderboard client: reads a board (GET /leaderboard on the relay that hosts the rooms)
-// and submits laps (POST). Like the server browser, everything the relay sends is checked, since a
-// pilot can point the sim at any relay.
-import { CLASSES, LB_VERSION } from '../../server/src/leaderboardCore';
+// Global lap leaderboard client: reads a board (GET /leaderboard on the relay that hosts the rooms),
+// submits laps with their replays (POST) and fetches an entry's replay. Like the server browser,
+// everything the relay sends is checked, since a pilot can point the sim at any relay.
+import { CLASSES, LAP_MIME, LB_VERSION, packLap } from '../../server/src/leaderboardCore';
+import { MAX_REPLAY_BYTES } from '../../server/src/replayFormat';
 import { multiplayerUrl } from './config';
 
-export interface BoardEntry { id: number; initials: string; lapMs: number; cls: string; summary: string; at: number }
+/** replay: the relay has the lap's replay (entries posted before replays existed have none). */
+export interface BoardEntry { id: number; initials: string; lapMs: number; cls: string; summary: string; at: number; replay: boolean }
 export interface BoardResult { entries: BoardEntry[]; error: string | null }
-export interface LapSubmission { map: string; course: string; cls: string; initials: string; lapMs: number; splitsMs: number[]; summary: string; client: string }
+export interface LapSubmission { map: string; course: string; cls: string; initials: string; lapMs: number; splitsMs: number[]; summary: string; client: string; replay: Uint8Array }
 /** stored: the lap is on the board now (rank, id); else why not: 'slower' (the pilot's entry there
  *  is faster: id, rank), 'unranked' (slower than the board's last place) or an error. */
 export interface SubmitResult { ok: boolean; stored: boolean; reason?: 'slower' | 'unranked'; id?: number; rank?: number | null; entries: BoardEntry[]; error: string | null }
@@ -19,7 +21,7 @@ export function parseEntry(x: any): BoardEntry | null {
   if (!int(x.lapMs, 1, 3_600_000) || typeof x.cls !== 'string' || !Object.prototype.hasOwnProperty.call(CLASSES, x.cls)) return null;
   // the summary is the server's preset name or the fixed custom format; anything else is cut down to plain text
   const summary = typeof x.summary === 'string' ? x.summary.replace(/[^\p{L}\p{N} ·"'+.:/-]/gu, '').slice(0, 48) : '';
-  return { id: x.id, initials: x.initials, lapMs: x.lapMs, cls: x.cls, summary: summary || CLASSES[x.cls].name, at: Number.isFinite(x.at) ? x.at : 0 };
+  return { id: x.id, initials: x.initials, lapMs: x.lapMs, cls: x.cls, summary: summary || CLASSES[x.cls].name, at: Number.isFinite(x.at) ? x.at : 0, replay: x.replay === true };
 }
 const entries = (j: any): BoardEntry[] => (Array.isArray(j?.entries) ? (j.entries as unknown[]).slice(0, MAX_ENTRIES).map(parseEntry).filter((e): e is BoardEntry => !!e) : []);
 
@@ -53,9 +55,10 @@ export async function fetchBoard(map: string, course: string, cls: string, timeo
   return { entries: entries(r.json), error: null };
 }
 
-export async function submitLap(s: LapSubmission, timeoutMs = 8000): Promise<SubmitResult> {
-  const body = JSON.stringify({ v: LB_VERSION, client: s.client, map: s.map, course: s.course || undefined, class: s.cls, initials: s.initials, lapMs: s.lapMs, splitsMs: s.splitsMs, timeScale: 1, summary: s.summary });
-  const r = await call('/leaderboard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, cache: 'no-store' }, timeoutMs);
+export async function submitLap(s: LapSubmission, timeoutMs = 15000): Promise<SubmitResult> {
+  const json = JSON.stringify({ v: LB_VERSION, client: s.client, map: s.map, course: s.course || undefined, class: s.cls, initials: s.initials, lapMs: s.lapMs, splitsMs: s.splitsMs, timeScale: 1, summary: s.summary });
+  const body = packLap(json, s.replay);
+  const r = await call('/leaderboard', { method: 'POST', headers: { 'Content-Type': LAP_MIME }, body, cache: 'no-store' }, timeoutMs);
   if ('error' in r) return { ok: false, stored: false, entries: [], error: r.error };
   const j = r.json;
   if (r.status !== 200 || j?.ok !== true) {
@@ -68,6 +71,23 @@ export async function submitLap(s: LapSubmission, timeoutMs = 8000): Promise<Sub
     id: int(j.id, 1, 1e12) ? j.id : undefined, rank: int(j.rank, 1, 10_000) ? j.rank : null,
     entries: entries(j), error: null,
   };
+}
+
+/** An entry's replay (.fpvreplay bytes), or why it can't be had. */
+export async function fetchReplay(id: number, timeoutMs = 15000): Promise<{ bytes: Uint8Array } | { error: string }> {
+  const base = relayHttp();
+  if (!base) return { error: 'No leaderboard server is configured for this site.' };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${base}/leaderboard/${id}/replay`, { signal: ctl.signal, mode: 'cors' });
+    if (r.status === 404) return { error: 'This lap has no replay: it was posted before replays existed, or it is no longer on the board.' };
+    if (!r.ok) return { error: `The server answered ${r.status}.` };
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    return bytes.length > MAX_REPLAY_BYTES ? { error: 'The replay is too big.' } : { bytes };
+  } catch (e) {
+    return { error: (e as Error).name === 'AbortError' ? 'The leaderboard server did not answer in time.' : 'Could not reach the leaderboard server.' };
+  } finally { clearTimeout(timer); }
 }
 
 /** m:ss.mmm (the board's lap time format). */

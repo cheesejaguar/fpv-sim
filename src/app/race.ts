@@ -4,9 +4,10 @@ import { droneClass, droneSummary } from '../builder/droneClass';
 import { spawnGroundZ } from '../maps/world';
 import type { DrillInfo, RaceInfo } from '../ui/hud/hud';
 import { loadPilot, PilotPrefs } from '../ui/multiplayerPanel';
+import { APP_COMMIT, APP_VERSION } from '../ui/menu/about';
 import { R } from '../worker/shared';
 import type { AppCtx } from './context';
-import { courseOf } from './leaderboard';
+import { courseOf, roundLap } from './leaderboard';
 
 /**
  * lapStart: sim time (s) gate 0 was passed, -1 between laps. splits: sim time since lapStart at each
@@ -53,12 +54,20 @@ export function onGate(ctx: AppCtx, gate: number, t: number, wall = performance.
   if (r.lapStart >= 0 && inOrder && r.splits.length === gates.length - 1) {
     r.lastLap = t - r.lapStart; r.lapCount++; r.bestLap = Math.min(r.bestLap, r.lastLap);
     ctx.mp.sendLap(r.lapCount, r.lastLap, r.bestLap);
-    const cls = droneClass(ctx.spec);
-    ctx.lb.onLap({
-      map: ctx.map.id, course: courseOf(ctx.map), cls, summary: droneSummary(ctx.build),
-      lapMs: r.lastLap * 1000, splitsMs: [...r.splits, r.lastLap].map((s) => s * 1000),
-      invalid: lapInvalid({ timeScale: scale !== 1 ? scale : r.lapScale, simLap: r.lastLap, wallLap: (wall - r.lapWall) / 1000, clsAtStart: r.lapCls, cls }),
+    const cls = droneClass(ctx.spec), course = courseOf(ctx.map), summary = droneSummary(ctx.build);
+    const timeScale = scale !== 1 ? scale : r.lapScale;
+    const invalid = lapInvalid({ timeScale, simLap: r.lastLap, wallLap: (wall - r.lapWall) / 1000, clsAtStart: r.lapCls, cls });
+    const lapMs = r.lastLap * 1000, splitsMs = [...r.splits, r.lastLap].map((s) => s * 1000);
+    // the lap's replay (encoded once its post-roll is in): every gate pass, in lap time
+    const passes = [{ id: gates[0].id, t: 0 }, ...r.splits.map((s, k) => ({ id: gates[k + 1].id, t: s })), { id: gates[0].id, t: r.lastLap }];
+    const replay = ctx.replays?.finishLap({
+      start: r.lapStart, gates: passes,
+      meta: {
+        app: APP_VERSION, commit: APP_COMMIT || undefined, date: Date.now(), map: ctx.map.id, course, cls, summary, ...roundLap(lapMs, splitsMs),
+        spec: ctx.spec, timeScale, physicsHz: ctx.sim.physicsHz, wind: ctx.sim.wind, timeOfDay: ctx.view?.timeOfDay, invalid,
+      },
     });
+    ctx.lb.onLap({ map: ctx.map.id, course, cls, summary, lapMs, splitsMs, invalid, replay });
   }
   // gate 0 also starts the next lap
   r.lapStart = t; r.splits = []; r.lapWall = wall; r.lapScale = scale; r.lapCls = droneClass(ctx.spec);

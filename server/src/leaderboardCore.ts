@@ -3,12 +3,16 @@
 // (unit-tested, and imported by the client for the track / class lists); the Durable Object wrapper
 // lives in index.ts. The sim runs in the pilot's browser, so none of this proves a lap was flown:
 // it keeps the board to plausible times and limits what one client or network can post.
+import { MAX_REPLAY_BYTES } from './replayFormat';
 import { blocked } from './sanitize';
 
-/** Submission format version (the client's `v`). */
-export const LB_VERSION = 1;
+/** Submission format version (the client's `v`). 2: posted together with the lap's replay (packLap). */
+export const LB_VERSION = 2;
 export const BOARD_SIZE = 100;        // entries kept per board (track + class)
-export const MAX_BODY_BYTES = 2048;   // a submission with 13 splits is ~400 bytes
+export const MAX_BODY_BYTES = 2048;   // a submission's JSON: one with 13 splits is ~400 bytes
+/** POST /leaderboard: the lap's JSON and its replay in one body (see packLap). */
+export const LAP_MIME = 'application/vnd.fpv-sim.lap';
+export const MAX_POST_BYTES = 8 + MAX_BODY_BYTES + MAX_REPLAY_BYTES;
 export const MAX_PER_NETWORK = 3;     // entries per board from one network (hashed IP), other than your own
 export const SUBMITS_PER_WINDOW = 20; // submissions per network per window (the Durable Object's own limit)
 export const SUBMIT_WINDOW_MS = 10 * 60_000;
@@ -38,19 +42,21 @@ export const TRACKS: Readonly<Record<string, { gates: number; pathM: number }>> 
 /**
  * Drone classes: the sim's presets (by a stable id; the client maps its PRESETS to these) and
  * `custom` for anything else. vmax (m/s): a generous top speed for the class (~1.3x the preset's
- * estimated level top speed; dives add some), used for the per-track minimum lap.
+ * estimated level top speed; dives add some), used for the per-track minimum lap. amax (m/s²): the
+ * most it can speed up, full thrust plus gravity in a dive with 25 % to spare (a lap's replay is
+ * checked against both, see replayCheck.ts).
  */
-export const CLASSES: Readonly<Record<string, { name: string; vmax: number }>> = Object.freeze({
-  freestyle5: { name: '5" Freestyle 6S', vmax: 62 },
-  race5: { name: '5" Race 4S', vmax: 55 },
-  'freestyle5-o4': { name: '5" Freestyle DJI O4 + GoPro', vmax: 62 },
-  'freestyle5-hdz': { name: '5" HDZero 6S', vmax: 60 },
-  longrange7: { name: '7" Long Range Li-ion', vmax: 39 },
-  whoop65: { name: '65 mm Tiny Whoop 1S', vmax: 16 },
-  whoop75: { name: '75 mm Whoop 1S', vmax: 16 },
-  cinewhoop3: { name: '3" Cinewhoop 4S HD', vmax: 35 },
-  toothpick3: { name: '3" Toothpick 4S', vmax: 39 },
-  custom: { name: 'Custom', vmax: 70 },
+export const CLASSES: Readonly<Record<string, { name: string; vmax: number; amax: number }>> = Object.freeze({
+  freestyle5: { name: '5" Freestyle 6S', vmax: 62, amax: 135 },
+  race5: { name: '5" Race 4S', vmax: 55, amax: 110 },
+  'freestyle5-o4': { name: '5" Freestyle DJI O4 + GoPro', vmax: 62, amax: 120 },
+  'freestyle5-hdz': { name: '5" HDZero 6S', vmax: 60, amax: 130 },
+  longrange7: { name: '7" Long Range Li-ion', vmax: 39, amax: 70 },
+  whoop65: { name: '65 mm Tiny Whoop 1S', vmax: 16, amax: 55 },
+  whoop75: { name: '75 mm Whoop 1S', vmax: 16, amax: 55 },
+  cinewhoop3: { name: '3" Cinewhoop 4S HD', vmax: 35, amax: 80 },
+  toothpick3: { name: '3" Toothpick 4S', vmax: 39, amax: 100 },
+  custom: { name: 'Custom', vmax: 70, amax: 250 },
 });
 export const CUSTOM = 'custom';
 
@@ -109,6 +115,7 @@ const int = (v: unknown, lo: number, hi: number): v is number => Number.isIntege
 export function parseSubmission(raw: unknown): Parsed {
   const r = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const fail = (error: string): Parsed => ({ ok: false, error });
+  if (r.v === 1) return fail('this version of FPV Sim can no longer post laps: reload the page to update it');
   if (r.v !== LB_VERSION) return fail('unsupported version');
   if (typeof r.client !== 'string' || !CLIENT_RE.test(r.client)) return fail('bad client id');
   const course = r.course ?? '';
@@ -132,16 +139,17 @@ export function parseSubmission(raw: unknown): Parsed {
 // ---------------------------------------------------------------------------------------------
 // Boards
 
-/** A stored entry. owner: hashed client token (one entry per owner per board); net: hashed IP. */
+/** A stored entry. owner: hashed client token (one entry per owner per board); net: hashed IP; replay: one is stored. */
 export interface Entry {
   id: number; map: string; course: string; cls: string;
   owner: string; net: string;
   initials: string; lapMs: number; splitsMs: number[]; summary: string; at: number;
+  replay?: boolean;
 }
-/** What GET /leaderboard shows (never the owner or network hashes, nor the splits). */
-export interface PublicEntry { id: number; initials: string; lapMs: number; cls: string; summary: string; at: number }
+/** What GET /leaderboard shows (never the owner or network hashes, nor the splits). replay: GET /leaderboard/:id/replay has one. */
+export interface PublicEntry { id: number; initials: string; lapMs: number; cls: string; summary: string; at: number; replay: boolean }
 
-export const toPublic = (e: Entry): PublicEntry => ({ id: e.id, initials: e.initials, lapMs: e.lapMs, cls: e.cls, summary: e.summary, at: e.at });
+export const toPublic = (e: Entry): PublicEntry => ({ id: e.id, initials: e.initials, lapMs: e.lapMs, cls: e.cls, summary: e.summary, at: e.at, replay: !!e.replay });
 const faster = (a: Entry, b: Entry) => a.lapMs - b.lapMs || a.at - b.at || a.id - b.id;
 
 /** Ranked board. `rows`: one track's entries (any classes); cls 'all' keeps each owner's best across classes. */
@@ -174,6 +182,23 @@ export function decide(rows: Entry[], sub: { lapMs: number }, owner: string, net
   const keep = next.slice(0, BOARD_SIZE);
   if (!keep.some((r) => r.id === Infinity)) return { kind: 'unranked' };
   return { kind: 'store', update: mine?.id ?? null, evict: next.slice(BOARD_SIZE).map((r) => r.id) };
+}
+
+/** POST /leaderboard body (LAP_MIME): "FPVL", the JSON's length (u32 little-endian), the submission JSON, then the replay. */
+export function packLap(json: string, replay: Uint8Array): Uint8Array<ArrayBuffer> {
+  const j = new TextEncoder().encode(json), out = new Uint8Array(8 + j.length + replay.length);
+  out.set([0x46, 0x50, 0x56, 0x4c]);
+  new DataView(out.buffer).setUint32(4, j.length, true);
+  out.set(j, 8); out.set(replay, 8 + j.length);
+  return out;
+}
+
+/** The JSON and the replay of a posted body, or null when it isn't one (or its JSON part is over maxJson bytes). */
+export function unpackLap(body: Uint8Array, maxJson = MAX_BODY_BYTES): { json: string; replay: Uint8Array } | null {
+  if (body.length < 8 || body[0] !== 0x46 || body[1] !== 0x50 || body[2] !== 0x56 || body[3] !== 0x4c) return null;
+  const n = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(4, true);
+  if (n > maxJson || 8 + n > body.length) return null;
+  return { json: new TextDecoder().decode(body.subarray(8, 8 + n)), replay: body.subarray(8 + n) };
 }
 
 /** 1-based rank of entry `id` on a ranked list, or null. */

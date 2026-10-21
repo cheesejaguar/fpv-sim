@@ -65,7 +65,7 @@ describe('race panel', () => {
     const asked: string[] = [];
     const lb = {
       pb: (m: string, c: string, cls: string) => { asked.push(`${m}|${c}|${cls}`); return { lapMs: 30_250, splitsMs: [], at: 1, summary: '', submitted: { id: 9, at: 2 } }; },
-      record: () => ({ id: 9, initials: 'ACE', lapMs: 30_250, cls: 'freestyle5', summary: '', at: 2 }),
+      record: () => ({ id: 9, initials: 'ACE', lapMs: 30_250, cls: 'freestyle5', summary: '', at: 2, replay: true }),
       isMine: (id: number) => id === 9,
     };
     const r = raceInfo(ctx(8, false, lb))!;

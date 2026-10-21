@@ -18,7 +18,7 @@ import { cachedStats, DroneStats, droneStats } from './droneStats';
 import { CHAPTERS, GuideAction, guideDone, markDone } from './guide';
 import { icon, IconName, logo } from './icons';
 import type { InitialsScreen } from './leaderboard';
-import { focusEl, focusables, MenuNav } from './nav';
+import { focusEl, focusables, MenuNav, NavOverlay } from './nav';
 
 // The leaderboard screens (leaderboard.ts, initials.ts) load the first time one opens, not at startup.
 type BoardModule = typeof import('./leaderboard');
@@ -49,7 +49,16 @@ export interface MenuHost {
   board: LapBoard;
   /** the track and drone class flown now (the leaderboard opens on it) */
   track(): { map: string; course: string; cls: string };
+  /** the newest completed lap and its replay (any lap, counted or not), for "Replay last lap" */
+  lastLap(): { lapMs: number; replay: Promise<Uint8Array | null> } | null;
+  /** open the replay player (loaded the first time) over the menu; throws with a message for the pilot */
+  watch(bytes: Uint8Array, label: ReplayLabel, ui: ReplayUi): Promise<{ close(): void }>;
 }
+
+/** Where a replay came from (its title in the player): a board entry, the pilot's best, the last lap, a file. */
+export interface ReplayLabel { source: 'board' | 'best' | 'last' | 'file'; pilot?: string; rank?: number | null }
+/** What the player needs of the menu. */
+export interface ReplayUi { root: HTMLElement; open(o: NavOverlay): void; usingPad(): boolean; pads(): Gamepad[]; onClose(): void }
 
 const MODES: { id: GameMode; title: string; sub: string; icon: IconName }[] = [
   { id: 'free', title: 'Free flight', sub: 'No timer, no rules. Explore the map, practice lines and tricks.', icon: 'wind' },
@@ -180,6 +189,7 @@ export class GameMenu {
 
   close() {
     if (!this.openState) return;
+    this.player?.close();
     cancelTopModal();
     this.openState = false;
     this.root.classList.add('hidden');
@@ -193,6 +203,7 @@ export class GameMenu {
 
   /** Esc / Start in flight (and the HUD's menu chip). */
   toggle() {
+    if (this.player) { this.player.close(); return; } // Start / Esc in a replay: back to the menu
     if (!this.openState) { this.open(); return; }
     if (topModal()) { cancelTopModal(); return; }
     if (this.inFlight) this.leave(() => this.close());
@@ -333,11 +344,12 @@ export class GameMenu {
   }
 
   private titleScreen(paused: boolean): HTMLElement {
-    const mp = this.host.mp;
+    const mp = this.host.mp, last = paused ? this.host.lastLap() : null;
     const items: HTMLElement[] = paused
       ? [
         this.item({ icon: 'play', title: 'Resume', sub: 'Back to the quad', primary: true, autofocus: true, onClick: () => this.close() }),
         ...(this.host.board.pending ? [this.item({ icon: 'trophy', title: 'Post your lap', sub: `New personal best ${formatLap(this.host.board.pending.lapMs)}: add your initials to the leaderboard`, onClick: () => this.openInitials() })] : []),
+        ...(last ? [this.item({ icon: 'video', title: 'Replay last lap', sub: `${formatLap(last.lapMs)}: watch it in FPV, chase, line of sight or orbit`, onClick: () => this.watch(() => last.replay.then((b) => b ?? { error: 'That lap couldn’t be recorded (the simulator was paused or stalled during it).' }), { source: 'last' }) })] : []),
         this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.activeMode); this.close(); } }),
         this.item({ icon: 'trophy', title: 'Leaderboard', sub: 'Fastest laps worldwide, by track and drone', onClick: () => this.go('leaderboard') }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
@@ -746,6 +758,7 @@ export class GameMenu {
       backBar: () => this.backBar(),
       setTabs: (t) => { this.tabs = t; },
       post: (map, course, cls) => { if (this.host.board.offer(map, course, cls)) { this.iniReturn = 'back'; this.go('initials'); } },
+      watch: (get, label) => void this.watch(get, label),
     }));
   }
 
@@ -775,6 +788,43 @@ export class GameMenu {
       });
       return el('div', {}, this.backBar(), this.ini.el);
     });
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Lap replays: the player (ui/replay/player.ts) covers the menu, which keeps its screen underneath
+  private player: { close(): void } | null = null;
+  private watching = false;
+
+  /** Load a replay (from the board, the pilot's best, the last lap or a file) and play it. */
+  async watch(get: () => Promise<Uint8Array | { error: string }>, label: ReplayLabel) {
+    if (this.watching || !this.openState) return;
+    this.watching = true;
+    const from = document.activeElement as HTMLElement | null;
+    const wait = el('div', { class: 'rp-loading', role: 'status', 'aria-live': 'polite' }, el('div', { class: 'gm-card' }, el('span', { class: 'rp-spinner', 'aria-hidden': 'true' }), 'Loading the replay…'));
+    this.root.append(wait);
+    let fail = '';
+    try {
+      const r = await get();
+      if (!(r instanceof Uint8Array)) fail = r.error;
+      else if (this.openState) {
+        this.root.classList.add('gm-replaying');
+        this.player = await this.host.watch(r, label, {
+          root: this.root, open: (o) => this.nav.open(o), usingPad: () => this.nav.usingPad, pads: () => this.host.input.pads(),
+          onClose: () => {
+            this.player = null; this.watching = false;
+            this.root.classList.remove('gm-replaying');
+            if (from?.isConnected) { if (this.nav.usingPad) focusEl(from); else from.focus({ preventScroll: true }); }
+          },
+        });
+      }
+    } catch (e) {
+      fail = (e as Error)?.message || String(e);
+      this.root.classList.remove('gm-replaying');
+    } finally {
+      wait.remove();
+      if (!this.player) this.watching = false;
+    }
+    if (fail) await confirmDialog({ title: 'Can’t play this replay', body: fail, ok: 'OK', cancel: 'Close' });
   }
 
   // -------------------------------------------------------------------------------------------

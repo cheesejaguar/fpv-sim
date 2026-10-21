@@ -1,0 +1,76 @@
+/* Lap replay player (player.ts): full screen over the live 3D view, in the game menu's design
+ * language (theme.css tokens: the player mounts inside .gm). Glass cards, the timeline and the
+ * transport bar sit on gradients at the edges, so the middle of the picture stays clear. */
+
+.rp { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto 1fr auto; pointer-events: none; color: var(--gm-fg); }
+.rp > * { pointer-events: auto; }
+.rp [hidden] { display: none !important; }
+.rp-stage { position: absolute; inset: 0; z-index: 0; cursor: pointer; touch-action: none; }
+.rp[data-cam='orbit'] .rp-stage { cursor: grab; }
+.rp[data-cam='orbit'] .rp-stage:active { cursor: grabbing; }
+
+/* ---- top bar ---- */
+.rp-top { position: relative; z-index: 2; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px clamp(12px, 3vw, 36px) 26px;
+  background: linear-gradient(180deg, rgba(10, 10, 26, 0.88), rgba(10, 10, 26, 0)); }
+.rp-back { min-height: 44px; padding: 0 16px 0 12px; }
+.rp-back svg { width: 18px; height: 18px; }
+.rp-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.rp-tag { font-family: var(--gm-font-display); font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase; color: #fff; background: var(--gm-accent); border-radius: 6px; padding: 3px 9px 2px; }
+.rp-who { font-family: var(--gm-font-display); font-size: 22px; letter-spacing: 0.12em; }
+.rp-title .lb-time { font-size: 22px; }
+.rp-meta { color: #cbd5e1; font-size: 14px; }
+.rp-toggles { display: flex; gap: 6px; flex-wrap: wrap; }
+.rp-chip { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--gm-border-soft); background: var(--gm-bg-glass); color: var(--gm-fg-muted);
+  font: 600 13px var(--gm-font); letter-spacing: 0.04em; cursor: pointer; backdrop-filter: blur(8px); transition: background 150ms, color 150ms, border-color 150ms; }
+.rp-chip:hover { color: var(--gm-fg); border-color: var(--gm-secondary); }
+.rp-chip[aria-pressed='true'] { background: rgba(124, 58, 237, 0.55); border-color: var(--gm-secondary); color: #fff; }
+.rp-btn { min-height: 44px; padding: 0 14px; }
+.rp-btn svg { width: 20px; height: 20px; }
+
+/* ---- overlays ---- */
+.rp-card { padding: 12px 14px; min-width: 150px; background: rgba(15, 15, 35, 0.62); }
+.rp-card h3 { font-size: 12px; margin: 0 0 6px; }
+.rp-cards { position: absolute; z-index: 1; left: clamp(12px, 3vw, 36px); bottom: 150px; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; max-width: calc(100% - 300px); pointer-events: none; }
+.rp-cards > * { pointer-events: auto; }
+.rp-sticks { display: block; width: 196px; height: 92px; }
+.rp-small { margin: 4px 0 0; font-size: 13px; color: #cbd5e1; font-variant-numeric: tabular-nums; }
+.rp-big { font-family: var(--gm-font-display); font-size: 26px; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.rp-card small { color: var(--gm-fg-muted); font-size: 13px; }
+.rp-kv { display: grid; gap: 2px; }
+.rp-splits { position: absolute; z-index: 1; right: clamp(12px, 3vw, 36px); top: 96px; width: 210px; max-height: calc(100% - 270px); overflow: auto; scrollbar-width: thin; }
+.rp-lapclock { font-size: 30px; margin: 0 0 8px; }
+.rp-splits ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.rp-split { display: flex; justify-content: space-between; gap: 10px; padding: 3px 8px; border-radius: 7px; font-size: 14px; color: var(--gm-fg-muted); }
+.rp-split .lb-time { font-size: 15px; }
+.rp-split.done { color: var(--gm-fg); }
+.rp-split.next { background: rgba(93, 255, 58, 0.14); color: #d9ffcc; box-shadow: inset 3px 0 0 #5dff3a; }
+
+/* ---- transport ---- */
+.rp-bar { position: relative; z-index: 2; grid-row: 3; padding: 34px clamp(12px, 3vw, 36px) 12px; background: linear-gradient(0deg, rgba(10, 10, 26, 0.92) 30%, rgba(10, 10, 26, 0)); }
+.rp-timeline { position: relative; height: 28px; cursor: pointer; touch-action: none; margin: 0 0 8px; }
+.rp-timeline:focus-visible { outline: 3px solid var(--gm-ring); outline-offset: 2px; border-radius: 8px; }
+.rp-rail { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.3); }
+.rp-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--gm-primary), var(--gm-accent)); }
+.rp-marks { position: absolute; inset: 0; }
+.rp-mark { position: absolute; top: -5px; width: 2px; height: 16px; margin-left: -1px; border-radius: 1px; background: #c4b5fd; opacity: 0.9; }
+.rp-mark.end { width: 4px; margin-left: -2px; background: #5dff3a; }
+.rp-head { position: absolute; top: 5px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.45), 0 2px 8px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.rp-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rp-play { min-width: 60px; }
+.rp-btn[aria-pressed='true'] { background: rgba(124, 58, 237, 0.55); border-color: var(--gm-secondary); }
+.rp-time { font-family: var(--gm-font-display); font-size: 18px; font-variant-numeric: tabular-nums; margin: 0 8px; white-space: nowrap; }
+.rp-seg { display: inline-flex; padding: 4px; gap: 2px; border-radius: 999px; background: var(--gm-bg-glass); border: 1px solid var(--gm-border-soft); }
+.rp-segbtn { min-height: 36px; min-width: 44px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--gm-fg-muted); font: 600 14px var(--gm-font); cursor: pointer; transition: background 150ms, color 150ms; }
+.rp-segbtn:hover { color: var(--gm-fg); }
+.rp-segbtn[aria-pressed='true'] { background: var(--gm-primary); color: #fff; }
+.rp-hints { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+.rp-hints .gm-hint { font-size: 13px; }
+.rp-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@media (max-width: 900px) {
+  .rp-cards { bottom: 190px; max-width: calc(100% - 24px); }
+  .rp-splits { display: none; }
+  .rp-wide { display: none; }
+  .rp-hints .gm-hint:nth-child(n+5) { display: none; }
+}
+@media (max-height: 640px) { .rp-cards { display: none; } .rp-splits { top: 80px; max-height: calc(100% - 220px); } }
