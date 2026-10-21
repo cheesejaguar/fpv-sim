@@ -32,6 +32,12 @@ export class RotorAero {
   reverseEfficiency = 0.6;
   /** Strength multiplier for VRS / prop-wash unsteadiness (user setting). */
   propwashScale = 1;
+  /**
+   * Ducted prop (whoop / cinewhoop): the duct carries part of the thrust and cuts tip losses, so
+   * static thrust rises by ~10-20 %. The benefit fades as edgewise / axial flow grows relative to the
+   * induced velocity (the duct inlet no longer sees clean, axisymmetric inflow).
+   */
+  ductGain = 0;
 
   constructor(table: BemtTable, seed: number) {
     this.table = table;
@@ -67,6 +73,12 @@ export class RotorAero {
     if (reRatio < 1) { Q *= Math.min(1.45, Math.pow(Math.max(reRatio, 0.05), -0.18)); T *= Math.max(0.9, Math.pow(Math.max(reRatio, 0.05), 0.03)); }
     const H = out4[2] * t.ctScale * den;
     const vi = out4[3] * Math.sqrt(q2);
+
+    if (this.ductGain > 0 && T > 0) {
+      const vh = Math.sqrt(T / (2 * rho * A)) + 1e-6;
+      const flow2 = (vip * vip + Math.max(0, vcEff) * Math.max(0, vcEff)) / (2.25 * vh * vh);
+      T *= 1 + this.ductGain / (1 + flow2);
+    }
 
     // Ground effect (Cheeseman–Bennett), only meaningful in near-hover; fades with forward speed
     if (hGround < 4 * R && T > 0) {

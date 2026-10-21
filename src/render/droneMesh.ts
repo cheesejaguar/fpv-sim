@@ -15,6 +15,7 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   const alu = T(new THREE.MeshStandardMaterial({ color: 0xb8323a, roughness: 0.35, metalness: 0.8 }));
   const black = T(new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.6 }));
   const tpu = T(new THREE.MeshStandardMaterial({ color: 0xff5a1f, roughness: 0.8 }));
+  const ductMat = T(new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.55, side: THREE.DoubleSide }));
   const { frame, motor, prop, battery, video } = info.components;
   // body FLU (m, relative to CG) -> three body space
   const B = (x: number, y: number, z: number) => new THREE.Vector3(x - cg.x / 1000, z - cg.z / 1000, -(y - cg.y / 1000));
@@ -56,6 +57,16 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
     disc.rotation.x = -Math.PI / 2; disc.visible = false;
     hub.add(disc);
     root.add(hub); props.push(hub); blur.push(disc); dirs.push(rp.dir);
+    if (frame.ducted) {
+      // prop guard duct: open thin-walled ring around the prop disc, with a lip at the top
+      const dh = (frame.ductHeightMm ?? 10) / 1000;
+      const ring = new THREE.Mesh(T(new THREE.CylinderGeometry(R * 1.08, R * 1.08, dh, 40, 1, true)), ductMat);
+      ring.position.copy(B(hx, hy, 0.006 + motor.bellHeightMm / 1000 + 0.004));
+      const lip = new THREE.Mesh(T(new THREE.TorusGeometry(R * 1.1, Math.max(0.0012, dh * 0.08), 8, 40)), ductMat);
+      lip.rotation.x = Math.PI / 2; lip.position.y = dh / 2;
+      ring.add(lip);
+      root.add(ring);
+    }
   });
   // battery
   const bd = battery.dims;

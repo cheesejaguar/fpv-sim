@@ -47,6 +47,10 @@ export const PRESETS: DroneSpec[] = [
   { ...DEFAULT_SPEC, name: '5" Freestyle DJI O4 + GoPro', video: 'v-dji-o4', extraMassG: 25 + 60, extraMassZmm: 45, cameraUptiltDeg: 28 },
   { ...DEFAULT_SPEC, name: '5" HDZero 6S', video: 'v-hdzero', prop: 'p-hq5043' },
   { ...DEFAULT_SPEC, name: '7" Long Range Li-ion', frame: 'f7-lr', motor: 'm2806-1300', prop: 'p-hq7040', battery: 'b6s1p-p45b', esc: 'e45', video: 'v-dji-o3', batteryMount: 'bottom', extraMassG: 30, cameraUptiltDeg: 20 },
+  // Beginner-friendly: fully guarded props, light enough to fly indoors and shrug off crashes
+  { ...DEFAULT_SPEC, name: 'Beginner: 65 mm Tiny Whoop 1S', frame: 'f65-whoop', motor: 'm0702-26000', prop: 'p-31mm4', battery: 'b1s300hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 15, propDirection: 'props-out' },
+  { ...DEFAULT_SPEC, name: 'Beginner: 75 mm Whoop 1S', frame: 'f75-whoop', motor: 'm0802-19000', prop: 'p-40mm3', battery: 'b1s450hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 15, propDirection: 'props-out' },
+  { ...DEFAULT_SPEC, name: 'Beginner: 3" Cinewhoop 4S HD', frame: 'f3-cinewhoop', motor: 'm1404-3800', prop: 'p-hq3030', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-dji-o4', batteryMount: 'top', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 10 },
   { ...DEFAULT_SPEC, name: '3" Toothpick 4S', frame: 'f3-toothpick', motor: 'm1404-3800', prop: 'p-gf3018', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-analog', extraMassG: 5, extraMassZmm: 5, cameraUptiltDeg: 25 },
 ];
 
@@ -128,20 +132,29 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
 
   // ---------- mass budget ----------
   const items: MassItem[] = [];
-  const plateM = frame.massG * 0.55 / 1000, armsM = frame.massG * 0.45 / 1000;
+  // electronics / hardware dimensions scale with the airframe (whoop AIO boards are ~25 mm, not 40)
+  const sz = Math.max(0.55, Math.min(1, wb / 0.225));
+  const ducted = !!frame.ducted;
+  const ductH = (frame.ductHeightMm ?? 0) / 1000;
+  const R0 = (prop.diameterIn * 0.0254) / 2;
+  // ducted frames carry much of their mass in the duct rings around the props
+  const plateM = frame.massG * (ducted ? 0.35 : 0.55) / 1000, armsM = frame.massG * (ducted ? 0.15 : 0.45) / 1000;
+  const ductM = ducted ? frame.massG * 0.5 / 1000 : 0;
   items.push({ name: 'frame plates + standoffs', m: plateM, pos: { x: 0, y: 0, z: frame.stackHeightMm / 2000 }, box: { x: frame.plateLengthMm / 1000, y: frame.plateWidthMm / 1000, z: frame.stackHeightMm / 1000 } });
   for (let k = 0; k < 4; k++) {
     const h = hubs[k];
     const L = Math.hypot(h.x, h.y);
     items.push({ name: `arm ${k + 1}`, m: armsM / 4, pos: { x: h.x * 0.55, y: h.y * 0.55, z: 0 }, box: { x: L * Math.abs(h.x) / L + 0.012, y: L * Math.abs(h.y) / L + 0.012, z: frame.armThicknessMm / 1000 } });
     items.push({ name: `motor ${k + 1}`, m: motor.massG / 1000, pos: { x: h.x, y: h.y, z: motorZ }, box: { x: motor.bellDiaMm / 1000, y: motor.bellDiaMm / 1000, z: motor.bellHeightMm / 1000 } });
-    items.push({ name: `prop ${k + 1}`, m: prop.massG / 1000, pos: { ...h }, box: { x: 0.03, y: 0.03, z: 0.008 } }); // prop spin inertia handled separately
+    items.push({ name: `prop ${k + 1}`, m: prop.massG / 1000, pos: { ...h }, box: { x: 0.03 * sz, y: 0.03 * sz, z: 0.008 * sz } }); // prop spin inertia handled separately
+    // duct ring: a thin hoop of radius ~R has twice the inertia of a solid box that size; use a 1.4x box
+    if (ducted) items.push({ name: `duct ${k + 1}`, m: ductM / 4, pos: { x: h.x, y: h.y, z: h.z }, box: { x: 2.8 * R0, y: 2.8 * R0, z: ductH } });
   }
-  items.push({ name: 'ESC', m: esc.massG / 1000, pos: { x: 0, y: 0, z: 0.006 }, box: { x: 0.04, y: 0.04, z: 0.006 } });
-  items.push({ name: 'FC', m: fc.massG / 1000, pos: { x: 0, y: 0, z: 0.014 }, box: { x: 0.036, y: 0.036, z: 0.006 } });
-  items.push({ name: 'video system', m: video.massG / 1000, pos: { x: frame.plateLengthMm / 2400, y: 0, z: frame.stackHeightMm / 2000 }, box: { x: 0.03, y: 0.03, z: 0.025 } });
-  // receiver, antennas, wiring, XT60, capacitor, screws: scales roughly with frame size
-  items.push({ name: 'receiver + wiring + hardware', m: 0.0025 + 0.65 * wb * wb, pos: { x: -0.02, y: 0, z: 0.012 }, box: { x: 0.05, y: 0.03, z: 0.015 } });
+  items.push({ name: 'ESC', m: esc.massG / 1000, pos: { x: 0, y: 0, z: 0.006 * sz }, box: { x: 0.04 * sz, y: 0.04 * sz, z: 0.006 * sz } });
+  if (fc.massG > 0) items.push({ name: 'FC', m: fc.massG / 1000, pos: { x: 0, y: 0, z: 0.014 * sz }, box: { x: 0.036 * sz, y: 0.036 * sz, z: 0.006 * sz } });
+  items.push({ name: 'video system', m: video.massG / 1000, pos: { x: frame.plateLengthMm / 2400, y: 0, z: frame.stackHeightMm / 2000 }, box: { x: 0.03 * sz, y: 0.03 * sz, z: 0.025 * sz } });
+  // receiver, antennas, wiring, connector, capacitor, screws: scales with frame size (whoops ~1 g)
+  items.push({ name: 'receiver + wiring + hardware', m: wb < 0.1 ? 0.0006 + 0.1 * wb * wb : 0.0025 + 0.65 * wb * wb, pos: { x: -0.02 * sz, y: 0, z: 0.012 * sz }, box: { x: 0.05 * sz, y: 0.03 * sz, z: 0.015 * sz } });
   if (spec.extraMassG > 0) items.push({ name: 'extra (TPU / GPS / action cam)', m: spec.extraMassG / 1000, pos: { x: 0.01, y: 0, z: spec.extraMassZmm / 1000 }, box: { x: 0.06, y: 0.04, z: 0.03 } });
   const bd = battery.dims;
   const batZ = spec.batteryMount === 'top' ? frame.stackHeightMm / 1000 + 0.004 + bd[2] / 2000 : -0.003 - bd[2] / 2000;
@@ -186,23 +199,30 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
     // inward motor tilt (positive tilts thrust toward the centre)
     const r = Math.hypot(h.x, h.y) || 1;
     const ax = { x: (-h.x / r) * Math.sin(tilt), y: (-h.y / r) * Math.sin(tilt), z: Math.cos(tilt) };
-    return { pos: { x: h.x - cg.x, y: h.y - cg.y, z: h.z - cg.z }, axis: ax, dir: dirs[k], motor: { ...mp }, table: tbl, propInertia, propMass: prop.massG / 1000, bladeCount: prop.blades };
+    return {
+      pos: { x: h.x - cg.x, y: h.y - cg.y, z: h.z - cg.z }, axis: ax, dir: dirs[k], motor: { ...mp }, table: tbl, propInertia, propMass: prop.massG / 1000, bladeCount: prop.blades,
+      ductGain: ducted ? frame.ductGain ?? 0.12 : 0,
+      // residual static imbalance scales with prop mass (2e-7 kg·m for a ~4.3 g 5" prop)
+      imbalance: ov.propImbalance ?? 2e-7 * (prop.massG / 4.3),
+    };
   });
 
   // ---------- drag ----------
   const cdS = ov.cdAScale ?? 1;
-  const frontal = (bd[1] * bd[2]) / 1e6 + (frame.plateWidthMm * frame.stackHeightMm) / 1e6 + 4 * (motor.bellDiaMm * motor.bellHeightMm) / 1e6 * 0.6 + 4 * (frame.armWidthMm * frame.armThicknessMm) / 1e6 + 0.0008 + (spec.extraMassG > 40 ? 0.0018 : 0);
-  const side = (bd[0] * bd[2]) / 1e6 + (frame.plateLengthMm * frame.stackHeightMm) / 1e6 + 4 * (motor.bellDiaMm * motor.bellHeightMm) / 1e6 * 0.6 + 0.0006;
+  // ducts: four rings seen edge-on (front pair fully, rear pair partly shadowed)
+  const ductSide = ducted ? 4 * (2 * R0 + 0.003) * ductH * 0.6 : 0;
+  const frontal = (bd[1] * bd[2]) / 1e6 + (frame.plateWidthMm * frame.stackHeightMm) / 1e6 + 4 * (motor.bellDiaMm * motor.bellHeightMm) / 1e6 * 0.6 + 4 * (frame.armWidthMm * frame.armThicknessMm) / 1e6 + 0.0008 * sz * sz + ductSide + (spec.extraMassG > 40 ? 0.0018 : 0);
+  const side = (bd[0] * bd[2]) / 1e6 + (frame.plateLengthMm * frame.stackHeightMm) / 1e6 + 4 * (motor.bellDiaMm * motor.bellHeightMm) / 1e6 * 0.6 + 0.0006 * sz * sz + ductSide;
   const top = (bd[0] * bd[1]) / 1e6 + (frame.plateLengthMm * frame.plateWidthMm) / 1e6 + 4 * (Math.hypot(mx, my) * 0.8 * frame.armWidthMm) / 1000;
   const cdA = { x: 1.05 * frontal * cdS, y: 1.1 * side * cdS, z: 1.2 * top * cdS };
-  const dragCenter = { x: 0.004, y: 0, z: (batZ * 0.5 + 0.015 * 0.5) - cg.z };
+  const dragCenter = { x: 0.004 * (wb / 0.225), y: 0, z: (batZ * 0.5 + 0.015 * sz * 0.5) - cg.z };
 
   // ---------- colliders ----------
   const colliders: ColliderSphere[] = [];
   const add = (x: number, y: number, z: number, r: number, kind: ColliderSphere['kind'], rotor = -1) => colliders.push({ pos: { x: x - cg.x, y: y - cg.y, z: z - cg.z }, radius: r, kind, rotor });
   add(0, 0, frame.stackHeightMm / 2000, Math.min(frame.plateWidthMm, frame.stackHeightMm * 1.4) / 2000, 'frame');
-  add(frame.plateLengthMm / 2200, 0, frame.stackHeightMm / 2000, 0.016, 'camera');
-  add(-frame.plateLengthMm / 2400, 0, frame.stackHeightMm / 2000, 0.014, 'frame');
+  add(frame.plateLengthMm / 2200, 0, frame.stackHeightMm / 2000, 0.016 * sz, 'camera');
+  add(-frame.plateLengthMm / 2400, 0, frame.stackHeightMm / 2000, 0.014 * sz, 'frame');
   add(bd[0] / 3000, 0, batZ, bd[2] / 2000, 'battery');
   add(-bd[0] / 3000, 0, batZ, bd[2] / 2000, 'battery');
   for (let k = 0; k < 4; k++) {
@@ -211,7 +231,9 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
     add(h.x * 0.5, h.y * 0.5, -0.002, frame.armThicknessMm / 1000 + 0.002, 'frame'); // arm mid
     for (let j = 0; j < 6; j++) {
       const a = (j / 6) * 2 * Math.PI;
-      add(h.x + Math.cos(a) * R * 0.92, h.y + Math.sin(a) * R * 0.92, h.z, 0.008, 'prop', k);
+      // ducted: the guard ring takes the hit (frame contact, no prop strike); open props can strike
+      if (ducted) add(h.x + Math.cos(a) * R * 1.08, h.y + Math.sin(a) * R * 1.08, h.z, Math.max(0.003, ductH / 2), 'frame');
+      else add(h.x + Math.cos(a) * R * 0.92, h.y + Math.sin(a) * R * 0.92, h.z, 0.008 * sz, 'prop', k);
     }
   }
 
@@ -225,7 +247,7 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
   const bp = batteryFromSpec({
     chemistry: battery.chemistry, cells: ov.cells ?? battery.cells, parallel: battery.parallel,
     capacityMah: ov.capacityMah ?? battery.capacityMah, cRating: battery.cRating,
-    irPerCellMohm: ov.irPerCellMohm ?? battery.irPerCellMohm, massG: battery.massG * capScale, ageFactor: spec.batteryAge,
+    irPerCellMohm: ov.irPerCellMohm ?? battery.irPerCellMohm, massG: battery.massG * capScale, ageFactor: spec.batteryAge, wiringMohm: battery.wiringMohm,
   });
 
   const params: QuadParams = {

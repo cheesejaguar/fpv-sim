@@ -468,7 +468,9 @@ function animate(now: number) {
       spinProps(rpmNow);
       const p = drone.root.position;
       if (view.view === 'chase') {
-        const back = tmpV.set(-1.6, 0.6, 0).applyQuaternion(tmpQ.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOf(drone.root.quaternion)));
+        // chase distance scales with the quad (1.6 m behind a 5", ~0.5 m behind a 65 mm whoop)
+        const cs = Math.max(0.3, Math.min(1.3, build.info.components.frame.wheelbaseMm / 225));
+        const back = tmpV.set(-1.6 * cs, 0.6 * cs, 0).applyQuaternion(tmpQ.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOf(drone.root.quaternion)));
         chaseCam.position.lerp(back.add(p), 0.15);
         chaseCam.lookAt(p);
       } else {

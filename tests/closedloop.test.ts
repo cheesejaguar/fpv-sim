@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { Betaflight } from '../src/bf/bfModule';
 import { defaultCli } from '../src/bf/defaults';
-import { buildDrone, DEFAULT_SPEC } from '../src/builder/derive';
+import { buildDrone, DEFAULT_SPEC, PRESETS } from '../src/builder/derive';
 import { GroundPlane } from '../src/sim/contact';
 import { QuadEnv, QuadSim } from '../src/sim/quad';
 import { WakeField } from '../src/sim/wake';
@@ -15,11 +15,11 @@ const FW = new URL('../public/bf/betaflight.mjs', import.meta.url);
 const have = existsSync(FW);
 const DT_US = 125, DT = DT_US / 1e6;
 
-async function rig() {
+async function rig(spec = DEFAULT_SPEC) {
   if (process.env.NOBIAS) { const { GYRO_CHIPS } = await import('../src/sim/imu'); GYRO_CHIPS.ICM42688P.turnOnBiasDps = 0; GYRO_CHIPS.ICM42688P.gyroBiasWalk = 0; }
   const mod = await import(/* @vite-ignore */ pathToFileURL(FW.pathname.replace(/^\/([A-Za-z]:)/, '$1')).href);
   const bf = await Betaflight.fromFactory(mod.default);
-  const build = buildDrone(DEFAULT_SPEC);
+  const build = buildDrone(spec);
   const quad = new QuadSim(build.params, 8000);
   const env: QuadEnv = { world: new GroundPlane(), wind: new Wind({ speed20ft: 0, directionDeg: 0, z0: 0.03, turbulence: 0, gustiness: 0, gustMax: 0 }), wake: new WakeField(), ambientC: 20, altitudeOffset: 0, damageEnabled: false };
   quad.reset({ x: 0, y: 0, z: 0.04 });
@@ -89,5 +89,28 @@ describe.skipIf(!have)('Betaflight WASM closed loop', () => {
     console.log(`full-stick roll rate ${(p * 180 / Math.PI).toFixed(0)} deg/s`);
     expect(p * 180 / Math.PI).toBeGreaterThan(450); // BF 4.5 default actual rates: 670 deg/s max
     expect(p * 180 / Math.PI).toBeLessThan(800);
+  }, 120000);
+
+  test.each(PRESETS.filter((p) => p.name.startsWith('Beginner')).map((p) => [p.name, p] as const))('%s flies stably on stock Betaflight PIDs', async (_n, spec) => {
+    const r = await rig(spec);
+    r.run(1); r.cli(defaultCli(r.build)); r.run(4);
+    expect(r.bf.armingDisableFlags()).toBe(0);
+    r.rc[4] = 1900; expect(r.run(0.3)).toBe(true);
+    // climb out, then hold about the hover throttle with sticks centred (acro)
+    const hover = 1000 + 1000 * (0.055 + r.build.info.hoverThrottle * 0.945);
+    r.rc[2] = Math.min(2000, hover + 150); r.run(0.8);
+    r.rc[2] = hover; r.run(1.0);
+    // acro holds whatever attitude it has after the take-off hop: measure that it STAYS put
+    const tilt = () => { const q = r.quad.s.q; return Math.acos(Math.min(1, 1 - 2 * (q.x * q.x + q.y * q.y))) * 180 / Math.PI; };
+    const tilt0 = tilt();
+    let s2 = 0, n = 0;
+    for (let i = 0; i < 16000; i++) { r.run(1 / 8000); const w = r.quad.s.w; s2 += w.x * w.x + w.y * w.y; n++; }
+    const rmsDps = Math.sqrt(s2 / n) * 180 / Math.PI;
+    console.log(`${spec.name}: roll/pitch rate RMS ${rmsDps.toFixed(1)} deg/s, attitude change over 2 s ${Math.abs(tilt() - tilt0).toFixed(2)} deg, alt ${r.quad.s.pos.z.toFixed(1)} m`);
+    expect(rmsDps).toBeLessThan(25); // no PID oscillation
+    expect(Math.abs(tilt() - tilt0)).toBeLessThan(3);
+    // full right roll still produces a crisp roll
+    r.rc[0] = 2000; r.run(0.25);
+    expect(r.quad.s.w.x * 180 / Math.PI).toBeGreaterThan(400);
   }, 120000);
 });

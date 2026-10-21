@@ -21,6 +21,10 @@ export interface RotorConfig {
   propInertia: number; // kg m^2
   propMass: number;
   bladeCount: number;
+  /** Ducted prop: static thrust augmentation fraction (0 = open prop). */
+  ductGain?: number;
+  /** Residual static imbalance of a pristine prop (kg·m). */
+  imbalance?: number;
 }
 
 export interface QuadParams {
@@ -90,7 +94,12 @@ export class QuadSim {
     this.p = p;
     this.physicsHz = physicsHz;
     this.motors = p.rotors.map((r) => new Motor(r.motor, ambientC));
-    this.aero = p.rotors.map((r, i) => new RotorAero(r.table, 100 + i));
+    this.aero = p.rotors.map((r, i) => {
+      const a = new RotorAero(r.table, 100 + i);
+      a.ductGain = r.ductGain ?? 0;
+      a.damage.imbalance = r.imbalance ?? a.damage.imbalance;
+      return a;
+    });
     this.rotorOut = p.rotors.map(() => ({ thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0 }));
     this.phase = p.rotors.map((_, i) => i * 1.3);
     this.rotorExtraTorque = p.rotors.map(() => 0);
@@ -408,5 +417,8 @@ export class QuadSim {
     }
   }
 
-  repair(): void { for (const a of this.aero) a.damage = pristineDamage(); this.propStrikeLog = []; }
+  repair(): void {
+    this.aero.forEach((a, k) => { a.damage = pristineDamage(); a.damage.imbalance = this.p.rotors[k].imbalance ?? a.damage.imbalance; });
+    this.propStrikeLog = [];
+  }
 }

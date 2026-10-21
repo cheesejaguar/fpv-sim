@@ -111,7 +111,7 @@ export class Battery {
 /** Build battery params from catalogue-style specs. */
 export function batteryFromSpec(spec: {
   chemistry: Chemistry; cells: number; parallel?: number; capacityMah: number; cRating: number;
-  irPerCellMohm?: number; massG: number; ageFactor?: number;
+  irPerCellMohm?: number; massG: number; ageFactor?: number; wiringMohm?: number;
 }): BatteryParams {
   // If the IR isn't given, estimate from capacity and (heavily marketing-inflated) C rating:
   // real sustained rating ~ 0.4 * label; DCIR ~ (0.18 V allowed drop) / (sustained current per cell)
@@ -129,7 +129,7 @@ export function batteryFromSpec(spec: {
     heatCapJPerKgK: spec.chemistry === 'LiIon' ? 900 : 1050,
     hAWPerK: 0.35,
     activationEnergyJmol: 28000,
-    wiringOhm: 0.0025,
+    wiringOhm: (spec.wiringMohm ?? 2.5) / 1000,
     ageFactor: spec.ageFactor ?? 1,
   };
 }
