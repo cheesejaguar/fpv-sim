@@ -8,7 +8,8 @@
 import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { defaultCli, osdGrid, osdLayout } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
-import { MAPS, preloadMap } from '../maps/maps';
+import { packageEntry, urlTableSource } from '../maps/mapFormat';
+import { MAPS, preloadMap, registerMap } from '../maps/maps';
 import { GateDef, MapDef, PrimitiveWorld, spawnGroundZ } from '../maps/world';
 import { isa } from '../sim/atmosphere';
 import { Spectrum } from '../sim/fft';
@@ -457,6 +458,12 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       for (const a of quad.aero) a.propwashScale = settings.propwash;
       if (rateChanged) buildQuad(true);
       wallStart = performance.now(); simAtWallStart = simT;
+      break;
+    }
+    case 'registerMap': {
+      // a map package loaded from disk (blob: URLs from the main thread)
+      registerMap(m.id, packageEntry(m.id, { ...m.info, local: true }, () => urlTableSource(m.urls)));
+      if (settings?.mapId === m.id && quad) { await loadMap(m.id); respawn(); }
       break;
     }
     case 'reset': {

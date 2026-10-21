@@ -3,6 +3,7 @@ import './style.css';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from './builder/derive';
 import { InputManager } from './input/gamepad';
 import { webHidSupported } from './input/steamHid';
+import { isLocalMap, onLocalMap } from './maps/localMaps';
 import { MAPS, preloadMap } from './maps/maps';
 import { MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from './maps/world';
 import { MotorAudio } from './render/audio';
@@ -150,8 +151,8 @@ function applySpec(s: DroneSpec) {
   send({ type: 'spec', spec: s });
 }
 
-function applySim(s: SimSettings) {
-  const mapChanged = s.mapId !== simSettings.mapId;
+function applySim(s: SimSettings, reloadMap = false) {
+  const mapChanged = reloadMap || s.mapId !== simSettings.mapId;
   simSettings = s; store('fpv-sim-settings', s);
   // loading is async (Quake maps fetch their sources): remember now whether the room asked for it
   const fromRoom = applyingRoomMap;
@@ -160,10 +161,16 @@ function applySim(s: SimSettings) {
     sceneB.scene.remove(drone.root); sceneB.dispose();
     map = MAPS[s.mapId](); world = new PrimitiveWorld(map); sceneB = buildScene(map); sceneB.scene.add(drone.root);
     lapStart = -1; bestLap = Infinity; lapCount = 0;
-    if (mp.connected && !fromRoom) mp.sendMap(s.mapId); // the room flies one shared map
+    if (mp.connected && !fromRoom && !isLocalMap(s.mapId)) mp.sendMap(s.mapId); // the room flies one shared map
   }, (e) => log(`Map ${s.mapId} failed to load: ${e}`));
   send({ type: 'settings', settings: { ...s, paused: menuOpen && pauseInMenu } });
 }
+
+// maps loaded from disk: the worker needs them too; reloading the selected one rebuilds it
+onLocalMap((id, info, urls) => {
+  send({ type: 'registerMap', id, info, urls });
+  if (simSettings.mapId === id) applySim(simSettings, true);
+});
 
 function applyView(v: ViewSettings) {
   const fontChanged = v.osdFont !== view.osdFont, scaleChanged = v.renderScale !== view.renderScale;

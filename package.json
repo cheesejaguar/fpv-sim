@@ -5,13 +5,17 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "scripts": {
+    "predev": "node scripts/build-map-index.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/build-map-index.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "fonts": "node scripts/fetch-fonts.mjs",
-    "firmware": "bash scripts/build-firmware.sh"
+    "firmware": "bash scripts/build-firmware.sh",
+    "map:index": "node scripts/build-map-index.mjs",
+    "map:validate": "node scripts/validate-map.mjs"
   },
   "dependencies": {
     "three": "^0.186.1",
@@ -20,6 +24,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/three": "^0.186.0",
+    "ajv": "^8.20.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.5"

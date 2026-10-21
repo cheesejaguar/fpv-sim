@@ -1,0 +1,1018 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/cheesejaguar/fpv-sim/schemas/map.v1.schema.json",
+  "title": "fpvsim-map v1",
+  "description": "A map package for fpv-sim (map.json). Units: metres and degrees. Frame: ENU (x east, y north, z up). See docs/MAP_FORMAT.md.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "format": {
+      "const": "fpvsim-map"
+    },
+    "formatVersion": {
+      "const": 1
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,23}$",
+          "description": "Unique id; equals the package folder name."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 120,
+          "not": {
+            "pattern": "-N[CD](-|$)"
+          },
+          "description": "SPDX licence id or expression covering the whole package (accepted ids: docs/MAP_FORMAT.md)."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Semantic version of the map itself."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "preview": {
+          "type": "string",
+          "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
+          "maxLength": 128,
+          "description": "Preview image (16:9, <= 512 KiB)."
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,24}$"
+          }
+        },
+        "homepage": {
+          "type": "string",
+          "pattern": "^https://",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "author",
+        "license",
+        "version"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {},
+        "^\\$comment$": {}
+      }
+    },
+    "units": {
+      "const": "m"
+    },
+    "frame": {
+      "const": "ENU"
+    },
+    "size": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 2000,
+      "description": "Half-extent of the playable area (m); the terrain mesh covers 2.2 x this."
+    },
+    "elevationM": {
+      "type": "number",
+      "minimum": -500,
+      "maximum": 9000,
+      "description": "Altitude above sea level (air density, barometer)."
+    },
+    "spawn": {
+      "type": "object",
+      "properties": {
+        "pos": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Spawn point; the quad is placed on the floor below it."
+        },
+        "yawDeg": {
+          "type": "number",
+          "description": "Heading, degrees counter-clockwise from east: 0 = east, 90 = north."
+        },
+        "groundZ": {
+          "type": "number",
+          "description": "Floor height at the spawn (default: terrain height)."
+        }
+      },
+      "required": [
+        "pos"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {},
+        "^\\$comment$": {}
+      }
+    },
+    "pilot": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Pilot / video receiver position (default: 2 m south-west of the spawn, 1.6 m above the terrain)."
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "sky": {
+          "enum": [
+            "clear",
+            "overcast",
+            "dusk"
+          ],
+          "default": "clear"
+        },
+        "sun": {
+          "type": "object",
+          "properties": {
+            "azimuthDeg": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 360,
+              "description": "Clockwise from north."
+            },
+            "elevationDeg": {
+              "type": "number",
+              "minimum": -10,
+              "maximum": 90
+            }
+          },
+          "required": [
+            "azimuthDeg",
+            "elevationDeg"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {},
+            "^\\$comment$": {}
+          }
+        },
+        "fog": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "description": "sRGB colour \"#rrggbb\"."
+            },
+            "density": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.1,
+              "description": "Exponential-squared fog density (1/m)."
+            }
+          },
+          "required": [
+            "color",
+            "density"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {},
+            "^\\$comment$": {}
+          }
+        },
+        "windScale": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Multiplies the configured wind (indoor maps: 0.1 - 0.3)."
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {},
+        "^\\$comment$": {}
+      }
+    },
+    "ground": {
+      "description": "Terrain under everything (default: flat at z = 0, or that of the Quake / Doom geometry).",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "flat"
+            },
+            "z": {
+              "type": "number"
+            },
+            "material": {
+              "enum": [
+                "grass",
+                "dirt",
+                "concrete"
+              ],
+              "default": "grass"
+            },
+            "visible": {
+              "type": "boolean",
+              "default": true,
+              "description": "Draw the terrain mesh (false: collision only)."
+            },
+            "texture": {
+              "type": "string",
+              "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
+              "maxLength": 128,
+              "description": "Ground texture (repeats every 3 m); default from material."
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {},
+            "^\\$comment$": {}
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "heightfield"
+            },
+            "image": {
+              "type": "string",
+              "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png)$",
+              "maxLength": 128,
+              "description": "Greyscale PNG (8 or 16 bit), 2..1025 px per side. Pixel (0, 0) is the north-west corner."
+            },
+            "extent": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Size in metres [east-west, north-south]."
+            },
+            "center": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Centre [x, y] (default [0, 0])."
+            },
+            "zMin": {
+              "type": "number",
+              "description": "Height of black."
+            },
+            "zMax": {
+              "type": "number",
+              "description": "Height of white."
+            },
+            "material": {
+              "enum": [
+                "grass",
+                "dirt",
+                "concrete"
+              ],
+              "default": "grass"
+            },
+            "visible": {
+              "type": "boolean",
+              "default": true,
+              "description": "Draw the terrain mesh (false: collision only)."
+            },
+            "texture": {
+              "type": "string",
+              "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
+              "maxLength": 128,
+              "description": "Ground texture (repeats every 3 m); default from material."
+            }
+          },
+          "required": [
+            "type",
+            "image",
+            "extent",
+            "zMin",
+            "zMax"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {},
+            "^\\$comment$": {}
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "noise"
+            },
+            "base": {
+              "type": "number",
+              "default": 0
+            },
+            "material": {
+              "enum": [
+                "grass",
+                "dirt",
+                "concrete"
+              ],
+              "default": "grass"
+            },
+            "visible": {
+              "type": "boolean",
+              "default": true,
+              "description": "Draw the terrain mesh (false: collision only)."
+            },
+            "texture": {
+              "type": "string",
+              "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
+              "maxLength": 128,
+              "description": "Ground texture (repeats every 3 m); default from material."
+            },
+            "layers": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "noise": {
+                    "const": "fbm"
+                  },
+                  "scale": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Feature size (m): noise is sampled at (x / scale, y / scale)."
+                  },
+                  "octaves": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 4
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "default": 1
+                  },
+                  "amplitude": {
+                    "type": "number"
+                  },
+                  "mask": {
+                    "type": "object",
+                    "properties": {
+                      "shape": {
+                        "enum": [
+                          "square",
+                          "circle"
+                        ]
+                      },
+                      "center": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      },
+                      "from": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "to": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "invert": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "shape",
+                      "from",
+                      "to"
+                    ],
+                    "additionalProperties": false,
+                    "patternProperties": {
+                      "^x-": {},
+                      "^\\$comment$": {}
+                    },
+                    "description": "Fade the layer from 0 at distance \"from\" to 1 at \"to\" (square: Chebyshev distance)."
+                  }
+                },
+                "required": [
+                  "scale",
+                  "amplitude"
+                ],
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x-": {},
+                  "^\\$comment$": {}
+                }
+              }
+            }
+          },
+          "required": [
+            "type",
+            "layers"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {},
+            "^\\$comment$": {}
+          }
+        }
+      ]
+    },
+    "primitives": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "box"
+              },
+              "pos": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "material": {
+                "enum": [
+                  "grass",
+                  "dirt",
+                  "concrete",
+                  "metal",
+                  "wood",
+                  "foliage",
+                  "gate"
+                ],
+                "description": "Physical surface: restitution, friction, stiffness and prop damage on impact (src/sim/contact.ts MATERIALS)."
+              },
+              "color": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$",
+                "description": "sRGB colour \"#rrggbb\"."
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "maxLength": 32,
+                "description": "Free-form label (\"tank\" and \"gate*\" have special rendering)."
+              },
+              "size": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "Full size [x, y, z] (m) before rotation."
+              },
+              "yawDeg": {
+                "type": "number",
+                "description": "Rotation about +z, counter-clockwise."
+              },
+              "pitchDeg": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90,
+                "description": "Then rotation about the box's own y axis."
+              },
+              "visual": {
+                "enum": [
+                  "concrete",
+                  "brick",
+                  "metal",
+                  "wood",
+                  "gate",
+                  "pad",
+                  "glass",
+                  "plain"
+                ],
+                "default": "concrete"
+              },
+              "texture": {
+                "type": "string",
+                "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
+                "maxLength": 128,
+                "description": "Texture image (world-scaled, repeats every 2 m); overrides visual."
+              }
+            },
+            "required": [
+              "type",
+              "pos",
+              "size"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {},
+              "^\\$comment$": {}
+            },
+            "description": "pos = centre. Default material concrete."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "cylinder"
+              },
+              "pos": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "material": {
+                "enum": [
+                  "grass",
+                  "dirt",
+                  "concrete",
+                  "metal",
+                  "wood",
+                  "foliage",
+                  "gate"
+                ],
+                "description": "Physical surface: restitution, friction, stiffness and prop damage on impact (src/sim/contact.ts MATERIALS)."
+              },
+              "color": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$",
+                "description": "sRGB colour \"#rrggbb\"."
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "maxLength": 32,
+                "description": "Free-form label (\"tank\" and \"gate*\" have special rendering)."
+              },
+              "radius": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "height": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "type",
+              "pos",
+              "radius",
+              "height"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {},
+              "^\\$comment$": {}
+            },
+            "description": "Vertical; pos = centre of the base. Default material metal."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "sphere"
+              },
+              "pos": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "material": {
+                "enum": [
+                  "grass",
+                  "dirt",
+                  "concrete",
+                  "metal",
+                  "wood",
+                  "foliage",
+                  "gate"
+                ],
+                "description": "Physical surface: restitution, friction, stiffness and prop damage on impact (src/sim/contact.ts MATERIALS)."
+              },
+              "color": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$",
+                "description": "sRGB colour \"#rrggbb\"."
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "maxLength": 32,
+                "description": "Free-form label (\"tank\" and \"gate*\" have special rendering)."
+              },
+              "radius": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "type",
+              "pos",
+              "radius"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {},
+              "^\\$comment$": {}
+            },
+            "description": "pos = centre. Default material concrete."
+          }
+        ]
+      }
+    },
+    "gates": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "Race gates in lap order.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "square",
+              "arch",
+              "dive",
+              "flag"
+            ]
+          },
+          "pos": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y] standing on the terrain, or [x, y, z]; dive gates need z (frame height)."
+          },
+          "yawDeg": {
+            "type": "number",
+            "description": "Rotation about +z. At 0 the gate spans east-west and is flown through northwards."
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 20,
+            "description": "Opening (m). Defaults: square / dive / flag 1.524, arch 3.0."
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 20,
+            "description": "Defaults: square / dive 1.524, arch 2.6, flag 3.2."
+          }
+        },
+        "required": [
+          "kind",
+          "pos"
+        ],
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        },
+        "if": {
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "dive"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "pos": {
+              "minItems": 3
+            }
+          }
+        }
+      }
+    },
+    "trees": {
+      "type": "array",
+      "maxItems": 3000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "pos": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Standing on the terrain."
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 60
+          },
+          "radius": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 20,
+            "description": "Crown radius."
+          },
+          "type": {
+            "enum": [
+              "pine",
+              "oak"
+            ]
+          }
+        },
+        "required": [
+          "pos",
+          "height",
+          "radius",
+          "type"
+        ],
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        }
+      }
+    },
+    "wakeZones": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Turbulent wake behind buildings.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pos": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "radius": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "intensity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 5
+          }
+        },
+        "required": [
+          "pos",
+          "radius",
+          "height",
+          "intensity"
+        ],
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        }
+      }
+    },
+    "geometry": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "External geometry. At most one quake or doom entry.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "quake"
+              },
+              "src": {
+                "type": "string",
+                "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(map)$",
+                "maxLength": 128,
+                "description": "Quake .map brush source."
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "default": 0.03125
+              },
+              "ambient": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 255,
+                "default": 40
+              },
+              "spawnClass": {
+                "type": "string",
+                "pattern": "^[a-z_]+$"
+              },
+              "textures": {
+                "anyOf": [
+                  {
+                    "const": "builtin:librequake"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(json)$",
+                    "maxLength": 128,
+                    "description": "Texture manifest {name: {file, w, h}}, files relative to it."
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "src"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {},
+              "^\\$comment$": {}
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "doom"
+              },
+              "src": {
+                "type": "string",
+                "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(json)$",
+                "maxLength": 128,
+                "description": "Doom level as lump JSON (scripts/vendor-freedoom.mjs)."
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "default": 0.03125
+              },
+              "textures": {
+                "type": "string",
+                "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(json)$",
+                "maxLength": 128,
+                "description": "Texture manifest {\"w/NAME\" | \"f/NAME\": {file, w, h}}."
+              }
+            },
+            "required": [
+              "type",
+              "src",
+              "textures"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {},
+              "^\\$comment$": {}
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "gltf"
+              },
+              "src": {
+                "type": "string",
+                "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(glb)$",
+                "maxLength": 128,
+                "description": "Binary glTF 2.0 with embedded buffers and images; no Draco / meshopt / KTX2."
+              },
+              "pos": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "Placement (default origin)."
+              },
+              "yawDeg": {
+                "type": "number"
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000,
+                "default": 1
+              },
+              "collision": {
+                "enum": [
+                  "mesh",
+                  "box",
+                  "none"
+                ],
+                "default": "mesh"
+              },
+              "material": {
+                "enum": [
+                  "grass",
+                  "dirt",
+                  "concrete",
+                  "metal",
+                  "wood",
+                  "foliage",
+                  "gate"
+                ],
+                "description": "Physical surface: restitution, friction, stiffness and prop damage on impact (src/sim/contact.ts MATERIALS)."
+              }
+            },
+            "required": [
+              "type",
+              "src"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {},
+              "^\\$comment$": {}
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "format",
+    "formatVersion",
+    "meta",
+    "size"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {},
+    "^\\$comment$": {}
+  },
+  "if": {
+    "not": {
+      "required": [
+        "geometry"
+      ],
+      "properties": {
+        "geometry": {
+          "contains": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "quake",
+                  "doom"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "spawn"
+    ]
+  }
+}

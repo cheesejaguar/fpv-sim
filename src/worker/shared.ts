@@ -97,7 +97,8 @@ export type ToWorker =
   | { type: 'cli'; text: string }
   | { type: 'cliBatch'; lines: string[]; id: number }
   | { type: 'factoryReset' }
-  | { type: 'spectrum'; on: boolean };
+  | { type: 'spectrum'; on: boolean }
+  | { type: 'registerMap'; id: string; info: { name: string; author: string; license: string }; urls: Record<string, string> };
 
 export interface Telemetry {
   t: number;

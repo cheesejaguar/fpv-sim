@@ -2,6 +2,7 @@
 // gates, sky, sun with shadows and atmospheric fog.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { MapDef, Prim } from '../maps/world';
 import { addQuakeLevel } from './quakeScene';
@@ -24,6 +25,15 @@ function boxGeometryWorldUV(sx: number, sy: number, sz: number, texel = 2): THRE
     uv.setXY(i, (uv.getX(i) * dims[f][0]) / texel, (uv.getY(i) * dims[f][1]) / texel);
   }
   return g;
+}
+
+/** Repeating sRGB texture from an image URL (map packages). */
+function imageTexture(url: string): THREE.Texture {
+  const t = new THREE.TextureLoader().load(url);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
 }
 
 export function buildScene(map: MapDef): SceneBundle {
@@ -61,7 +71,7 @@ export function buildScene(map: MapDef): SceneBundle {
   sc.left = -45; sc.right = 45; sc.top = 45; sc.bottom = -45; sc.near = 1; sc.far = 400;
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
   scene.add(sun, sun.target);
-  scene.fog = new THREE.FogExp2(overcast ? 0xa9b0b5 : 0xbcd0e0, overcast ? 0.0045 : 0.0022);
+  scene.fog = new THREE.FogExp2(map.fog?.color ?? (overcast ? 0xa9b0b5 : 0xbcd0e0), map.fog?.density ?? (overcast ? 0.0045 : 0.0022));
 
   // ---- terrain ----
   if (map.ground !== false) {
@@ -81,7 +91,7 @@ export function buildScene(map: MapDef): SceneBundle {
     const uvs = tg.getAttribute('uv') as THREE.BufferAttribute;
     for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * S / 3, uvs.getY(i) * S / 3);
     tg.computeVertexNormals();
-    const groundTex = track(map.groundMat === 'grass' ? grassTexture() : dirtTexture());
+    const groundTex = track(map.groundTexture ? imageTexture(map.groundTexture) : map.groundMat === 'grass' ? grassTexture() : dirtTexture());
     const ground = new THREE.Mesh(track(tg), track(new THREE.MeshStandardMaterial({ map: groundTex, vertexColors: true, roughness: 0.95 })));
     ground.receiveShadow = true;
     scene.add(ground);
@@ -109,7 +119,8 @@ export function buildScene(map: MapDef): SceneBundle {
       geo = boxGeometryWorldUV(pr.half.x * 2, pr.half.z * 2, pr.half.y * 2, vis === 'pad' ? Math.max(pr.half.x, pr.half.y) * 2 : 2);
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pr.yaw);
       p3.set(pr.c.x, pr.c.z, -pr.c.y);
-      if (vis === 'gate') {
+      if (pr.texture) { const url = pr.texture; key = `tex:${url}`; make = () => new THREE.MeshStandardMaterial({ map: track(imageTexture(url)), roughness: 0.85 }); }
+      else if (vis === 'gate') {
         const gi = parseInt((pr.tag ?? '').replace(/\D/g, '') || '0', 10);
         const col = gateColors[gi % gateColors.length];
         key = `gate${col}`; make = () => new THREE.MeshStandardMaterial({ map: gateTexture('#' + col.toString(16).padStart(6, '0')), roughness: 0.6, emissive: col, emissiveIntensity: 0.12 });
@@ -119,8 +130,9 @@ export function buildScene(map: MapDef): SceneBundle {
       geo = new THREE.CylinderGeometry(pr.r, pr.r, pr.h, pr.r > 1 ? 32 : 10);
       q.identity(); p3.set(pr.c.x, pr.c.z + pr.h / 2, -pr.c.y);
       const isGate = (pr.tag ?? '').startsWith('gate');
-      key = isGate ? 'gatepole' : pr.mat === 'dirt' ? 'bale' : pr.tag === 'tank' ? 'tank' : 'metalcyl';
-      make = () => new THREE.MeshStandardMaterial({ color: isGate ? 0xffffff : pr.color ?? 0x8a8f94, map: key === 'tank' ? texCache.metal : null, roughness: key === 'bale' ? 1 : 0.5, metalness: key === 'metalcyl' || key === 'tank' ? 0.6 : 0 });
+      key = (isGate ? 'gatepole' : pr.mat === 'dirt' ? 'bale' : pr.tag === 'tank' ? 'tank' : 'metalcyl') + (isGate ? '' : pr.color ?? '');
+      const kind = key.replace(/\d+$/, '');
+      make = () => new THREE.MeshStandardMaterial({ color: isGate ? 0xffffff : pr.color ?? 0x8a8f94, map: kind === 'tank' ? texCache.metal : null, roughness: kind === 'bale' ? 1 : 0.5, metalness: kind === 'metalcyl' || kind === 'tank' ? 0.6 : 0 });
     } else {
       geo = new THREE.SphereGeometry(pr.r, 16, 12);
       q.identity(); p3.set(pr.c.x, pr.c.z, -pr.c.y);
@@ -166,8 +178,33 @@ export function buildScene(map: MapDef): SceneBundle {
   });
   for (const im of [trunks, pineI, oakI]) { im.castShadow = true; im.receiveShadow = true; im.instanceMatrix.needsUpdate = true; scene.add(im); }
 
+  // ---- glTF meshes (map packages); they load asynchronously, like the Quake textures ----
+  let disposed = false;
+  if (map.meshes?.length) {
+    const loader = new GLTFLoader();
+    for (const mi of map.meshes) loader.load(mi.url, (gltf) => {
+      const root = gltf.scene;
+      root.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        m.castShadow = true; m.receiveShadow = true;
+        track(m.geometry);
+        for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+          track(mat);
+          for (const v of Object.values(mat)) if (v instanceof THREE.Texture) track(v);
+        }
+      });
+      // glTF axes are three.js axes; place in ENU (three: x, z, -y), yaw about up
+      root.position.set(mi.pos.x, mi.pos.z, -mi.pos.y);
+      root.rotation.y = mi.yaw;
+      root.scale.setScalar(mi.scale);
+      if (disposed) { root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }); return; }
+      scene.add(root);
+    }, undefined, (e) => console.warn(`map mesh ${mi.url} failed to load`, e));
+  }
+
   return {
     scene, sun, sunDir, gateMeshes,
-    dispose() { for (const d of disposables) d.dispose(); sky.material.dispose(); sky.geometry.dispose(); },
+    dispose() { disposed = true; for (const d of disposables) d.dispose(); sky.material.dispose(); sky.geometry.dispose(); },
   };
 }
