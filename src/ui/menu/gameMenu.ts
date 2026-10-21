@@ -240,7 +240,7 @@ export class GameMenu {
         this.item({ icon: 'rotate', title: 'Respawn', sub: 'Repaired quad, fresh battery, back on the pad', onClick: () => { this.host.startFlight(this.ng.mode); this.close(); } }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: 'Arming, modes, rates, PIDs, OSD', onClick: () => this.go('guide') }),
-        ...(mp.room && mp.status !== 'idle' ? [this.item({ icon: 'logout', title: 'Leave room', sub: mp.connected ? `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)` : `Room ${mp.room}: ${mp.status === 'error' ? 'disconnected' : 'reconnecting…'}`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
+        ...(mp.room && mp.status !== 'idle' ? [this.item({ icon: 'logout', title: 'Leave room', sub: mp.connected ? `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)` : `Room ${mp.room}: ${{ error: 'disconnected', reconnecting: 'reconnecting…', connecting: 'joining…' }[mp.status as string] ?? ''}`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
         this.item({ icon: 'home', title: 'Main menu', sub: 'New game, server browser', onClick: () => { this.stack = ['title']; this.render(); } }),
       ]
       : [
@@ -447,20 +447,23 @@ export class GameMenu {
   private roomCardView(): HTMLElement {
     const mp = this.host.mp;
     const title = el('h3', {}), sub = el('p', { class: 'gm-room-sub', style: { margin: '0 0 12px' } });
-    const fly = el('button', { class: 'gm-btn cta', 'data-key': 'room-fly', onclick: () => { this.host.startFlight('free'); this.inFlight = true; this.close(); } }, icon('play'), 'Fly') as HTMLButtonElement;
+    const fly = el('button', { class: 'gm-btn cta', 'data-key': 'room-fly', onclick: () => { if (!this.inFlight) this.host.startFlight('free'); this.inFlight = true; this.close(); } }, icon('play'), 'Fly') as HTMLButtonElement;
     const retry = el('button', { class: 'gm-btn primary', 'data-key': 'room-retry', onclick: () => mp.retry() }, icon('refresh'), 'Retry') as HTMLButtonElement;
     const leave = el('button', { class: 'gm-btn ghost', 'data-key': 'room-leave', onclick: () => { mp.leave(); history.replaceState(null, '', location.pathname); } }, icon('logout'), 'Leave');
     const card = el('div', { class: 'gm-card', style: { margin: '0 0 18px', maxWidth: '520px' }, 'aria-live': 'polite' }, title, sub, el('div', { class: 'gm-actions' }, fly, retry, leave));
+    // (style.display, not the hidden attribute: .gm-card / .gm-btn set their own display)
+    const show = (e: HTMLElement, on: boolean) => { e.style.display = on ? '' : 'none'; };
     const draw = () => {
-      card.hidden = !mp.room || mp.status === 'idle';
-      if (card.hidden) return;
+      const on = !!mp.room && mp.status !== 'idle';
+      show(card, on);
+      if (!on) return;
       const s = mp.status;
       title.textContent = s === 'connected' ? `In room ${mp.room}` : s === 'error' ? `Couldn’t join room ${mp.room}` : s === 'reconnecting' ? `Reconnecting to room ${mp.room}…` : `Joining room ${mp.room}…`;
       sub.textContent = s === 'connected'
         ? [`${mp.peers.size + 1} pilot${mp.peers.size ? 's' : ''}`, mp.latencyMs ? `ping ${Math.round(mp.latencyMs)} ms` : '', ...mp.versionNotes()].filter(Boolean).join(' · ')
         : s === 'connecting' ? 'Connecting to the room server…' : mp.error;
       fly.disabled = s !== 'connected';
-      retry.hidden = s !== 'error';
+      show(retry, s === 'error');
     };
     draw();
     this.roomCardDraw = () => { if (card.isConnected) draw(); };

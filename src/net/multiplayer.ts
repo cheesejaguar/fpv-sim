@@ -291,7 +291,7 @@ export class MultiplayerClient {
     this.map = map;
     this.send({ t: 'map', map });
   }
-  sendLap(lap: number, last: number, best: number) { this.send({ t: 'lap', lap, last, best: Number.isFinite(best) ? best : 0 }); }
+  sendLap(lap: number, last: number, best: number) { if (this.connected) this.send({ t: 'lap', lap, last, best: Number.isFinite(best) ? best : 0 }); }
 
   /** Interpolated pose of a peer at (now - delay); null if nothing received recently. */
   poseOf(peer: Peer, now: number): PeerPose | null {
