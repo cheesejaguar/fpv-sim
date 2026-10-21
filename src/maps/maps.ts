@@ -9,11 +9,13 @@ import { httpSource, packageEntry } from './mapFormat';
 import { quakeMapDef } from './quakeMap';
 import { BoxPrim, fbm, MapDef, Prim, seededRandom } from './world';
 import { worldCupMap } from './worldCup';
+import { gymMap, mountainMap, nightMap, parkMap, practiceMap, TRAINING_CREDIT } from './training';
 
 const deg = Math.PI / 180;
 
 // Gate builders live in ./gates (shared with the worker's pass detection); the race course map is
 // the Grand Prix stadium in ./worldCup (id 'field' so saved settings keep pointing at it).
+// The training maps (whoop gym, park, practice field, mountains, night course) are in ./training.
 export { buildGatePrims } from './gates';
 export const fieldMap = worldCupMap;
 
@@ -123,6 +125,12 @@ const QUAKE_CREDIT = "id Software's original map source (GPL, released by John R
 
 export const MAP_LIST: Record<string, MapEntry> = {
   field: { name: 'FPV Grand Prix Stadium', credit: 'Original (this project, GPL-3.0-or-later); course sized from FAI F9 / MultiGP gate specs', build: fieldMap },
+  // training maps (./training): procedural, original
+  gym: { name: 'Whoop Gym — Indoor tiny-whoop course', credit: `${TRAINING_CREDIT}; gates and rim sized for 65-75 mm whoops`, build: gymMap },
+  practice: { name: 'Practice Field — Spec track + drills', credit: `${TRAINING_CREDIT}; obstacles sized from MultiGP gate specs`, build: practiceMap },
+  park: { name: 'Meadow Park — Open field freestyle', credit: TRAINING_CREDIT, build: parkMap },
+  mountains: { name: 'Ridgeline — Mountain long range', credit: TRAINING_CREDIT, build: mountainMap },
+  night: { name: 'Night Session — Floodlit race course', credit: TRAINING_CREDIT, build: nightMap },
   // fpvsim-map package (public/maps/bando/), generated from bandoMap() above and verified identical by tests/mapFormat.test.ts
   bando: { ...packageEntry('bando', { name: 'Bando — Abandoned Industrial', author: 'fpv-sim', license: 'GPL-3.0-or-later' }, () => httpSource(publicBase() + 'maps/bando/')), credit: 'Original (this project, GPL-3.0-or-later)', community: undefined },
   'quake-e1m1': {
