@@ -6,7 +6,32 @@ import * as THREE from 'three';
 import type { DerivedInfo, DroneSpec } from '../builder/derive';
 
 /** fpvHidden: parts hidden while rendering the FPV camera (the camera body around the lens) */
-export interface DroneModel { root: THREE.Group; props: THREE.Object3D[]; propDirs: number[]; blur: THREE.Mesh[]; fpvHidden: THREE.Object3D[]; dispose(): void }
+export interface DroneModel {
+  root: THREE.Group; props: THREE.Object3D[]; propDirs: number[]; blur: THREE.Mesh[]; fpvHidden: THREE.Object3D[];
+  /** Show prop damage per rotor (Telemetry.rotorDamage): chipped blades shorter, a broken one snapped and bent. */
+  setDamage(rotorDamage: { thrust: number; broken: boolean }[]): void;
+  dispose(): void;
+}
+
+export const PROP_COLORS = [0xff3b30, 0x30c5ff, 0xffd60a, 0x34c759];
+/** Prop colour of a build: fixed per spec name (FNV-1a), so a rebuild or respawn doesn't repaint the props. */
+export function propColor(name: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
+  return PROP_COLORS[(h >>> 0) % PROP_COLORS.length];
+}
+
+/**
+ * Blade length factors (1 = intact) for a rotor's damage. Chips come off the tips unevenly (the
+ * blade that hit first loses most); a broken prop has one blade snapped near the hub.
+ */
+export function bladeLengths(blades: number, d: { thrust: number; broken: boolean }): number[] {
+  const loss = Math.max(0, Math.min(1, 1 - d.thrust));
+  return Array.from({ length: blades }, (_, b) => {
+    if (d.broken && b === 0) return 0.38;
+    return Math.max(0.45, 1 - loss * [1.1, 0.7, 0.45, 0.3][b % 4]);
+  });
+}
 
 /**
  * Height of the FPV lens above the frame's base plane (m). Normally mid-stack; on ducted whoops the
@@ -45,7 +70,7 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   const props: THREE.Object3D[] = [], blur: THREE.Mesh[] = [], dirs: number[] = [];
   const R = (prop.diameterIn * 0.0254) / 2;
   const bladeGeo = T(makeBladeGeometry(R, prop.chordFracs, prop.hubFrac));
-  const propMat = T(new THREE.MeshStandardMaterial({ color: [0xff3b30, 0x30c5ff, 0xffd60a, 0x34c759][Math.floor(Math.random() * 4)], roughness: 0.4, side: THREE.DoubleSide })); // opaque: transparent blades sort badly up close
+  const propMat = T(new THREE.MeshStandardMaterial({ color: propColor(spec.name || spec.prop), roughness: 0.4, side: THREE.DoubleSide })); // opaque: transparent blades sort badly up close
   const blurMat = T(new THREE.MeshBasicMaterial({ color: propMat.color, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
   rotorPos.forEach((rp, k) => {
     const hx = rp.x + cg.x / 1000, hy = rp.y + cg.y / 1000; // back to frame coordinates
@@ -108,7 +133,24 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   root.traverse((o) => { if ((o as THREE.Mesh).isMesh) { o.castShadow = true; } });
   const fpvHidden: THREE.Object3D[] = [];
   root.traverse((o) => { if (o.userData.fpvHide) fpvHidden.push(o); });
-  return { root, props, propDirs: dirs, blur, fpvHidden, dispose() { for (const d of disp) d.dispose(); } };
+  let damageKey = '';
+  const setDamage = (dmg: { thrust: number; broken: boolean }[]) => {
+    const key = dmg.map((d) => (d.broken ? 'b' : d.thrust.toFixed(2))).join();
+    if (key === damageKey) return;
+    damageKey = key;
+    props.forEach((hub, k) => {
+      const d = dmg[k] ?? { thrust: 1, broken: false }, lens = bladeLengths(prop.blades, d);
+      let b = 0;
+      for (const c of hub.children) {
+        if (c === blur[k]) continue;
+        // blades run along +x from the hub: shorten them; the snapped one is bent up as well
+        c.scale.x = lens[b]; c.rotation.z = d.broken && b === 0 ? 0.35 : 0;
+        b++;
+      }
+      blur[k].scale.setScalar(Math.max(...lens)); // the blur disc is as big as the longest blade
+    });
+  };
+  return { root, props, propDirs: dirs, blur, fpvHidden, setDamage, dispose() { for (const d of disp) d.dispose(); } };
 }
 
 /** Lofted blade from hub to tip along +X, chord along Z, slight pitch twist. */

@@ -66,12 +66,22 @@ function diveGate(g: GateDef, prims: Prim[], gz: number) {
   for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) prims.push({ kind: 'cyl', c: at(sx * e, sy * e, gz), r: 0.04, h: z - T - gz, mat: 'metal', tag: `gate${g.id}` });
 }
 
+/**
+ * Feather-flag banner (m, and fractions of the flag height): centred `back` behind the pole, `halfLen`
+ * long each way along the direction of travel, `thick` thin, centred at zc·height, hz·height tall
+ * each way. Collision is this thin box; the renderer draws it as waving cloth (isFlagBanner).
+ */
+export const FLAG = { back: 0.34, halfLen: 0.3, thick: 0.015, zc: 0.6, hz: 0.33 } as const;
+
 function flag(g: GateDef, prims: Prim[], gz: number) {
   // feather flag: pole plus a tall banner trailing behind it along the direction of travel
   const { at, base } = frame(g);
   prims.push({ kind: 'cyl', c: { x: g.c.x, y: g.c.y, z: gz }, r: 0.035, h: g.height, mat: 'gate', tag: `gate${g.id}` });
-  prims.push({ ...base, mat: 'foliage', c: at(0, -0.34, gz + g.height * 0.6), half: { x: 0.015, y: 0.3, z: g.height * 0.33 } });
+  prims.push({ ...base, mat: 'foliage', c: at(0, -FLAG.back, gz + g.height * FLAG.zc), half: { x: FLAG.thick, y: FLAG.halfLen, z: g.height * FLAG.hz } });
 }
+
+/** A flag gate's banner box (the only foliage-material gate part). */
+export const isFlagBanner = (p: Prim): p is BoxPrim => p.kind === 'box' && p.mat === 'foliage' && gateIdOf(p.tag) >= 0;
 
 /** Append the collision / render primitives of every gate. ground = floor height (default 0). */
 export function buildGatePrims(gates: GateDef[], prims: Prim[], ground: Ground = () => 0) {
