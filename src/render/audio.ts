@@ -7,9 +7,25 @@ export class MotorAudio {
   enabled = true;
   volume = 0.5;
 
+  /**
+   * Browsers only let audio start after a mouse / touch / keyboard gesture on the page; gamepad and
+   * WebHID controller input does not count. Call this from every such gesture: it creates the
+   * context the first time and resumes it whenever the browser has suspended it.
+   */
+  unlock() {
+    this.start();
+    if (this.ctx && this.ctx.state !== 'running') void this.ctx.resume().catch(() => {});
+  }
+
+  /** True when sound is enabled but the browser is still blocking playback. */
+  get blocked(): boolean { return this.enabled && (!this.ctx || this.ctx.state !== 'running'); }
+
   start() {
     if (this.ctx) return;
-    const ctx = new AudioContext();
+    // Safari < 14.1 only has the prefixed constructor; some WebKit builds have no Web Audio at all
+    const AC: typeof AudioContext | undefined = (window as any).AudioContext ?? (window as any).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
     this.ctx = ctx;
     this.master = ctx.createGain(); this.master.gain.value = this.volume; this.master.connect(ctx.destination);
     const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);

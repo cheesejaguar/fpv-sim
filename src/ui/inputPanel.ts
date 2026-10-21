@@ -3,6 +3,7 @@
 // assignment, inversion, calibration, deadzones, button/switch bindings and rumble.
 import { AxisBind, ButtonBind, buttonName, controllerKind, InputManager, InputProfile, PRESET_PROFILES, ThrottleMode } from '../input/gamepad';
 import { RadioWizard, WIZARD_STEPS } from '../input/radioWizard';
+import { webHidSupported } from '../input/steamHid';
 import { checkbox, el, section, select, slider } from './dom';
 
 export function inputPanel(im: InputManager): HTMLElement {
@@ -58,7 +59,9 @@ export function inputPanel(im: InputManager): HTMLElement {
       ));
     const hidSec = section('Steam Controller (2026) — direct USB / wireless puck',
       el('p', {}, 'The 2026 Steam Controller is invisible to the browser Gamepad API (outside Steam it pretends to be a keyboard and mouse). The simulator drives it directly over WebHID using Valve’s protocol (from SDL). Quit Steam completely first, since it holds the controller.'),
-      el('button', { class: 'primary', onclick: async () => { await im.steamHid.request(); render(); } }, 'Connect Steam Controller'),
+      webHidSupported()
+        ? el('button', { class: 'primary', onclick: async () => { await im.steamHid.request(); render(); } }, 'Connect Steam Controller')
+        : el('p', { class: 'status' }, 'Not available in this browser: it has no WebHID (Safari and Firefox don’t implement it). Use Chrome or Edge for this controller; Xbox, PS5 and USB joysticks/radios work here.'),
       el('div', { class: 'status' }, im.steamHid.status));
     if (!pad) {
       root.replaceChildren(el('div', { class: 'cols' },
@@ -115,7 +118,7 @@ export function inputPanel(im: InputManager): HTMLElement {
               { value: 'joystick', label: 'Generic HID joystick (AETR)' },
             ], '', (v) => { if (v) { im.setProfile(pad, (PRESET_PROFILES as any)[v](pad.id) as InputProfile); render(); } }),
             select('Throttle mode', [{ value: 'full', label: 'Full stick range (centre = 50%)' }, { value: 'upper', label: 'Upper half only (centre = 0%)' }, { value: 'trigger', label: 'Analog trigger' }], p.throttleMode, (v: ThrottleMode) => { p.throttleMode = v; if (v === 'trigger' && p.throttle.src !== 'button') { p.throttle = { ...p.throttle, src: 'button', index: 7, min: 0, center: 0, max: 1, invert: false }; } save(); render(); }),
-            checkbox('Rumble on crashes (Xbox / DualSense)', im.rumbleEnabled, (v) => { im.setRumble(v); if (v) im.rumble(0.6, 0.6, 200); }),
+            checkbox('Rumble on crashes (Xbox / DualSense, where the browser supports it)', im.rumbleEnabled, (v) => { im.setRumble(v); if (v) im.rumble(0.6, 0.6, 200); }),
           ),
           section('Stick & switch setup wizard', wizBox),
           section('Stick assignment', axisRow('throttle'), axisRow('yaw'), axisRow('pitch'), axisRow('roll'), detectMsg),

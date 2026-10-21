@@ -34,6 +34,36 @@ export function osdLayout(video: { osd: 'sd' | 'hd'; fps: number }): Record<stri
   };
 }
 
+/**
+ * Settings the simulator itself depends on, re-applied after importing a real quad's `diff all`:
+ * simulated motor poles/KV (RPM telemetry decoding), virtual battery sensor, video canvas, the
+ * controller mode mapping (AUX1 arm, AUX2 mode, AUX3 turtle, AUX4 beeper), OSD on, and the debug
+ * mode used by the noise-spectrum overlay. OSD element positions are only reset when the import
+ * didn't bring its own.
+ */
+export function simHardwareCli(build: DroneBuild, opts: { keepOsdLayout: boolean; propsOut: boolean | null }): string[] {
+  const m = build.info.components.motor, v = build.info.components.video;
+  const propsOut = opts.propsOut ?? build.spec.propDirection === 'props-out';
+  const lines = [
+    'feature OSD',
+    `set motor_poles = ${m.poles}`,
+    `set motor_kv = ${Math.round(m.kv)}`,
+    `set yaw_motors_reversed = ${propsOut ? 'ON' : 'OFF'}`,
+    `set vcd_video_system = ${osdGrid(v).vcd}`,
+    'set current_meter = ADC',
+    'set battery_meter = ADC',
+    'set debug_mode = GYRO_FILTERED',
+    'aux 0 0 0 1700 2100 0 0',
+    'aux 1 1 1 1700 2100 0 0',
+    'aux 2 2 1 1300 1700 0 0',
+    'aux 3 35 2 1700 2100 0 0',
+    'aux 4 13 3 1700 2100 0 0',
+    'map AETR1234',
+  ];
+  if (!opts.keepOsdLayout) for (const [k, val] of Object.entries(osdLayout(v))) lines.push(`set ${k} = ${val}`);
+  return lines;
+}
+
 export function defaultCli(build: DroneBuild): string[] {
   const s = build.spec, m = build.info.components.motor, v = build.info.components.video;
   const grid = osdGrid(v);

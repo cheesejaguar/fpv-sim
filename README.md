@@ -214,6 +214,66 @@ sliders. The derived panel shows:
 thermal constants and prop static calibration are engineering estimates consistent with public
 thrust-stand data; they are flagged in `src/data/catalog.ts`.
 
+## Bring your real quad (Betaflight `diff all` import)
+
+Menu → **Betaflight** → *Bring your real quad*:
+1. In Betaflight Configurator's CLI on your real quad, run `diff all`.
+2. Paste the output and click **Preview**. It shows the Betaflight version and board, and what will
+   be kept or skipped, with a reason for each skipped line.
+3. Click **Apply to simulated FC**.
+
+**What's kept and what's dropped:**
+- **Kept:** everything that defines how the quad flies — PIDs, feedforward, rates, filters
+  including the RPM filter and dynamic notch, TPA, anti-gravity, I-term relax, dynamic idle,
+  throttle settings, motor protocol, features and OSD layout.
+- **Dropped:** lines describing the physical board, which the simulator's virtual hardware
+  replaces — resources, timers, DMA, UARTs, receiver protocol, gyro buses and board alignment,
+  battery sensor scaling, LEDs, VTX tables.
+- **Simulator-owned:** motor poles/KV come from the drone builder, and the controller mode mapping
+  stays AUX1 arm, AUX2 flight mode, AUX3 turtle.
+- **Prop direction:** if your `yaw_motors_reversed` differs from the simulated airframe, the
+  airframe is switched to match.
+
+Any line Betaflight 4.5.5 rejects, such as a setting renamed in another version, is listed. Use
+**Export sim diff all** to save the simulator's own configuration.
+
+## Multiplayer (live rooms)
+
+Menu → **Multiplayer**: create a room, then share the invite link (`?room=CODE`), or join by code.
+
+- Up to 8 pilots per room.
+- Each pilot runs their own full simulation, physics and Betaflight; the room relay only shares
+  poses at 30 Hz, the roster, the shared map and lap times.
+- Remote quads are drawn about 100 ms in the past and interpolated, which hides network jitter.
+- Quads pass through each other: there are no collisions between pilots.
+- The room flies one map. Changing it in *Simulation* switches everyone.
+- On the race course, a live leaderboard shows each pilot's laps and best lap.
+
+**Relay server.** The relay is a Cloudflare Worker with one Durable Object per room, in `server/`.
+`server/src/roomCore.ts` holds the logic, unit-tested in `tests/roomCore.test.ts`. It has:
+- message validation;
+- a 1 KB message limit;
+- a 40 messages/s per-pilot rate limit;
+- an origin allow-list (`ALLOWED_ORIGINS` in `server/wrangler.toml`).
+
+Run these from the `server` folder, one per line. They work in Windows PowerShell too; if
+PowerShell blocks `npm` / `npx` scripts, use `npm.cmd` / `npx.cmd`.
+
+```
+npm install
+npx wrangler dev
+npx wrangler login
+npx wrangler deploy
+```
+
+- `npx wrangler dev` starts a local relay on `ws://127.0.0.1:8787`, which the sim uses
+  automatically when it runs on localhost.
+- `npx wrangler deploy` prints the relay address, `https://fpv-sim-rooms.<subdomain>.workers.dev`.
+
+If you deploy your own relay, set `VITE_MP_URL=wss://fpv-sim-rooms.<subdomain>.workers.dev` in the Vercel project's
+environment variables and redeploy. Without it, the app uses the public relay `wss://fpv-sim-rooms.newsanjose.workers.dev` (`src/net/config.ts`).
+A relay URL can also be entered per browser in the Multiplayer tab.
+
 ## Tests
 
 ```bash

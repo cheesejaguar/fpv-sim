@@ -1,10 +1,21 @@
 // Betaflight tuning (reads/writes the real firmware's settings through its CLI) and a raw CLI console.
+import { cliErrors, planDiffImport, DiffPlan } from '../bf/diffImport';
 import { el, section, slider } from './dom';
 
 export interface BfBridge {
   cliBatch(lines: string[]): Promise<string>;
   cliSend(text: string): void;
   onCliOut(cb: (text: string) => void): void;
+}
+
+/** Hooks into the rest of the app for "Bring your real quad". */
+export interface BfPanelOptions {
+  /** Sim-owned CLI lines to re-apply after an import (see simHardwareCli in src/bf/defaults.ts). */
+  hardwareCli(keepOsdLayout: boolean, propsOut: boolean | null): string[];
+  /** Current physical prop direction of the simulated quad (true = props out). */
+  propsOut(): boolean;
+  /** Make the simulated airframe spin its props the way the imported tune expects. */
+  setPropsOut(propsOut: boolean): void;
 }
 
 interface Param { key: string; label: string; min: number; max: number; step: number; unit?: string }
@@ -47,7 +58,7 @@ function actualRate(x: number, rc: number, max: number, expo: number) {
   return x * center + stick * expof;
 }
 
-export function bfPanel(bf: BfBridge): HTMLElement {
+export function bfPanel(bf: BfBridge, opts?: BfPanelOptions): HTMLElement {
   const root = el('div', { class: 'panel bf' });
   const values: Record<string, number> = {};
   const dirty = new Set<string>();
@@ -79,6 +90,8 @@ export function bfPanel(bf: BfBridge): HTMLElement {
   });
   bf.onCliOut((t) => { out.textContent = (out.textContent + t).slice(-40000); out.scrollTop = out.scrollHeight; });
 
+  const importSec = opts ? realQuadSection(bf, opts, () => load()) : null;
+
   const render = () => {
     root.replaceChildren(
       el('div', { class: 'cols' },
@@ -97,6 +110,7 @@ export function bfPanel(bf: BfBridge): HTMLElement {
           section('CLI console (entering the CLI disarms; type "exit" to leave)', out, inp),
         ),
       ),
+      importSec ?? '',
     );
     drawCurve();
   };
@@ -114,4 +128,60 @@ export function bfPanel(bf: BfBridge): HTMLElement {
   render();
   void load();
   return root;
+}
+
+/**
+ * "Bring your real quad": paste `diff all` from a real Betaflight FC, preview what is kept vs dropped
+ * (board hardware), apply it to the simulated FC, re-apply the simulator's own hardware settings,
+ * and report any lines Betaflight rejected. Built once and kept across panel re-renders.
+ */
+function realQuadSection(bf: BfBridge, opts: BfPanelOptions, reload: () => Promise<void>): HTMLElement {
+  const ta = el('textarea', { class: 'diff-in', rows: 10, spellcheck: false, placeholder: 'In Betaflight Configurator → CLI on your real quad, type  diff all  and press Enter, then copy everything it prints and paste it here.' }) as HTMLTextAreaElement;
+  const report = el('div', { class: 'diff-report' });
+  let plan: DiffPlan | null = null;
+  const preview = () => {
+    plan = planDiffImport(ta.value);
+    const p = plan;
+    const sameProps = p.propsOut == null || p.propsOut === opts.propsOut();
+    report.replaceChildren(
+      el('p', {}, p.version ? `Betaflight ${p.version} on ${p.board ?? 'unknown board'}` : 'Betaflight version: unknown'),
+      el('p', {}, `${p.apply.length} lines will be applied (tune, rates, filters, features, OSD); ${p.skipped.length} board-hardware lines will be skipped.`),
+      ...p.warnings.map((w) => el('p', { class: 'warn' }, '⚠ ' + w)),
+      sameProps ? '' : el('p', { class: 'warn' }, `⚠ Your quad runs props ${p.propsOut ? 'out' : 'in'}; the simulated airframe will be switched to match.`),
+      p.skipped.length ? el('details', {}, el('summary', {}, 'Skipped lines and why'),
+        el('pre', { class: 'diff-skip' }, p.skipped.map((x) => `${x.line}\n    ↳ ${x.reason}`).join('\n'))) : '',
+      el('div', { class: 'actions' }, el('button', { class: 'primary', disabled: !p.apply.length, onclick: () => void apply() }, 'Apply to simulated FC')),
+    );
+  };
+  const apply = async () => {
+    if (!plan || !plan.apply.length) return;
+    const p = plan;
+    report.append(el('p', { class: 'status' }, 'Applying to the simulated flight controller…'));
+    if (p.propsOut != null && p.propsOut !== opts.propsOut()) opts.setPropsOut(p.propsOut);
+    const keepOsd = p.apply.some((l) => /^set osd_\w+_pos\b/.test(l));
+    const out = await bf.cliBatch([...p.apply, ...opts.hardwareCli(keepOsd, p.propsOut), 'save']);
+    const errs = cliErrors(out);
+    report.replaceChildren(
+      el('p', {}, `Applied ${p.apply.length} lines from your quad and saved. ${errs.length ? `${errs.length} line(s) were rejected by Betaflight 4.5.5:` : 'Betaflight accepted every line.'}`),
+      errs.length ? el('pre', { class: 'diff-skip' }, errs.join('\n')) : '',
+      el('p', { class: 'note' }, 'Kept from the simulator: virtual sensors, receiver, motor poles/KV from the drone builder, and the controller mode mapping (AUX1 arm, AUX2 flight mode, AUX3 turtle).'),
+    );
+    await reload();
+  };
+  const exportDiff = async () => {
+    const out = await bf.cliBatch(['diff all']);
+    const text = out.replace(/\r/g, '').split('\n').filter((l) => !/^# ?(diff all|exit|leaving CLI|Rebooting)/i.test(l) && !/^Entering CLI/.test(l)).join('\n');
+    const a = el('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/plain' })), download: 'fpv-sim-diff-all.txt' }) as HTMLAnchorElement;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  return section('Bring your real quad — import Betaflight "diff all"',
+    el('p', {}, 'Fly the sim with exactly the tune on your real flight controller: PIDs, feedforward, rates, filters, RPM filter, TPA, anti-gravity, dynamic idle, throttle settings and OSD. Board-specific hardware lines are filtered out. For the closest match, also pick your motors, props and battery in the Drone builder.'),
+    ta,
+    el('div', { class: 'actions' },
+      el('button', { onclick: preview }, 'Preview'),
+      el('button', { onclick: () => void exportDiff() }, 'Export sim diff all'),
+    ),
+    report,
+  );
 }
