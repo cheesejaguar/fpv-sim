@@ -281,7 +281,7 @@ uniform vec2 stepUv;
 const float W[5] = float[5](${GW.map((w) => (w / GSUM).toFixed(5)).join(', ')});
 vec3 tap(vec2 uv, float e) {
   vec3 c = textureLod(src, uv, 0.0).rgb;
-  ${bright ? 'return min(max(c * e - 0.85, 0.0), 6.0) / e; // above clip, in scene units' : 'return c;'}
+  ${bright ? 'return min(max(c * e - 1.0, 0.0), 4.0) / e; // above clip, in scene units' : 'return c;'}
 }
 void main() {
   float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
@@ -302,14 +302,14 @@ const vec3 LUM = vec3(0.2126, 0.7152, 0.0722);
 void main() {
   vec4 c = textureLod(cur, vUv, 0.0);
   vec3 p = textureLod(prev, vUv, 0.0).rgb;
-  if (any(isnan(p)) || any(isinf(p))) p = c.rgb; // the history is recursive: never let a bad value stick
   float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   float strength = clamp((e - 0.7) / 2.5, 0.0, 0.85);
   float sig = noiseK * sqrt(max(1.0, e / ${E_UNITY}) * (max(dot(c.rgb, LUM), 0.0) * e + 0.01));
   float dl = length((c.rgb - p) * e);
   float th = 3.0 * sig + 0.012;
   float k = strength * exp(-0.5 * dl * dl / (th * th));
-  gl_FragColor = vec4(min(mix(c.rgb, p, k), vec3(6e4)), c.a);
+  // (the history is recursive: its inputs are kept finite - exposure floored, samples capped)
+  gl_FragColor = vec4(clamp(mix(c.rgb, p, k), 0.0, 6e4), c.a);
 }`;
 
 const commonPost = /* glsl */ `
@@ -631,7 +631,7 @@ export class FpvCamera {
       vertexShader: quadVS, fragmentShader: v.kind === 'analog' ? analogFS : digitalFS, depthTest: false,
       uniforms: {
         frame: { value: null }, prevFrame: { value: null }, glow: { value: null }, prevGlow: { value: null }, osd: { value: null }, gog: { value: null }, expTex: { value: null },
-        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, gogOn: { value: 0 }, glowK: { value: 0.6 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
+        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, gogOn: { value: 0 }, glowK: { value: 0.3 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
         frameW: { value: w }, frameH: { value: h }, oddField: { value: 0 }, interlaced: { value: v.interlaced ? 1 : 0 },
         freeze: { value: 0 }, block: { value: 0 }, lost: { value: 0 }, hdz: { value: v.system === 'hdzero' ? 1 : 0 }, gammaOut: { value: 1 / 2.2 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) }, screenFit: { value: new THREE.Vector2(1, 1) },
       },
