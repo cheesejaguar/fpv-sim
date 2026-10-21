@@ -45,7 +45,8 @@ const isolateAll = {
 
 export default defineConfig({
   plugins: [isolateAll],
-  server: { headers: isolation, port: 5173 },
+  // agent worktrees live under .claude/: their edits must not reload this checkout's dev server
+  server: { headers: isolation, port: 5173, watch: { ignored: ['**/.claude/**'] } },
   preview: { headers: isolation },
   define: {
     __FW_VERSION__: JSON.stringify(fwVersion),
