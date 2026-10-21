@@ -1,5 +1,7 @@
 // Composition root: loads settings, starts the sim worker, builds the world and the services, wires
 // input, multiplayer, the menu and the HUD, then runs the frame loop. The pieces live in src/app/.
+// boot comes first: it checks the browser and turns errors thrown before the menu is up into a page.
+import { bootDone, onBeforeReset, showFatal } from './app/boot';
 import * as THREE from 'three';
 import './style.css';
 import { WorkerBridge } from './app/bridge';
@@ -7,6 +9,7 @@ import { AppCtx, makeLog } from './app/context';
 import { startFrameLoop } from './app/frameLoop';
 import { HudController } from './app/hudController';
 import { SpectrumView, SticksView } from './app/instruments';
+import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { simHardwareCli } from './bf/defaults';
 import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
@@ -30,28 +33,26 @@ import { el } from './ui/dom';
 import { inputPanel } from './ui/inputPanel';
 import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
 import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
-import { DEFAULT_VIEW, settingsPanel, ViewSettings } from './ui/settingsPanel';
-import { createShared, DEFAULT_SETTINGS, newestTime, R, REC, sampleRing, SimSettings } from './worker/shared';
+import { settingsPanel, ViewSettings } from './ui/settingsPanel';
+import { createShared, newestTime, R, REC, sampleRing, SimSettings } from './worker/shared';
 
 // ---------------------------------------------------------------------------------------------
-const load = <T,>(k: string, d: T): T => { try { const s = localStorage.getItem(k); return s ? { ...d, ...JSON.parse(s) } : d; } catch { return d; } };
-const store = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
+// saved settings are versioned and validated (src/app/persist.ts)
+const store = (k: string, v: unknown) => save(k, v);
 
 const appEl = document.getElementById('app')!;
-if (!crossOriginIsolated) {
-  appEl.append(el('div', { class: 'fatal' }, 'This page must be cross-origin isolated (COOP/COEP headers) for SharedArrayBuffer. Run it with "npm run dev" or "npm run preview".'));
-  throw new Error('not cross-origin isolated');
-}
 
 // first run starts on the easiest quad (65 mm tiny whoop); after that, whatever the pilot flew last
-const spec0: DroneSpec = load('fpv-spec', EASY_SPEC);
-const sim0: SimSettings = load('fpv-sim-settings', DEFAULT_SETTINGS);
-const view0: ViewSettings = load('fpv-view', DEFAULT_VIEW);
+// (a saved build with parts this version doesn't have falls back to the whoop too)
+const spec0: DroneSpec = load(KEYS.spec, (r) => validSpec(r, EASY_SPEC));
+const sim0: SimSettings = load(KEYS.sim, validSim);
+const view0: ViewSettings = load(KEYS.view, validView);
 
 // ---------------------------------------------------------------------------------------------
 // Worker + shared memory
 const sh = createShared();
 const bridge = new WorkerBridge();
+onBeforeReset(() => bridge.worker.terminate()); // it holds the EEPROM database open
 bridge.send({ type: 'init', sab: sh.sab, spec: spec0, settings: sim0 });
 
 // Rendering
@@ -64,6 +65,15 @@ renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 appEl.append(renderer.domElement);
+// GPU reset, driver update, sleep / wake, too many GPU tabs: the scene can't be trusted after this
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  showFatal({
+    title: 'Graphics stopped',
+    lead: 'The browser lost the 3D graphics context. This can happen after a graphics driver update or reset, when the computer wakes from sleep, or when many tabs use the GPU. Reload to continue: your settings are kept.',
+    report: 'WebGL context lost',
+  });
+  try { if (!ctx.menuOpen) gameMenu.open(); } catch { /* still starting up */ } // pause: a flying quad would crash meanwhile
+});
 
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 await preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; });
@@ -104,7 +114,7 @@ bridge.onMessage = (m) => {
 function sendReset(fullBattery = false) { ctx.input.disarm(); onRespawn(ctx); ctx.send({ type: 'reset', repair: true, fullBattery }); }
 
 function applySpec(s: DroneSpec) {
-  ctx.spec = s; store('fpv-spec', s);
+  ctx.spec = s; store(KEYS.spec, s);
   ctx.build = buildDrone(s);
   ctx.scene.scene.remove(ctx.drone.root); ctx.drone.dispose();
   ctx.drone = makeDroneModel(ctx.build); ctx.scene.scene.add(ctx.drone.root);
@@ -138,7 +148,7 @@ onLocalMap((id, info, urls) => {
 
 function applyView(v: ViewSettings) {
   const fontChanged = v.osdFont !== ctx.view.osdFont, scaleChanged = v.renderScale !== ctx.view.renderScale;
-  ctx.view = v; store('fpv-view', v);
+  ctx.view = v; store(KEYS.view, v);
   if (fontChanged) void ctx.osd.setFont(v.osdFont);
   if (scaleChanged) ctx.fpv.setVideo(ctx.build.info.components.video, v.renderScale);
   ctx.audio.enabled = v.audio; ctx.audio.volume = v.volume;
@@ -242,6 +252,7 @@ startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => hudCt
   if (code && /^[A-Z0-9]{4,8}$/.test(code)) joinRoom(code);
 }
 gameMenu.open('title');
+bootDone();
 
 // debugging handle (inspect from devtools)
 (window as any).__fpv = {
