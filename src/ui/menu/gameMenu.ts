@@ -2,6 +2,7 @@
 // Betaflight quick start guide and the in-flight pause menu. Designed with the UI UX Pro Max design
 // system (see theme.css); fully usable with a controller, keyboard or mouse (nav.ts).
 import './theme.css';
+import { KEYS, load, parseSpec, save, validNewGame } from '../../app/persist';
 import { DroneBuild, DroneSpec, PRESETS } from '../../builder/derive';
 import type { InputManager } from '../../input/gamepad';
 import { MAP_LIST } from '../../maps/maps';
@@ -52,12 +53,8 @@ const TIPS = [
 ];
 
 interface NewGameState { mode: GameMode; map: string; preset: number } // preset -1 = current build
-const NG_KEY = 'fpv-newgame';
-const loadNg = (sim: SimSettings): NewGameState => {
-  const d: NewGameState = { mode: 'free', map: sim.mapId, preset: -1 };
-  try { const s = localStorage.getItem(NG_KEY); if (s) return { ...d, ...JSON.parse(s), map: sim.mapId }; } catch { /* ignore */ }
-  return d;
-};
+const NG_KEY = KEYS.newGame;
+const loadNg = (sim: SimSettings): NewGameState => ({ ...load(NG_KEY, (r) => validNewGame(r, MODES.map((m) => m.id))), map: sim.mapId });
 
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -66,12 +63,12 @@ const EASY_IDX = Math.max(0, PRESETS.findIndex((p) => /65 mm/.test(p.name)));
 export const EASY_SPEC = PRESETS[EASY_IDX];
 
 /** The pilot's own (non-preset) build, kept when a preset replaces it so it can be picked again. */
-const MINE_KEY = 'fpv-spec-mine';
+const MINE_KEY = KEYS.specMine;
 const sameSpec = (a: DroneSpec, b: DroneSpec) => JSON.stringify(a) === JSON.stringify(b);
 // (a preset whose only difference is an older camera angle still counts as that preset)
 const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s) || sameSpec(p, { ...s, cameraUptiltDeg: p.cameraUptiltDeg }));
-function loadMine(): DroneSpec | null { try { const s = localStorage.getItem(MINE_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
-function keepMine(s: DroneSpec) { if (!isPreset(s)) try { localStorage.setItem(MINE_KEY, JSON.stringify(s)); } catch { /* ignore */ } }
+function loadMine(): DroneSpec | null { return load(MINE_KEY, parseSpec); }
+function keepMine(s: DroneSpec) { if (!isPreset(s)) save(MINE_KEY, s); }
 
 const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start' };
 

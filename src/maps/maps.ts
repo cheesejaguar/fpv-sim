@@ -5,10 +5,29 @@
 import communityIndex from '../../public/maps/community/index.json';
 import freedoomTextures from '../../public/maps/freedoom/textures/manifest.json';
 import { doomMapDef } from './doomMap';
-import { httpSource, packageEntry } from './mapFormat';
+import type { PackageSource } from './mapFormat';
 import { quakeMapDef } from './quakeMap';
 import { BoxPrim, fbm, MapDef, Prim, seededRandom } from './world';
 import { worldCupMap } from './worldCup';
+
+// Map packages (mapFormat.ts): the loader and its decoders are fetched the first time a package map
+// is loaded, not at startup. Same signatures as mapFormat's packageEntry / httpSource.
+type MapFormatModule = typeof import('./mapFormat');
+let mapFormatModule: Promise<MapFormatModule> | undefined;
+function httpSource(baseUrl: string): (mf: MapFormatModule) => PackageSource { return (mf) => mf.httpSource(baseUrl); }
+function packageEntry(id: string, info: { name: string; author: string; license: string }, src: () => (mf: MapFormatModule) => PackageSource): MapEntry {
+  return {
+    name: info.name,
+    credit: `Community map by ${info.author} (${info.license})`, // as mapFormat.packageEntry
+    community: { author: info.author, license: info.license, local: false },
+    build: () => { throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`); },
+    prepare: async () => {
+      // (a failed chunk fetch is not cached: the next attempt retries)
+      const mf = await (mapFormatModule ??= import('./mapFormat').catch((e) => { mapFormatModule = undefined; throw e; }));
+      return mf.packageEntry(id, info, () => src()(mf)).prepare!();
+    },
+  };
+}
 
 const deg = Math.PI / 180;
 
