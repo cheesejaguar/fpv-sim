@@ -1,14 +1,18 @@
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+
+// paths relative to this file, not the working directory (scripts load the config from elsewhere)
+const root = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 // Content hash of the firmware build: appended to its URLs so browsers never run a stale cached copy
 // (public/ files keep fixed names, so they can't be fingerprinted by Vite).
 const fwVersion = (() => {
   try {
     const h = createHash('sha256');
-    for (const f of ['public/bf/betaflight.mjs', 'public/bf/betaflight.wasm']) h.update(readFileSync(f));
+    for (const f of ['public/bf/betaflight.mjs', 'public/bf/betaflight.wasm']) h.update(readFileSync(root(f)));
     return h.digest('hex').slice(0, 12);
   } catch { return 'dev'; }
 })();
@@ -18,9 +22,9 @@ const fwVersion = (() => {
 const commit = (() => {
   const v = process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA;
   if (v && /^[0-9a-f]{7,40}$/i.test(v)) return v.toLowerCase();
-  try { return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return ''; }
+  try { return execSync('git rev-parse HEAD', { cwd: root('.'), stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return ''; }
 })();
-const pkgVersion = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version;
+const pkgVersion = (JSON.parse(readFileSync(root('package.json'), 'utf8')) as { version: string }).version;
 const appVersion = commit ? `${pkgVersion}+${commit.slice(0, 7)}` : pkgVersion;
 
 // SharedArrayBuffer requires cross-origin isolation.
