@@ -17,10 +17,14 @@ export interface QuakeFace {
   tex: string;                // id texture name (lower case); see TEXTURES for the replacement image
   s: [number, number, number, number];
   t: [number, number, number, number];
-  kind: 'solid' | 'liquid' | 'light';
+  kind: 'solid' | 'liquid' | 'light' | 'masked'; // masked: alpha-tested (Doom mid textures)
+  light?: number;             // fixed light level 0..255 (Doom sector light) instead of baked light entities
 }
 export interface QuakeLight { pos: Vec; value: number; range: number; color: Vec }
-export interface QuakeLevel { faces: QuakeFace[]; lights: QuakeLight[]; ambient: number; scale: number; textureBase: string }
+export interface QuakeLevel {
+  faces: QuakeFace[]; lights: QuakeLight[]; ambient: number; scale: number; textureBase: string;
+  textures?: Record<string, { file: string; w: number; h: number }>; // texture manifest (default: TEXTURES)
+}
 
 /** id texture name -> vendored LibreQuake replacement (file + pixel size), written by scripts/vendor-quake.mjs. */
 export const TEXTURES: Record<string, { file: string; w: number; h: number }> = manifestJson;

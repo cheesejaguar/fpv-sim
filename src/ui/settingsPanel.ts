@@ -30,7 +30,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
           credit,
           el('details', { class: 'note' }, el('summary', {}, 'Credits & licenses'),
             ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),
-            el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md in the source repository.')),
+            el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md and public/maps/freedoom/ATTRIBUTION.md in the source repository.')),
           slider({ label: 'Wind (at 6 m)', min: 0, max: 15, step: 0.1, value: s.wind.speed, unit: 'm/s', onInput: (x) => { s.wind.speed = x; pushS(); } }).row,
           slider({ label: 'Wind from', min: 0, max: 359, step: 1, value: s.wind.direction, unit: '°', onInput: (x) => { s.wind.direction = x; pushS(); } }).row,
           slider({ label: 'Turbulence (Dryden) ×', min: 0, max: 3, step: 0.05, value: s.wind.turbulence, onInput: (x) => { s.wind.turbulence = x; pushS(); } }).row,

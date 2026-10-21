@@ -188,6 +188,7 @@ Pick a map in **Simulation → Map**:
 - **Bando**: abandoned industrial site for freestyle.
 - **Quake E1M1, The Slipgate Complex**: freestyle map built from the original level source.
 - **Quake DM3, The Abandoned Base**: freestyle map built from the original level source.
+- **Freedoom MAP01, Hydroelectric Plant**: freestyle map built from the Freedoom level data.
 
 The Quake maps load in the browser from the original `.map` brush sources (`src/maps/quakeMap.ts`):
 - Every convex brush is built by intersecting its planes.
@@ -198,6 +199,18 @@ The Quake maps load in the browser from the original `.map` brush sources (`src/
 - Liquids are drawn but not solid.
 - Wind is scaled down indoors.
 - Scale is 1/32 m per Quake unit.
+
+The Freedoom map loads its Doom-format lumps (`src/maps/doomMap.ts`):
+- Each sector's boundary loops, holes included, are traced from its linedefs and triangulated.
+- Floors, ceilings and upper / lower / middle wall segments are extruded from the sector heights.
+- Collision uses the same convex brushes as the Quake maps:
+  - a prism under each floor triangle and over each ceiling triangle;
+  - a box behind each one-sided wall;
+  - a thin box for grates (masked middle textures).
+- Lighting is the sector light level.
+- Doors start open.
+- Sky ceilings are invisible but solid.
+- Scale is 1/32 m per Doom unit: the 56-unit player is 1.75 m tall.
 
 ## Builder
 
@@ -307,9 +320,12 @@ The in-app map selector shows the same credits.
 | Open Field, Bando | Original procedural maps (this project) | GPL-3.0-or-later |
 | Quake E1M1, Quake DM3: geometry | id Software's original 1996 `.map` sources, released by John Romero in 2006 ([rome.ro](https://rome.ro/resources)) | GNU GPL |
 | Quake E1M1, Quake DM3: textures | [LibreQuake](https://github.com/lavenderdotpet/LibreQuake) replacements; some are derived from Freedoom / Blasphemer | BSD-3-Clause |
+| Freedoom MAP01: level and textures | [Freedoom](https://freedoom.github.io/) 0.13.0 Phase 2 MAP01 (`freedoom2.wad`), © 2001-2024 Contributors to the Freedoom project | BSD-3-Clause |
 
 - No original Quake textures, BSPs, models or sounds are included.
+- No original id Software Doom / Doom II data is included.
 - Full notices, license texts and the texture substitution list are in
-  [`public/maps/quake/ATTRIBUTION.md`](public/maps/quake/ATTRIBUTION.md).
+  [`public/maps/quake/ATTRIBUTION.md`](public/maps/quake/ATTRIBUTION.md) and
+  [`public/maps/freedoom/ATTRIBUTION.md`](public/maps/freedoom/ATTRIBUTION.md).
 - This project is not affiliated with or endorsed by id Software, John Romero, or the LibreQuake,
   Freedoom or Blasphemer projects.

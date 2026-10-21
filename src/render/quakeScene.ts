@@ -1,7 +1,8 @@
 // Three.js geometry for Quake levels (MapDef.quake): one merged mesh per texture, UVs from the
 // Quake texture axes, and baked vertex lighting from the level's light entities (Quake's linear
 // falloff + half-Lambert, with shadow rays against the brushes). Faces are subdivided on a ~2 m grid
-// so the lighting has something to vary over.
+// so the lighting has something to vary over. Doom levels (doomMap.ts) reuse this with their own
+// texture manifest and a fixed light level per face (the sector's).
 import * as THREE from 'three';
 import { QuakeFace, QuakeLevel, TEXTURES } from '../maps/quakeMap';
 import { BrushGrid, BrushPrim, MapDef } from '../maps/world';
@@ -10,6 +11,9 @@ const GRID = 2;            // lighting subdivision (m)
 const LIGHT_UNIT = 200;    // Quake light level that renders the texture at its own brightness
 
 type P3 = [number, number, number];
+
+/** Doom sector light (0..255) as a vertex colour: roughly Doom's colormap brightness ramp. */
+const doomLight = (l: number): P3 => { const v = Math.min(1.2, 1.25 * Math.pow(Math.max(0, l) / 255, 1.4)); return [v, v, v]; };
 
 function splitPoly(poly: P3[], axis: number, v: number): [P3[], P3[]] {
   const a: P3[] = [], b: P3[] = [];
@@ -79,12 +83,13 @@ export function buildQuakeGeometry(level: QuakeLevel, brushes: BrushPrim[]): Qua
     return c;
   };
 
-  const groups = new Map<string, { kind: QuakeFace['kind']; pos: number[]; uv: number[]; col: number[] }>();
+  const textures = level.textures ?? TEXTURES;
+  const groups = new Map<string, { tex: string; kind: QuakeFace['kind']; pos: number[]; uv: number[]; col: number[] }>();
   for (const f of level.faces) {
-    const tx = TEXTURES[f.tex];
+    const tx = textures[f.tex];
     if (!tx) continue;
-    let g = groups.get(f.tex);
-    if (!g) groups.set(f.tex, (g = { kind: f.kind, pos: [], uv: [], col: [] }));
+    let g = groups.get(f.kind + '|' + f.tex);
+    if (!g) groups.set(f.kind + '|' + f.tex, (g = { tex: f.tex, kind: f.kind, pos: [], uv: [], col: [] }));
     // lights that can reach this face at all
     let lo0 = Infinity, lo1 = Infinity, lo2 = Infinity, hi0 = -Infinity, hi1 = -Infinity, hi2 = -Infinity;
     for (let i = 0; i < f.verts.length; i += 3) {
@@ -92,12 +97,13 @@ export function buildQuakeGeometry(level: QuakeLevel, brushes: BrushPrim[]): Qua
       lo1 = Math.min(lo1, f.verts[i + 1]); hi1 = Math.max(hi1, f.verts[i + 1]);
       lo2 = Math.min(lo2, f.verts[i + 2]); hi2 = Math.max(hi2, f.verts[i + 2]);
     }
-    const near = f.kind === 'solid' ? lights.filter((l) => {
+    const fixed = f.light !== undefined ? doomLight(f.light) : null;
+    const near = f.kind === 'solid' && !fixed ? lights.filter((l) => {
       const ex = Math.max(lo0 - l.p.x, 0, l.p.x - hi0), ey = Math.max(lo1 - l.p.y, 0, l.p.y - hi1), ez = Math.max(lo2 - l.p.z, 0, l.p.z - hi2);
       return ex * ex + ey * ey + ez * ez < l.range * l.range && f.n[0] * (l.p.x - f.verts[0]) + f.n[1] * (l.p.y - f.verts[1]) + f.n[2] * (l.p.z - f.verts[2]) > 0;
     }) : [];
     for (const poly of subdivide(f)) {
-      const cols = poly.map((p) => (f.kind === 'solid' ? lightAt(p, f, near) : f.kind === 'light' ? ([1.25, 1.25, 1.25] as P3) : ([0.9, 0.9, 0.9] as P3)));
+      const cols = poly.map((p) => (fixed ? fixed : f.kind === 'solid' ? lightAt(p, f, near) : f.kind === 'light' ? ([1.25, 1.25, 1.25] as P3) : ([0.9, 0.9, 0.9] as P3)));
       for (let i = 1; i + 1 < poly.length; i++) for (const k of [0, i, i + 1]) {
         const p = poly[k];
         g.pos.push(p[0], p[2], -p[1]);
@@ -106,7 +112,7 @@ export function buildQuakeGeometry(level: QuakeLevel, brushes: BrushPrim[]): Qua
       }
     }
   }
-  return [...groups].map(([tex, g]) => ({ tex, kind: g.kind, position: new Float32Array(g.pos), uv: new Float32Array(g.uv), color: new Float32Array(g.col) }));
+  return [...groups.values()].map((g) => ({ tex: g.tex, kind: g.kind, position: new Float32Array(g.pos), uv: new Float32Array(g.uv), color: new Float32Array(g.col) }));
 }
 
 /** Add the level meshes to the scene; returns disposables. */
@@ -116,15 +122,16 @@ export function addQuakeLevel(scene: THREE.Scene, map: MapDef): { dispose(): voi
   const out: { dispose(): void }[] = [];
   const loader = new THREE.TextureLoader();
   const brushes = map.prims.filter((p): p is BrushPrim => p.kind === 'brush');
+  const textures = level.textures ?? TEXTURES;
   for (const g of buildQuakeGeometry(level, brushes)) {
-    const tex = loader.load(base + TEXTURES[g.tex].file);
+    const tex = loader.load(base + textures[g.tex].file);
     tex.flipY = false; // Quake t runs down the image
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.magFilter = THREE.NearestFilter;
     tex.anisotropy = 8;
     const liquid = g.kind === 'liquid';
-    const mat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: liquid, opacity: liquid ? 0.7 : 1, side: liquid ? THREE.DoubleSide : THREE.FrontSide, depthWrite: !liquid });
+    const mat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: liquid, opacity: liquid ? 0.7 : 1, side: liquid ? THREE.DoubleSide : THREE.FrontSide, depthWrite: !liquid, alphaTest: g.kind === 'masked' ? 0.5 : 0 });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(g.position, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(g.uv, 2));

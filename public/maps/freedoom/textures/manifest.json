@@ -1,0 +1,397 @@
+{
+ "f/AQF001": {
+  "file": "flat_aqf001.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF007": {
+  "file": "flat_aqf007.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF012": {
+  "file": "flat_aqf012.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF018": {
+  "file": "flat_aqf018.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF024": {
+  "file": "flat_aqf024.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF026": {
+  "file": "flat_aqf026.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF028": {
+  "file": "flat_aqf028.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF030": {
+  "file": "flat_aqf030.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF036": {
+  "file": "flat_aqf036.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF057": {
+  "file": "flat_aqf057.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF058": {
+  "file": "flat_aqf058.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF068": {
+  "file": "flat_aqf068.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF071": {
+  "file": "flat_aqf071.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF072": {
+  "file": "flat_aqf072.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF075": {
+  "file": "flat_aqf075.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/AQF076": {
+  "file": "flat_aqf076.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/CEIL5_1": {
+  "file": "flat_ceil5_1.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/CEIL5_2": {
+  "file": "flat_ceil5_2.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/FLAT20": {
+  "file": "flat_flat20.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/FLAT22": {
+  "file": "flat_flat22.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/FLAT23": {
+  "file": "flat_flat23.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/FLOOR5_2": {
+  "file": "flat_floor5_2.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/FWATER1": {
+  "file": "flat_fwater1.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/MFLR8_2": {
+  "file": "flat_mflr8_2.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/RROCK19": {
+  "file": "flat_rrock19.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/SLIME14": {
+  "file": "flat_slime14.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/STEP2": {
+  "file": "flat_step2.png",
+  "w": 64,
+  "h": 64
+ },
+ "f/TLITE6_5": {
+  "file": "flat_tlite6_5.png",
+  "w": 64,
+  "h": 64
+ },
+ "w/A-BRICK3": {
+  "file": "a-brick3.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQCONC09": {
+  "file": "aqconc09.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQCONC11": {
+  "file": "aqconc11.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQCONC12": {
+  "file": "aqconc12.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQCONC14": {
+  "file": "aqconc14.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQCONC16": {
+  "file": "aqconc16.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQDOOR02": {
+  "file": "aqdoor02.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQMETL03": {
+  "file": "aqmetl03.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQMETL12": {
+  "file": "aqmetl12.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQMETL13": {
+  "file": "aqmetl13.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQMETL18": {
+  "file": "aqmetl18.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQMETL19": {
+  "file": "aqmetl19.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQMETL29": {
+  "file": "aqmetl29.png",
+  "w": 64,
+  "h": 64
+ },
+ "w/AQPANL01": {
+  "file": "aqpanl01.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQPANL03": {
+  "file": "aqpanl03.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQPANL10": {
+  "file": "aqpanl10.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQPIPE02": {
+  "file": "aqpipe02.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/AQPIPE09": {
+  "file": "aqpipe09.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQPIPE11": {
+  "file": "aqpipe11.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQRUST08": {
+  "file": "aqrust08.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQSECT08": {
+  "file": "aqsect08.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/AQSUPP01": {
+  "file": "aqsupp01.png",
+  "w": 32,
+  "h": 128
+ },
+ "w/AQSUPP10": {
+  "file": "aqsupp10.png",
+  "w": 16,
+  "h": 128
+ },
+ "w/AQSUPP11": {
+  "file": "aqsupp11.png",
+  "w": 16,
+  "h": 128
+ },
+ "w/ASHWALL4": {
+  "file": "ashwall4.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/BASE2": {
+  "file": "base2.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/BIGDOOR1": {
+  "file": "bigdoor1.png",
+  "w": 128,
+  "h": 96
+ },
+ "w/BROWNHUG": {
+  "file": "brownhug.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/COMPSPAN": {
+  "file": "compspan.png",
+  "w": 32,
+  "h": 128
+ },
+ "w/DOOR3": {
+  "file": "door3.png",
+  "w": 64,
+  "h": 72
+ },
+ "w/DOORTRAK": {
+  "file": "doortrak.png",
+  "w": 8,
+  "h": 128
+ },
+ "w/DOPUNK4": {
+  "file": "dopunk4.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/EXITSGN2": {
+  "file": "exitsgn2.png",
+  "w": 64,
+  "h": 16
+ },
+ "w/LITE3": {
+  "file": "lite3.png",
+  "w": 32,
+  "h": 128
+ },
+ "w/LITE5": {
+  "file": "lite5.png",
+  "w": 16,
+  "h": 128
+ },
+ "w/LITEBLU1": {
+  "file": "liteblu1.png",
+  "w": 8,
+  "h": 128
+ },
+ "w/LITEBLU4": {
+  "file": "liteblu4.png",
+  "w": 16,
+  "h": 128
+ },
+ "w/PLANET1": {
+  "file": "planet1.png",
+  "w": 256,
+  "h": 128
+ },
+ "w/PLAT1": {
+  "file": "plat1.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/ROCK4": {
+  "file": "rock4.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/SHAWN1": {
+  "file": "shawn1.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/SILVER1": {
+  "file": "silver1.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/SILVER2": {
+  "file": "silver2.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/SKY1": {
+  "file": "sky1.png",
+  "w": 256,
+  "h": 128
+ },
+ "w/SPACEW3": {
+  "file": "spacew3.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/SW1COMP": {
+  "file": "sw1comp.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/SW2COMP": {
+  "file": "sw2comp.png",
+  "w": 64,
+  "h": 128
+ },
+ "w/TEKWALL1": {
+  "file": "tekwall1.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/TEKWALL2": {
+  "file": "tekwall2.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/TEKWALL4": {
+  "file": "tekwall4.png",
+  "w": 128,
+  "h": 128
+ },
+ "w/WFALL1": {
+  "file": "wfall1.png",
+  "w": 64,
+  "h": 128
+ }
+}

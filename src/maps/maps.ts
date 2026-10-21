@@ -1,6 +1,9 @@
 // The launch maps: an open field with a MultiGP-style race course and an abandoned industrial
 // "bando" for freestyle (procedural but deterministic), plus classic id Software Quake levels built
-// from their GPL'd .map sources (see public/maps/quake/ATTRIBUTION.md).
+// from their GPL'd .map sources (see public/maps/quake/ATTRIBUTION.md), and a Freedoom level
+// (BSD-3-Clause; see public/maps/freedoom/ATTRIBUTION.md).
+import freedoomTextures from '../../public/maps/freedoom/textures/manifest.json';
+import { doomMapDef } from './doomMap';
 import { quakeMapDef } from './quakeMap';
 import { BoxPrim, fbm, GateDef, MapDef, Prim, seededRandom } from './world';
 
@@ -198,6 +201,12 @@ export const MAP_LIST: Record<string, MapEntry> = {
   'quake-dm3': {
     name: 'Quake DM3 — The Abandoned Base', credit: `DM3 by id Software. ${QUAKE_CREDIT}`, source: 'maps/quake/dm3.map',
     build: (src) => quakeMapDef(src!, { id: 'quake-dm3', name: 'Quake DM3 — The Abandoned Base', ambient: 40 }),
+  },
+  'freedoom-map01': {
+    name: 'Freedoom MAP01 — Hydroelectric Plant',
+    credit: 'Freedoom Phase 2 MAP01 and its textures, © 2001-2024 Contributors to the Freedoom project (BSD-3-Clause). Not affiliated with or endorsed by the Freedoom project.',
+    source: 'maps/freedoom/map01.json',
+    build: (src) => doomMapDef(src!, { id: 'freedoom-map01', name: 'Freedoom MAP01 — Hydroelectric Plant', textures: freedoomTextures, textureBase: 'maps/freedoom/textures/' }),
   },
 };
 
