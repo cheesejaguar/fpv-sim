@@ -138,7 +138,8 @@ export class GameMenu {
 
   constructor(private host: MenuHost) {
     // every way into the air (quick fly, launch, rooms, respawn) goes through startFlight: track it
-    this.host = { ...host, startFlight: (m) => { this.activeMode = m; host.startFlight(m); } };
+    // (an overlay object: everything else still reads through to the host, getters included)
+    this.host = Object.assign(Object.create(host) as MenuHost, { startFlight: (m: GameMode) => { this.activeMode = m; host.startFlight(m); } });
     this.ng = loadNg(host.sim());
     this.root.append(this.top, this.main, this.foot);
     this.nav = new MenuNav({
@@ -274,7 +275,7 @@ export class GameMenu {
     this.foot.replaceChildren(...kids, el('span', { class: 'gm-spacer' }),
       el('div', { class: 'gm-foot-links' },
         fsSupported() ? el('button', { class: 'gm-hint gm-hint-btn', tabindex: '-1', 'aria-pressed': String(fs), onclick: toggleFullscreen },
-          pad ? null : g('key', 'F11'), fs ? 'Exit fullscreen' : 'Fullscreen') : null,
+          pad || touchOnly() ? null : g('key', 'F11'), fs ? 'Exit fullscreen' : 'Fullscreen') : null,
         s === 'about' ? null : el('button', { class: 'gm-hint gm-hint-btn gm-link', tabindex: '-1', 'data-key': 'about', onclick: () => this.go('about') }, 'About'),
         bug,
         el('a', { class: 'gm-wide', href: 'https://betaflight.com/docs/wiki', target: '_blank', rel: 'noopener' }, 'Betaflight docs'),

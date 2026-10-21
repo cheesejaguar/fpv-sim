@@ -48,7 +48,7 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
       const n = nOverrides();
       const go = () => { (spec as any)[key] = v; spec.overrides = {}; render(); };
       if (!n) { go(); return; }
-      void confirmDialog({ title: `Change the ${label.toLowerCase()}?`, body: `A new ${label.toLowerCase()} resets your ${n} slider override${n === 1 ? '' : 's'} (motor, propeller, battery and airframe values) to the new parts’ data.`, ok: 'Change and reset overrides', cancel: 'Keep current', danger: true })
+      void confirmDialog({ title: `Change the ${label.toLowerCase()}?`, body: `Changing the ${label.toLowerCase()} resets your ${n} slider override${n === 1 ? '' : 's'} (motor, propeller, battery and airframe values) to the new parts’ data.`, ok: 'Change and reset', cancel: 'Keep current', danger: true })
         .then((ok) => { if (ok) go(); else render(); });
     });
 
