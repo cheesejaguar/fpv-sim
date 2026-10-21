@@ -36,7 +36,7 @@ const RULES: [string, Rule][] = [
   ['RX_FAILSAFE', { osd: 'RXLOSS', why: 'Betaflight gets no signal from your controller.', fix: (g) => (g.keyboard ? 'Press a button on your controller so the browser detects it, or fly with the keyboard.' : 'Check the controller is connected, then press a button on it.') }],
   ['FAILSAFE', { osd: 'FAILSAFE', why: 'Failsafe is active: the radio link was lost.', fix: (g) => `Wait for the link to come back, then turn the arm switch off and on again (${g.arm}).` }],
   ['BOXFAILSAFE', { osd: 'BOXFAILSAFE', why: 'The failsafe switch is on.', fix: () => 'Turn the failsafe switch off.' }],
-  ['BAD_RX_RECOVERY', { osd: 'BADRX', why: 'The radio link just came back after a failsafe.', fix: (g) => `Turn the arm switch off and on again (${g.arm}).` }],
+  ['NOT_DISARMED', { osd: 'NOT_DISARMED', why: 'The radio link came back while the arm switch was still on.', fix: (g) => `Turn the arm switch off, then on again (${g.arm}).` }],
   ['CLI', { osd: 'CLI', why: 'The Betaflight CLI is open, and it blocks arming.', fix: () => 'Type exit in Settings → Betaflight → CLI console.' }],
   ['MSP', { osd: 'MSP', why: 'A configurator is connected over MSP.', fix: () => 'Disconnect the configurator.' }],
   ['CMS_MENU', { osd: 'CMS', why: 'The OSD menu is open.', fix: () => 'Leave the OSD menu (Exit / Save).' }],
@@ -46,7 +46,7 @@ const RULES: [string, Rule][] = [
   ['BOOT_GRACE_TIME', { osd: 'BOOTGRACE', why: 'Betaflight has only just booted.', fix: () => 'Wait a second, then arm.' }],
   ['CALIBRATING', { osd: 'CALIB', why: 'Betaflight is calibrating the gyro.', fix: () => 'Keep the quad still for a second.' }],
   ['ACC_CALIBRATION', { osd: 'NO_ACC_CAL', why: 'The accelerometer is not calibrated.', fix: () => 'Restore the simulator defaults in Settings → Betaflight.' }],
-  ['RPMFILTER', { osd: 'RPMFILTER', why: 'The RPM filter has no motor telemetry yet.', fix: (g) => `Wait a moment. If it stays, respawn (${g.respawn}).` }],
+  ['DSHOT_TELEM', { osd: 'DSHOT_TELEM', why: 'A motor isn’t sending DShot telemetry yet (the RPM filter needs it).', fix: (g) => `Wait a moment. If it stays, respawn (${g.respawn}).` }],
   ['MOTOR_PROTOCOL', { osd: 'MOTOR_PROTO', why: 'The motor protocol is not supported.', fix: () => 'Set motor_pwm_protocol = DSHOT600 in the CLI, or restore the simulator defaults.' }],
   ['DSHOT_BITBANG', { osd: 'DSHOT_BBANG', why: 'DShot bit-bang is misconfigured.', fix: () => 'Restore the simulator defaults in Settings → Betaflight.' }],
   ['CRASH_DETECTED', { osd: 'CRASH', why: 'Betaflight detected a crash.', fix: (g) => `Respawn (${g.respawn}), then arm again.` }],
@@ -56,7 +56,7 @@ const RULES: [string, Rule][] = [
   ['ARM_SWITCH', { osd: 'ARMSWITCH', why: 'The arm switch was already on.', fix: (g, on) => (on ? `Turn it off (${g.arm}), then on again to arm.` : `Arm now (${g.arm}).`) }],
   ['NOPREARM', { osd: 'NOPREARM', why: 'The prearm switch is off.', fix: () => 'Turn the prearm switch on, then arm.' }],
   ['GPS', { osd: 'GPS', why: 'GPS rescue needs a GPS fix.', fix: () => 'Turn GPS rescue off in the CLI.' }],
-  ['RESC', { osd: 'RESCUE SW', why: 'The GPS rescue switch is on.', fix: () => 'Turn the rescue switch off.' }],
+  ['RESC', { osd: 'RESCUE_SW', why: 'The GPS rescue switch is on.', fix: () => 'Turn the rescue switch off.' }],
   ['BST', { osd: 'BST', why: 'A BST device is blocking arming.', fix: () => 'Disconnect it.' }],
 ];
 const RULE = new Map(RULES);
