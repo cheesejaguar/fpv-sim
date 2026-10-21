@@ -14,7 +14,14 @@
  * decodeTelemetry() it is encoded exactly like a bidirectional DShot ESC
  * would (eRPM period in us, 'eee mmmmmmmmm' exponent/mantissa) and handed to
  * Betaflight's own decoder in drivers/dshot.c, so RPM filter / dynamic idle /
- * rpm limit see the same quantisation as on real hardware.
+ * rpm limit see the same quantisation as on real hardware. Like a real ESC,
+ * the reply carries the eRPM it measured one DShot frame earlier, and about
+ * 0.1 % of replies are corrupt (bad GCR / CRC): those don't update the motor's
+ * value and count as "Dshot invalid pkts" (dshot_telemetry_info).
+ *
+ * DShot beacon: a DSHOT_CMD_BEACON1..5 frame makes the ESC beep the motor for
+ * ~250 ms; bf_get_beacon() reports it (Betaflight sends it for the BEEPER
+ * switch / RX loss while disarmed, beeper_dshot_beacon_tone / _off_flags).
  */
 
 #include <stdbool.h>
@@ -46,6 +53,21 @@ static motorDevice_t dshotSimDevice;
 static uint16_t pendingValue[MAX_SUPPORTED_MOTORS];   // written this loop
 static uint16_t wireValue[MAX_SUPPORTED_MOTORS];      // last frame "sent"
 static bool motorReversed;
+
+#define BEACON_TONE_US          250000  // ESC beacon tone length after the command
+#define TELEMETRY_ERROR_PPM     1000    // corrupt eRPM replies per million
+static timeUs_t beaconUntilUs;
+static bool beaconOn;
+static float erpmLatched[MAX_SUPPORTED_MOTORS];       // eRPM measured at the previous frame
+static uint32_t telemetryRng = 0x2545F491u;           // xorshift32, deterministic
+
+static uint32_t telemetryRand(void)
+{
+    uint32_t x = telemetryRng;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    telemetryRng = x;
+    return x;
+}
 
 motorDmaOutput_t *getMotorDmaOutput(uint8_t index)
 {
@@ -111,9 +133,15 @@ static bool simDecodeTelemetry(void)
 
     for (int i = 0; i < dshotSimDevice.count && i < MAX_SUPPORTED_MOTORS; i++) {
         // The ESC only answers frames that requested telemetry (all of them
-        // with bidir DShot). Erpm index follows motor output order.
-        const float erpm = i < BFWASM_MOTORS ? bfwasmPersist.erpm[i] : 0.0f;
+        // with bidir DShot). Erpm index follows motor output order. The reply
+        // read now answers the previous frame: it carries that frame's eRPM.
+        const float erpm = erpmLatched[i];
+        erpmLatched[i] = i < BFWASM_MOTORS ? bfwasmPersist.erpm[i] : 0.0f;
         dshotTelemetryState.readCount++;
+        if (telemetryRand() % 1000000u < TELEMETRY_ERROR_PPM) {
+            dshotTelemetryState.invalidPacketCount++;   // corrupt reply: keep the last value
+            continue;
+        }
         dshotTelemetryState.motorState[i].rawValue = encodeErpmTelemetry(erpm);
     }
     dshotTelemetryState.rawValueState = DSHOT_RAW_VALUE_STATE_NOT_PROCESSED;
@@ -176,6 +204,9 @@ static void simUpdateComplete(void)
             motorReversed = true;
         } else if (v == DSHOT_CMD_SPIN_DIRECTION_NORMAL) {
             motorReversed = false;
+        } else if (v >= DSHOT_CMD_BEACON1 && v <= DSHOT_CMD_BEACON5) {
+            beaconOn = true;
+            beaconUntilUs = micros() + BEACON_TONE_US;
         }
     }
 }
@@ -298,4 +329,12 @@ int bfwasmMotorGet(uint16_t *out, int count)
 bool bfwasmMotorReversed(void)
 {
     return motorReversed;
+}
+
+bool bfwasmBeaconActive(void)
+{
+    if (beaconOn && cmpTimeUs(micros(), beaconUntilUs) >= 0) {
+        beaconOn = false;
+    }
+    return beaconOn;
 }

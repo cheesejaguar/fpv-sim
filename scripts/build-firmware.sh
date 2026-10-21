@@ -12,12 +12,32 @@ set -euo pipefail
 
 EMSDK_IMAGE="${EMSDK_IMAGE:-emscripten/emsdk:4.0.10}"
 
+# Betaflight is pinned by commit, not only by tag: the patches and the WASM
+# hardware layer are written against exactly this tree.
+BF_REPO="https://github.com/betaflight/betaflight.git"
+BF_TAG="4.5.5"
+BF_SHA="4adbd3ef7cb546947600e5f747bd5453c9573063"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 if [ ! -d firmware/betaflight/src ]; then
-    echo "== cloning betaflight 4.5.5 into firmware/betaflight"
-    git clone --depth 1 --branch 4.5.5 https://github.com/betaflight/betaflight.git firmware/betaflight
+    echo "== cloning betaflight $BF_TAG ($BF_SHA) into firmware/betaflight"
+    git clone --depth 1 --branch "$BF_TAG" "$BF_REPO" firmware/betaflight
+fi
+bf_head="$(git -C firmware/betaflight rev-parse HEAD 2>/dev/null || echo none)"
+if [ "$bf_head" != "$BF_SHA" ]; then
+    # the tag moved upstream, or an old checkout: fetch the pinned commit itself
+    echo "== firmware/betaflight is at $bf_head, fetching the pinned $BF_SHA"
+    if git -C firmware/betaflight fetch --depth 1 origin "$BF_SHA"; then
+        git -C firmware/betaflight checkout -q --detach "$BF_SHA" || true
+    fi
+    bf_head="$(git -C firmware/betaflight rev-parse HEAD 2>/dev/null || echo none)"
+fi
+if [ "$bf_head" != "$BF_SHA" ]; then
+    echo "error: firmware/betaflight is at $bf_head, expected Betaflight $BF_TAG = $BF_SHA." >&2
+    echo "  Fix: delete firmware/betaflight and run bash scripts/build-firmware.sh again." >&2
+    exit 1
 fi
 
 # Docker needs a host path it understands for the bind mount.
@@ -39,4 +59,4 @@ docker run --rm "${TTY_FLAGS[@]}" \
     -e JOBS="${JOBS:-}" \
     -v "$MOUNT_SRC:/src" -w /src \
     "$EMSDK_IMAGE" \
-    bash firmware/bfwasm/build.sh
+    bash firmware/bfwasm/build.sh "$BF_SHA"

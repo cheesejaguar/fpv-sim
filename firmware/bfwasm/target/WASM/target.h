@@ -124,6 +124,22 @@
 #define DEFAULT_CURRENT_METER_SOURCE CURRENT_METER_ADC
 #define USE_BATTERY_CONTINUE
 
+// ---- Beeper: the pin state is reported to the host (bf_get_beeper) ---------
+// beeper_sim.c replaces drivers/sound_beeper.c (no GPIO / timer behind it)
+#define USE_BEEPER
+
+// ---- Blackbox: native logging to a serial port (UART2 by default config) --
+// No flash / SD card: blackbox_device = SERIAL, the host drains the UART.
+#define USE_BLACKBOX
+
+// ---- GPS: u-blox protocol on a memory UART, emulated by the host ----------
+#define USE_GPS
+#define USE_GPS_UBLOX
+#define USE_GPS_RESCUE
+#undef  USE_GPS_NMEA
+#undef  USE_GPS_PLUS_CODES
+#undef  USE_GPS_LAP_TIMER
+
 #undef USE_STACK_CHECK
 #undef USE_DASHBOARD
 #undef USE_TELEMETRY_LTM

@@ -46,7 +46,9 @@ const DROP_SET: [RegExp, string][] = [
   [/^(blackbox_device|sdcard_|flash_|usb_)/, 'storage / USB hardware'],
   [/^(beeper_|beacon_)/, 'beeper hardware'],
   [/^(ledstrip_|led_)/, 'LED strip'],
-  [/^(gps_|vtx_|camera_control_|pinio_|box_user_|tlm_|telemetry_|frsky_|hott_|smartport_|ltm_|mavlink_|ibus_)/, 'hardware peripheral not simulated'],
+  [/^acc_calibration$/, 'accelerometer calibration of the real board (the simulator calibrates its own)'],
+  [/^gps_(?!rescue_)/, 'GPS receiver setup: the simulator owns its virtual u-blox GPS (rescue settings are kept)'],
+  [/^(vtx_|camera_control_|pinio_|box_user_|tlm_|telemetry_|frsky_|hott_|smartport_|ltm_|mavlink_|ibus_)/, 'hardware peripheral not simulated'],
   [/^(system_hse_mhz|cpu_overclock|task_statistics|debug_mode)$/, 'MCU / diagnostics'],
 ];
 

@@ -1,0 +1,14 @@
+diff --git a/src/main/sensors/acceleration_init.c b/src/main/sensors/acceleration_init.c
+--- a/src/main/sensors/acceleration_init.c
++++ b/src/main/sensors/acceleration_init.c
+@@ -116,7 +116,9 @@
+ 
+ bool accHasBeenCalibrated(void)
+ {
+-#ifdef SIMULATOR_BUILD
++// fpv-sim: the simulated accelerometer has a real offset and board tilt, so it
++// needs Betaflight's level calibration like hardware (upstream SITL skips it)
++#if defined(SIMULATOR_BUILD) && !defined(WASM_BUILD)
+     return true;
+ #else
+     return accelerometerConfig()->accZero.values.calibrationCompleted;

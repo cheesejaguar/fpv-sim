@@ -42,6 +42,8 @@ WASM_SRC := \
             $(BFWASM)/src/battery_sim.c \
             $(BFWASM)/src/motor_sim.c \
             $(BFWASM)/src/rx_sim.c \
+            $(BFWASM)/src/beeper_sim.c \
+            $(BFWASM)/src/cpu_load.c \
             $(BFWASM)/src/wasm_stubs.c
 
 # Object names mirror the source path, so flight/rpm_filter.c and
@@ -106,6 +108,8 @@ EXPORTED_FUNCTIONS := \
             _bf_eeprom_ptr,_bf_eeprom_size,_bf_eeprom_loaded,_bf_eeprom_dirty, \
             _bf_arming_disable_flags,_bf_get_flight_mode_flags, \
             _bf_get_attitude,_bf_get_debug, \
+            _bf_set_gyro_rate,_bf_calibrate_acc,_bf_acc_calibrated,_bf_acc_calibrating, \
+            _bf_get_beeper,_bf_get_beacon,_bf_yaw_spin_detected,_bf_cpu_load,_bf_gps_info, \
             _bf_micros,_bf_boot_count,_bf_gyro_period_us,_bf_debug_dump, \
             _malloc,_free
 

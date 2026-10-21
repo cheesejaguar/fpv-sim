@@ -1,0 +1,39 @@
+diff --git a/src/main/sensors/gyro.c b/src/main/sensors/gyro.c
+--- a/src/main/sensors/gyro.c
++++ b/src/main/sensors/gyro.c
+@@ -312,7 +312,8 @@
+     if (overflowDetected) {
+         handleOverflow(currentTimeUs);
+     } else {
+-#ifndef SIMULATOR_BUILD
++// fpv-sim: the simulated IMU saturates and spins like a real one, keep the check
++#if !defined(SIMULATOR_BUILD) || defined(WASM_BUILD)
+         // check for overflow in the axes set in overflowAxisMask
+         gyroOverflow_e overflowCheck = GYRO_OVERFLOW_NONE;
+ 
+@@ -338,7 +339,7 @@
+             yawSpinDetected = false;
+ #endif // USE_YAW_SPIN_RECOVERY
+         }
+-#endif // SIMULATOR_BUILD
++#endif // !SIMULATOR_BUILD || WASM_BUILD
+     }
+ }
+ #endif // USE_GYRO_OVERFLOW_CHECK
+@@ -371,13 +372,14 @@
+     if (yawSpinDetected) {
+         handleYawSpin(currentTimeUs);
+     } else {
+-#ifndef SIMULATOR_BUILD
++// fpv-sim: yaw spin recovery works on the simulated gyro (it clips at 2000 dps)
++#if !defined(SIMULATOR_BUILD) || defined(WASM_BUILD)
+         // check for spin on yaw axis only
+          if (abs((int)gyro.gyroADCf[Z]) > yawSpinRecoveryThreshold) {
+             yawSpinDetected = true;
+             yawSpinTimeUs = currentTimeUs;
+         }
+-#endif // SIMULATOR_BUILD
++#endif // !SIMULATOR_BUILD || WASM_BUILD
+     }
+ }
+ #endif // USE_YAW_SPIN_RECOVERY

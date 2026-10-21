@@ -8,20 +8,27 @@
 set -euo pipefail
 
 REPO="$(pwd)"
+# pinned upstream commit (scripts/build-firmware.sh passes it; default for direct docker runs)
+BF_SHA="${1:-4adbd3ef7cb546947600e5f747bd5453c9573063}"
 UPSTREAM="$REPO/firmware/betaflight"
 BFWASM="$REPO/firmware/bfwasm"
 BUILD="$REPO/firmware/build"
 BF="$BUILD/betaflight"
 
 if [ ! -f "$UPSTREAM/src/main/fc/init.c" ]; then
-    echo "error: $UPSTREAM is missing; clone betaflight 4.5.5 there first:" >&2
+    echo "error: $UPSTREAM is missing; clone betaflight 4.5.5 ($BF_SHA) there first:" >&2
     echo "  git clone --depth 1 --branch 4.5.5 https://github.com/betaflight/betaflight.git firmware/betaflight" >&2
+    echo "  (bash scripts/build-firmware.sh does this and checks the commit)" >&2
     exit 1
 fi
 
 # Stamp: upstream revision + patch contents. Re-copy only when it changes so
 # incremental builds stay incremental.
 upstream_rev="$(git -C "$UPSTREAM" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$upstream_rev" != "unknown" ] && [ "$upstream_rev" != "$BF_SHA" ]; then
+    echo "error: firmware/betaflight is at $upstream_rev; the patches need Betaflight 4.5.5 = $BF_SHA" >&2
+    exit 1
+fi
 stamp="$( { echo "$upstream_rev"; cat "$BFWASM"/patches/*.patch; } | sha256sum | cut -d' ' -f1)"
 
 if [ ! -f "$BF/.bfwasm-stamp" ] || [ "$(cat "$BF/.bfwasm-stamp")" != "$stamp" ]; then

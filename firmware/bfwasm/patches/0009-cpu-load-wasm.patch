@@ -1,0 +1,40 @@
+diff --git a/src/main/scheduler/scheduler.c b/src/main/scheduler/scheduler.c
+--- a/src/main/scheduler/scheduler.c
++++ b/src/main/scheduler/scheduler.c
+@@ -204,7 +204,7 @@
+         schedulerIgnoreTaskExecTime();
+     }
+ 
+-#if defined(SIMULATOR_BUILD)
++#if defined(SIMULATOR_BUILD) && !defined(WASM_BUILD)
+     averageSystemLoadPercent = 0;
+ #endif
+ }
+@@ -397,6 +397,7 @@
+ // Number of tasks executed so far; the lock-step driver uses it to tell
+ // whether a scheduler() call did any work at the current virtual time.
+ uint32_t schedulerExecutedTaskCount;
++uint32_t bfwasmTaskCostUs(int taskId);  // firmware/bfwasm/src/cpu_load.c
+ #endif
+ 
+ FAST_CODE timeUs_t schedulerExecuteTask(task_t *selectedTask, timeUs_t currentTimeUs)
+@@ -420,8 +421,19 @@
+         const timeUs_t currentTimeBeforeTaskCallUs = micros();
+         selectedTask->attribute->taskFunc(currentTimeBeforeTaskCallUs);
+         taskExecutionTimeUs = micros() - currentTimeBeforeTaskCallUs;
++#if defined(WASM_BUILD)
++        // fpv-sim: virtual time stands still inside a task. Charge the task's
++        // emulated F7 execution time to the load statistics only (CPU load,
++        // `tasks`), never to the scheduling decisions below.
++        const timeUs_t emulatedExecutionTimeUs = bfwasmTaskCostUs(selectedTask - getTask(0));
++        taskTotalExecutionTime += emulatedExecutionTimeUs;
++        selectedTask->movingSumExecutionTime10thUs += (emulatedExecutionTimeUs * 10) - selectedTask->movingSumExecutionTime10thUs / TASK_STATS_MOVING_SUM_COUNT;
++        selectedTask->totalExecutionTimeUs += emulatedExecutionTimeUs;
++        selectedTask->maxExecutionTimeUs = MAX(selectedTask->maxExecutionTimeUs, emulatedExecutionTimeUs);
++#else
+         taskTotalExecutionTime += taskExecutionTimeUs;
+         selectedTask->movingSumExecutionTime10thUs += (taskExecutionTimeUs * 10) - selectedTask->movingSumExecutionTime10thUs / TASK_STATS_MOVING_SUM_COUNT;
++#endif
+         if (!ignoreCurrentTaskExecRate) {
+             // Record task execution rate and max execution time
+             selectedTask->taskLatestDeltaTimeUs = cmpTimeUs(currentTimeUs, selectedTask->lastStatsAtUs);
