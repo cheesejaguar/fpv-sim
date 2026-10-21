@@ -8,8 +8,18 @@ import type { V3 } from '../sim/math';
 /**
  * freeze: digital decoder holding the last frame. lost: 0..1 "no signal" (goggles show black + the
  * OSD drops, since HD OSD travels over the same link). block: compression / break-up amount.
+ * margin: digital link margin (dB; analog: = cnr). bitrateMbps: what the goggles report (0 analog / HDZero).
  */
-export interface LinkState { cnr: number; freeze: boolean; lost: number; block: number; distance: number; rssiDbm: number; latencyExtraMs: number }
+export interface LinkState { cnr: number; freeze: boolean; lost: number; block: number; distance: number; rssiDbm: number; latencyExtraMs: number; margin: number; bitrateMbps: number }
+
+/** Top video bitrate of each digital system (Mbps), which the encoder steps down as the margin shrinks. */
+export function maxBitrateMbps(system: VideoSpec['system']): number {
+  return system === 'dji-o4' ? 60 : system === 'dji-o3' || system === 'walksnail' ? 50 : 0;
+}
+/** Bitrate the encoder settles on at a given link margin (MCS fallback below ~10 dB of margin). */
+export function bitrateAt(system: VideoSpec['system'], margin: number): number {
+  return maxBitrateMbps(system) * Math.max(0.08, Math.min(1, (margin + 4) / 14));
+}
 
 /** Digital receiver state machine: real digital links don't fade, they hold, drop, and re-sync. */
 type DigiState = 'ok' | 'frozen' | 'lost' | 'resync';
@@ -25,9 +35,15 @@ export class VideoLink {
   private digi: DigiState = 'ok';
   private digiT = 0;       // time in the current state
   private freezeFor = 0;   // how long this freeze holds before the picture is lost
-  state: LinkState = { cnr: 40, freeze: false, lost: 0, block: 0, distance: 0, rssiDbm: -40, latencyExtraMs: 0 };
+  state: LinkState = { cnr: 40, freeze: false, lost: 0, block: 0, distance: 0, rssiDbm: -40, latencyExtraMs: 0, margin: 30, bitrateMbps: 0 };
   rxGainDbi = 8;       // goggle patch + omni diversity
   txGainDbi = 2;       // lollipop / pagoda
+
+  /** Link effects switched off: a perfect link (distance / RSSI keep their last values). */
+  clean(video: VideoSpec) {
+    this.state = { ...this.state, cnr: 45, block: 0, freeze: false, lost: 0, latencyExtraMs: 0, margin: 30, bitrateMbps: maxBitrateMbps(video.system) };
+    return this.state;
+  }
 
   /** Respawn: back next to the pilot, the receiver re-acquires quickly. */
   reset() { this.digi = 'resync'; this.digiT = 0.4; this.fade = this.fadeV = 0; this.obsDb = 0; this.obsTimer = 0; }
@@ -69,7 +85,7 @@ export class VideoLink {
     if (video.kind === 'analog') {
       // analog degrades gradually: CNR drives snow, sparkles, tearing and colour loss in the shader
       s.cnr = snr - 6; // FM demod: CNR relative to the 18 MHz channel
-      s.freeze = false; s.lost = 0; s.block = 0; s.latencyExtraMs = 0;
+      s.freeze = false; s.lost = 0; s.block = 0; s.latencyExtraMs = 0; s.margin = s.cnr; s.bitrateMbps = 0;
       return s;
     }
     // digital: link margin vs sensitivity (OFDM with MCS fallback is ~8 dB more robust for DJI)
@@ -102,6 +118,10 @@ export class VideoLink {
     }
     s.freeze = this.digi === 'frozen';
     s.lost = this.digi === 'lost' || this.digi === 'resync' ? 1 : 0;
+    s.margin = margin;
+    // the goggles' bitrate readout follows the encoder's rate control (~0.3 s), and drops to 0 without a link
+    const rate = this.digi === 'ok' ? bitrateAt(video.system, margin) : 0;
+    s.bitrateMbps += (rate - s.bitrateMbps) * Math.min(1, dt / 0.3);
     return s;
   }
 }
