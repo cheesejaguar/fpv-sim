@@ -35,7 +35,7 @@ function rawHeight(x: number, y: number): number {
     w = Math.min(1, Math.max(0, r * 1.25));
   }
   // the far ridge: a high wall of peaks across the north, with a saddle a little west of the middle
-  h += 560 * Math.exp(-((y - RIDGE.farY) ** 2) / (2 * 230 * 230)) * (1 - 0.28 * Math.exp(-((x - RIDGE.saddleX) ** 2) / (2 * 220 * 220)));
+  h += 820 * Math.exp(-((y - RIDGE.farY) ** 2) / (2 * 260 * 260)) * (1 - 0.28 * Math.exp(-((x - RIDGE.saddleX) ** 2) / (2 * 220 * 220)));
   // a winding valley between the launch hill and the ridge
   const vy = 250 + 90 * Math.sin(x / 380);
   h -= 130 * Math.exp(-((y - vy) ** 2) / (2 * 150 * 150));

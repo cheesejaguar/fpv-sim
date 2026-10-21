@@ -57,11 +57,12 @@ export function parkMap(): MapDef {
     box(decor, x + 0.4, y, 6.92, 0.4, 0.12, 0.01, 0, { visual: 'led', color: 0xfff2d0 });
   }
 
-  // --- pilot box: a raised deck with a pop-up canopy and a table, flag poles beside it ---
+  // --- pilot box: a raised deck, a pop-up canopy over its back half (shade for the table, open sky
+  // in front of the pilot), flag poles beside it ---
   const PB = { x: -80, y: -105 };
   slab(prims, PB.x - 2.5, PB.y - 2, -0.05, PB.x + 2.5, PB.y + 2, 0.3, { visual: 'wood', mat: 'wood', tag: 'deck' });
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) cyl(prims, PB.x + sx * 2.3, PB.y + sy * 1.8, 0.3, 0.03, 2.45, { color: 0xd0d4d8 });
-  box(prims, PB.x, PB.y, 2.8, 2.5, 2.05, 0.05, 0, { visual: 'plain', color: 0x1f6fb2, mat: 'wood', tag: 'canopy' });
+  for (const sx of [-1, 1]) for (const y of [PB.y - 1.8, PB.y + 0.2]) cyl(prims, PB.x + sx * 2.3, y, 0.3, 0.03, 2.45, { color: 0xd0d4d8 });
+  box(prims, PB.x, PB.y - 0.8, 2.8, 2.5, 1.25, 0.05, 0, { visual: 'plain', color: 0x1f6fb2, mat: 'wood', tag: 'canopy' });
   box(prims, PB.x, PB.y - 1.2, 1.05, 0.9, 0.35, 0.03, 0, { visual: 'wood', mat: 'wood', tag: 'table' });
   for (const dx of [-0.8, 0.8]) for (const dy of [-0.25, 0.25]) cyl(prims, PB.x + dx, PB.y - 1.2 + dy, 0.3, 0.025, 0.72, { color: 0x50555c });
   const flagCols = [0xd23c2c, 0x1f5fd1, 0x2fa35a];
@@ -127,7 +128,7 @@ export function parkMap(): MapDef {
   return {
     id: 'park', name: 'Meadow Park — Open field freestyle', size: 210, terrain, groundMat: 'grass', prims, gates: [], decor,
     spawn: { pos: { x: PAD.x, y: PAD.y, z: 0.02 }, yaw: 50 * deg, groundZ: 0.02 },
-    pilot: { x: PB.x, y: PB.y + 1.2, z: 0.3 + 1.6 },
+    pilot: { x: PB.x, y: PB.y + 1.6, z: 0.3 + 1.6 }, // front of the deck, in front of the canopy
     sun: { azimuthDeg: 215, elevationDeg: 38 }, sky: 'clear',
     // wind shadow of the grove and the north tree line
     wakeZones: [{ x: -120, y: 70, radius: 24, height: 15, intensity: 0.8 }, { x: 0, y: 125, radius: 40, height: 16, intensity: 0.6 }],

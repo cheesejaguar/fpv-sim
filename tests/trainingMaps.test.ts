@@ -108,6 +108,19 @@ describe('spawn', () => {
   });
 });
 
+test.each(IDS)('%s: the pilot stands in free air within sight of the spawn, nothing just above the eyes', (id) => {
+  const m = maps[id], p = m.pilot!, w = worlds[id];
+  expect(w.sphere(p, 0.15, hit)).toBe(false);
+  expect(Math.hypot(p.x - m.spawn.pos.x, p.y - m.spawn.pos.y)).toBeLessThan(60); // like the stadium: a central pilot box
+  // outdoors, no canopy or roof over the pilot's view: open sky 30° up, across a 120° arc towards the spawn
+  if (id === 'gym') return;
+  const h0 = Math.atan2(m.spawn.pos.y - p.y, m.spawn.pos.x - p.x);
+  for (const da of [-60, -30, 0, 30, 60]) {
+    const a = h0 + (da * Math.PI) / 180, c = Math.cos(Math.PI / 6);
+    expect(w.raycast(p, { x: Math.cos(a) * c, y: Math.sin(a) * c, z: 0.5 }, 5), `heading ${da}°`).toBe(Infinity);
+  }
+});
+
 describe('gates and courses', () => {
   test.each(IDS)('%s: gate ids are unique map-wide and every gate is drawn', (id) => {
     const m = maps[id];

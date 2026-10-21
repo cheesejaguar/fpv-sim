@@ -82,9 +82,10 @@ export function nightMap(): MapDef {
   for (const s of [-1, 1]) cyl(prims, g0.c.x + s * 2.0, g0.c.y - 7, 0, 0.08, 1.7, { color: 0x3a3f47 });
   const PB = { x: 0, y: -50 };
   slab(prims, PB.x - 5, PB.y - 2, -0.05, PB.x + 5, PB.y + 2, 0.3, { visual: 'wood', mat: 'wood', tag: 'deck' });
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) cyl(prims, PB.x + sx * 4.7, PB.y + sy * 1.7, 0.3, 0.04, 2.5, { color: 0xd0d4d8 });
-  box(prims, PB.x, PB.y, 2.85, 5, 2, 0.05, 0, { visual: 'plain', color: 0x26303b, mat: 'wood', tag: 'canopy' });
-  box(decor, PB.x, PB.y + 2.0, 2.78, 4.9, 0.02, 0.02, 0, { visual: 'led', color: 0xffc070, tag: 'string' });
+  // canopy over the back half of the deck (LED string on its front edge): the pilots stand in front of it
+  for (const sx of [-1, 1]) for (const y of [PB.y - 1.7, PB.y + 0.1]) cyl(prims, PB.x + sx * 4.7, y, 0.3, 0.04, 2.5, { color: 0xd0d4d8 });
+  box(prims, PB.x, PB.y - 0.8, 2.85, 5, 1.2, 0.05, 0, { visual: 'plain', color: 0x26303b, mat: 'wood', tag: 'canopy' });
+  box(decor, PB.x, PB.y + 0.4, 2.78, 4.9, 0.02, 0.02, 0, { visual: 'led', color: 0xffc070, tag: 'string' });
 
   // dark tree line round the park
   const trees: MapDef['trees'] = [];
@@ -96,7 +97,7 @@ export function nightMap(): MapDef {
   return {
     id: 'night', name: 'Night Session — Floodlit race course', size: 110, terrain, groundMat: 'grass', prims, gates, decor,
     spawn: { pos: { x: g0.c.x - 8, y: pads[1], z: 0.02 }, yaw: 0, groundZ: 0.02 },
-    pilot: { x: PB.x, y: PB.y + 0.8, z: 0.3 + 1.6 },
+    pilot: { x: PB.x, y: PB.y + 1.6, z: 0.3 + 1.6 }, // front of the deck, in front of the canopy
     sun: { azimuthDeg: 140, elevationDeg: 28 }, sky: 'night', lights,
     wakeZones: [], elevationM: 60, trees,
   };

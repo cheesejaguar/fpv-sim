@@ -131,8 +131,9 @@ export function practiceMap(): MapDef {
   for (const d of drills) box(prims, d.spawn!.pos.x, d.spawn!.pos.y, 0.01, 0.4, 0.4, 0.01, 0, { visual: 'pad', mat: 'wood', tag: 'pad' });
   const PB = { x: 0, y: -16 };
   slab(prims, PB.x - 6, PB.y - 2, -0.05, PB.x + 6, PB.y + 2, 0.3, { visual: 'wood', mat: 'wood', tag: 'deck' });
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) cyl(prims, PB.x + sx * 5.7, PB.y + sy * 1.7, 0.3, 0.04, 2.5, { color: 0xd0d4d8 });
-  box(prims, PB.x, PB.y, 2.85, 6, 2, 0.05, 0, { visual: 'plain', color: 0xf2f2f2, mat: 'wood', tag: 'canopy' });
+  // canopy over the back half of the deck: the pilots stand in front of it, under open sky
+  for (const sx of [-1, 1]) for (const y of [PB.y - 1.7, PB.y + 0.1]) cyl(prims, PB.x + sx * 5.7, y, 0.3, 0.04, 2.5, { color: 0xd0d4d8 });
+  box(prims, PB.x, PB.y - 0.8, 2.85, 6, 1.2, 0.05, 0, { visual: 'plain', color: 0xf2f2f2, mat: 'wood', tag: 'canopy' });
   for (let i = 0; i < 4; i++) box(prims, PB.x - 4.5 + i * 3, PB.y - 1, 0.55, 0.25, 0.25, 0.25, 0, { visual: 'plain', color: 0xe23b3b, tag: 'chair' });
 
   // --- tree belt round the field ---
@@ -146,7 +147,7 @@ export function practiceMap(): MapDef {
     id: 'practice', name: 'Practice Field — Spec track + drills', size: 200, terrain, groundMat: 'grass', prims, gates, decor,
     courses: [{ id: 'spec', name: 'Spec track', gates }, ...drills],
     spawn: { pos: { x: g0.c.x - 8, y: pads[1], z: 0.02 }, yaw: 0, groundZ: 0.02 },
-    pilot: { x: PB.x, y: PB.y + 0.8, z: 0.3 + 1.6 },
+    pilot: { x: PB.x, y: PB.y + 1.6, z: 0.3 + 1.6 }, // front of the deck, in front of the canopy
     sun: { azimuthDeg: 160, elevationDeg: 45 }, sky: 'clear',
     wakeZones: [], elevationM: 90, trees,
   };
