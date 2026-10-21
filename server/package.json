@@ -5,7 +5,7 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --env dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
   },

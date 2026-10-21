@@ -3,8 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2025-06-01"
 
 [vars]
-# Pages allowed to open room WebSockets (comma-separated; "*." wildcards and "host:*" ports allowed)
-ALLOWED_ORIGINS = "https://fpv-sim-gamma.vercel.app,https://*.vercel.app,http://localhost:*,http://127.0.0.1:*"
+# Pages allowed to open room WebSockets and read the room list (comma-separated). An entry without
+# "*" is an exact origin (any scheme: "app://fpv-sim" is the desktop build). In http(s) entries "*"
+# stands for part of ONE host label, or for the port; a "*" that is a whole label or sits in the
+# registrable domain ("https://*.vercel.app" would admit anyone's Vercel site) is refused.
+# Production, this project's own Vercel previews (<project>-<hash>-<scope> and
+# <project>-git-<branch>-<scope>), and the desktop build.
+ALLOWED_ORIGINS = "https://fpv-sim-gamma.vercel.app,https://fpv-sim-*-cheesejaguar-2353s-projects.vercel.app,https://fpv-sim-git-*-cheesejaguar-2353s-projects.vercel.app,app://fpv-sim"
 
 [[durable_objects.bindings]]
 name = "ROOMS"
@@ -22,3 +27,37 @@ new_sqlite_classes = ["Room"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Lobby"]
+
+# ---- Optional abuse limits: each one is used only if its binding exists (none is required) ----
+#
+# RATE_LIMITER: Workers Rate Limiting, room connections per client IP (CF-Connecting-IP); over the
+# limit the upgrade is answered 429. namespace_id is any account-unique integer you pick.
+# [[ratelimits]]
+# name = "RATE_LIMITER"
+# namespace_id = "1001"
+# simple = { limit = 30, period = 60 }
+#
+# DENYLIST: a KV namespace. A key "code:ABCDE" refuses that room code, "ip:203.0.113.7" refuses that
+# client (any value; reads are edge-cached for 60 s). Create it with
+#   npx wrangler kv namespace create DENYLIST
+# and block with e.g.  npx wrangler kv key put --binding DENYLIST "code:ABCDE" 1 --remote
+# [[kv_namespaces]]
+# binding = "DENYLIST"
+# id = "<namespace id printed by the create command>"
+#
+# IP_SALT (secret): salt for the hashed client IPs that cap listed rooms per client in the server
+# browser (3). Optional; set it with  npx wrangler secret put IP_SALT
+
+# ---- Local development: npx wrangler dev --env dev   (or: npm run dev) ----
+# The same worker, with localhost pages allowed. Durable Object bindings and vars are not inherited
+# by environments, so they are repeated here; migrations are.
+[env.dev.vars]
+ALLOWED_ORIGINS = "http://localhost:*,http://127.0.0.1:*,https://fpv-sim-gamma.vercel.app,app://fpv-sim"
+
+[[env.dev.durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[env.dev.durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"

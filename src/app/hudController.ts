@@ -24,6 +24,10 @@ export class HudController {
   private lostNotice = el('div', { class: 'card notice warn status' }, el('b', {}, 'VIDEO SIGNAL LOST'), el('p', {}, 'Fly back toward yourself, or respawn: A / ✕ on a controller, R on the keyboard.'));
   // Browsers block audio until a click / key press on the page (controller buttons don't count).
   private soundChip = el('div', { class: 'chip' }, 'Click or press a key to enable sound');
+  // multiplayer: the room connection dropped (retrying with backoff) or was given up
+  private mpTitle = el('b');
+  private mpText = el('p');
+  private mpNotice = el('div', { class: 'card notice warn status' }, this.mpTitle, this.mpText);
   private lostSince = -1;
   private armedSince = -1;
   private layoutAt = 0;
@@ -78,6 +82,16 @@ export class HudController {
     if (!input.active && !armed) notices.push(this.padNotice);
     if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(this.setupNotice);
     if (ctx.audio.blocked) notices.push(this.soundChip);
+    { // multiplayer connection notice
+      const mp = ctx.mp;
+      if (mp.room && (mp.status === 'reconnecting' || mp.status === 'error')) {
+        const t = mp.status === 'reconnecting' ? 'Room connection lost — reconnecting…' : 'Disconnected from room';
+        const p = mp.status === 'reconnecting' ? `Room ${mp.room}, attempt ${mp.attempt} of ${mp.maxAttempts}. Keep flying; other pilots reappear when it is back.` : `${mp.error} To leave or retry: Esc, then Leave room (or Settings, Multiplayer).`;
+        if (this.mpTitle.textContent !== t) this.mpTitle.textContent = t;
+        if (this.mpText.textContent !== p) this.mpText.textContent = p;
+        notices.push(this.mpNotice);
+      }
+    }
     hud.notices(notices);
     // key hints collapse to a single "menu" chip a few seconds after arming
     hud.keys(this.keyHints(), this.armedSince >= 0 && now - this.armedSince > 3000);

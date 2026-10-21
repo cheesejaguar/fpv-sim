@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { EXPIRE_MS, LobbyCore } from '../server/src/lobbyCore';
+import { EXPIRE_MS, LobbyCore, MAX_PER_OWNER } from '../server/src/lobbyCore';
 import { RoomCore, Sock } from '../server/src/roomCore';
 
 const sock = (): Sock & { out: string[] } => { const out: string[] = []; return { out, send: (d) => out.push(d), close: () => {} }; };
@@ -7,16 +7,36 @@ const sock = (): Sock & { out: string[] } => { const out: string[] = []; return 
 test('lobby lists valid public rooms, busiest first, and expires stale ones', () => {
   let t = 1000;
   const l = new LobbyCore(() => t);
-  expect(l.upsert({ code: 'ABCDE', name: 'Evening race', map: 'field', players: 2, max: 8, host: 'Ann' })).toBe(true);
-  expect(l.upsert({ code: 'QWERT', name: '<b>Bando</b>\u0007 jam', map: 'bando', players: 5, max: 8, host: 'Bo' })).toBe(true);
-  expect(l.upsert({ code: 'bad!', players: 1, max: 8 })).toBe(false);
-  expect(l.upsert({ code: 'ZZZZ', players: 0, max: 8 })).toBe(false);
+  expect(l.upsert({ code: 'ABCDE', name: 'Evening race', map: 'field', players: 2, max: 8, host: 'Ann' })).toBe('added');
+  expect(l.upsert({ code: 'QWERT', name: '<b>Bando</b>\u0007 jam', map: 'bando', players: 5, max: 8, host: 'Bo' })).toBe('added');
+  expect(l.upsert({ code: 'ABCDE', name: 'Evening race', map: 'field', players: 3, max: 8, host: 'Ann' })).toBe('updated');
+  expect(l.upsert({ code: 'bad!', players: 1, max: 8 })).toBeNull();
+  expect(l.upsert({ code: 'ZZZZ', players: 0, max: 8 })).toBeNull();
   const list = l.list();
   expect(list.map((r) => r.code)).toEqual(['QWERT', 'ABCDE']);
   expect(list[0].name).toBe('bBando/b jam'); // markup and control characters stripped
   t += EXPIRE_MS + 1;
   l.upsert({ code: 'ABCDE', name: 'Evening race', map: 'field', players: 3, max: 8, host: 'Ann' });
   expect(l.list().map((r) => r.code)).toEqual(['ABCDE']); // QWERT stopped reporting
+});
+
+test('listed rooms are capped per client (hashed IP), and the owner never appears in the list', () => {
+  let t = 1000;
+  const l = new LobbyCore(() => t);
+  const owner = 'a1b2c3d4e5f60718';
+  const codes = ['AAAA', 'BBBB', 'CCCC', 'DDDD', 'EEEE'];
+  const res = codes.map((code) => l.upsert({ code, name: 'spam', players: 1, max: 8, host: 'S', owner }));
+  expect(res.filter((r) => r === 'added').length).toBe(MAX_PER_OWNER);
+  expect(res.slice(MAX_PER_OWNER)).toEqual([null, null]);
+  expect(l.upsert({ code: 'AAAA', name: 'spam', players: 2, max: 8, host: 'S', owner })).toBe('updated'); // own rooms keep reporting
+  expect(l.upsert({ code: 'FFFF', name: 'other', players: 1, max: 8, host: 'O', owner: 'ffffeeee00001111' })).toBe('added');
+  expect(l.list().every((r) => !('owner' in r))).toBe(true);
+  expect(JSON.stringify(l.list())).not.toContain(owner);
+  l.remove('BBBB');
+  expect(l.upsert({ code: 'DDDD', name: 'spam', players: 1, max: 8, host: 'S', owner })).toBe('added');
+  // the cap counts live rooms only: expired ones free their slot
+  t += EXPIRE_MS + 1;
+  expect(l.upsert({ code: 'EEEE', name: 'spam', players: 1, max: 8, host: 'S', owner })).toBe('added');
 });
 
 test('rooms are listed only when the host made them public', () => {
@@ -37,6 +57,10 @@ test('rooms are listed only when the host made them public', () => {
   const legacy = new RoomCore(), s4 = sock(); legacy.open(s4);
   legacy.message(s4, JSON.stringify({ t: 'hello', name: 'Di', color: '#0000ff', frame: '5in' }));
   expect(legacy.listing('OLDRM')).toBeNull();
+  // the host's hashed IP rides along to the directory (for the per-client cap)
+  const owned = new RoomCore(), s5 = sock(); owned.open(s5, 0, '0123456789abcdef');
+  owned.message(s5, JSON.stringify({ t: 'hello', name: 'Ed', color: '#0000ff', frame: '5in', room: { name: 'r', public: true } }));
+  expect(owned.listing('OWNED')?.owner).toBe('0123456789abcdef');
 });
 
 test('the directory survives a snapshot / restore (object evicted between heartbeats)', () => {
@@ -55,15 +79,16 @@ test('the directory survives a snapshot / restore (object evicted between heartb
   expect(a.remove('ABCD')).toBe(false);
 });
 
-test('prototype member names are never accepted as map ids (relay + directory)', () => {
+test('prototype member names and local map ids are never accepted as map ids (relay + directory)', () => {
   const room = new RoomCore(), s = sock();
   room.open(s);
   room.message(s, JSON.stringify({ t: 'hello', name: 'Eve', color: '#ff0000', frame: '5in', map: 'constructor' }));
   expect(room.map).toBeNull();
-  for (const bad of ['__proto__', 'constructor', 'prototype']) {
-    expect(room.message(s, JSON.stringify({ t: 'map', map: bad }))).toBeNull();
+  for (const bad of ['__proto__', 'constructor', 'prototype', 'local-x']) {
+    expect(room.message(s, JSON.stringify({ t: 'map', map: bad })).mapChanged).toBeNull();
   }
   const l = new LobbyCore(() => 1);
   l.upsert({ code: 'ABCD', name: 'x', map: '__proto__', players: 1, max: 8, host: 'Eve' });
-  expect(l.list()[0].map).toBeNull();
+  l.upsert({ code: 'ABCE', name: 'x', map: 'local-mine', players: 1, max: 8, host: 'Eve' });
+  expect(l.list().map((r) => r.map)).toEqual([null, null]);
 });
