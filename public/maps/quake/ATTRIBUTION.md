@@ -16,7 +16,8 @@ used here only to identify where the level layouts come from.
 | `dm3.map` | DM3 "The Abandoned Base" | `DM3.MAP`, unmodified |
 
 - Copyright © 1996 id Software. John Romero released the original Quake map sources in October
-  2006, for Quake's 10th anniversary, with id Software's permission, "under the terms of the GPL".
+  2006, for Quake's 10th anniversary. The release's readme states that they "are released under
+  the terms of the GPL".
 - Source archive: <https://rome.ro/s/1996-quake-map-sources.zip>, linked from
   <https://rome.ro/resources>. These files are byte-identical to the copies in
   <https://github.com/fzwoch/quake_map_source>.

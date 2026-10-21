@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy — FPV Sim</title>
+    <meta name="description" content="What data FPV Sim handles: what stays in your browser, what the multiplayer relay and the web host see, and how to delete it." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <meta name="theme-color" content="#0f0f23" />
+    <style>
+      :root {
+        --bg: #0f0f23; --card: #1e1c35; --fg: #e2e8f0; --muted: #94a3b8; --primary: #a78bfa; --accent: #f43f5e;
+        --border: rgba(167, 139, 250, 0.22);
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: radial-gradient(ellipse at top, #1b1840 0%, var(--bg) 60%) fixed, var(--bg); color: var(--fg);
+        font: 16px/1.6 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+      h1 { font: 400 32px/1.2 'Russo One', 'Chakra Petch', system-ui, sans-serif; letter-spacing: 0.5px; margin: 0 0 4px; }
+      h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--primary); margin: 0 0 8px; }
+      .sub { color: var(--muted); margin: 0 0 28px; }
+      section { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 0 0 16px; }
+      p { margin: 0 0 10px; } p:last-child, ul:last-child { margin-bottom: 0; }
+      ul { margin: 0 0 10px; padding-left: 20px; } li { margin: 3px 0; }
+      code { font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: rgba(255, 255, 255, 0.06); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+      a { color: var(--primary); } a:hover { color: #c4b5fd; }
+      a:focus-visible { outline: 2px solid #c4b5fd; outline-offset: 2px; border-radius: 3px; }
+      .back { display: inline-block; margin-bottom: 24px; text-decoration: none; font-weight: 600; }
+      footer { color: var(--muted); font-size: 14px; margin-top: 28px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back" href="/">&larr; Back to FPV Sim</a>
+      <h1>Privacy</h1>
+      <p class="sub">Short version: no accounts, no cookies, no analytics, no ads. Your settings stay in your browser. Multiplayer sends only what other pilots need to see you fly.</p>
+
+      <section>
+        <h2>In your browser</h2>
+        <p>FPV Sim saves your preferences on your own device so they are there next time. Nothing here is sent anywhere.</p>
+        <ul>
+          <li><b>Local storage</b> (keys starting with <code>fpv-</code>): drone build, simulation and video settings, new-game choices, controller profiles and rumble, pilot callsign and colour, a custom multiplayer server address, and which guide chapters you finished.</li>
+          <li><b>IndexedDB</b> (database <code>fpv-sim</code>): the Betaflight flight controller's EEPROM, so your CLI changes and tune survive a reload.</li>
+          <li>Maps you load from disk and blackbox recordings stay in memory. They are gone when you close the tab, unless you download them yourself.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Multiplayer relay</h2>
+        <p>Only when you join a room, or open the server browser, the game connects to the relay server (a Cloudflare Worker run by this project). The relay passes your data on to the other pilots in the same room. It receives:</p>
+        <ul>
+          <li>your callsign and colour, your quad's frame size, and the map you are flying;</li>
+          <li>the room code, and if you create the room, its name and whether it is public;</li>
+          <li>your quad's position, orientation, motor speed and armed state, about 30 times a second;</li>
+          <li>your lap count and lap times.</li>
+        </ul>
+        <p>Poses and lap times are relayed, not stored. The public server browser lists public rooms with their name, map, number of pilots and the host's callsign. Private rooms are never listed. A room forgets its name and visibility once it is empty, and its listing disappears within a minute.</p>
+        <p>Like any web server, Cloudflare sees your IP address when you connect. See <a href="https://www.cloudflare.com/privacypolicy/" rel="noopener">Cloudflare's privacy policy</a>. If you set your own relay server in the Multiplayer settings, that server receives the data above instead.</p>
+      </section>
+
+      <section>
+        <h2>Web hosting</h2>
+        <p>The site is hosted on Vercel. Like any web host, Vercel logs requests (IP address, user agent, the page requested) to run and protect the service. See <a href="https://vercel.com/legal/privacy-policy" rel="noopener">Vercel's privacy policy</a>. FPV Sim adds no tracking of its own: no cookies, no analytics, no fingerprinting, no third-party scripts or fonts.</p>
+      </section>
+
+      <section>
+        <h2>Deleting your data</h2>
+        <p>Everything FPV Sim saves is in your browser, so you delete it there. If the game ever fails to start, its error page has a <b>Reset saved settings</b> button that clears all of it. Otherwise use your browser's site data controls:</p>
+        <ul>
+          <li>Chrome / Edge: click the icon left of the address bar, <b>Site settings</b>, then <b>Delete data</b>.</li>
+          <li>Firefox: click the padlock, then <b>Clear cookies and site data</b>.</li>
+          <li>Safari: <b>Settings</b>, <b>Privacy</b>, <b>Manage Website Data</b>, select this site, then <b>Remove</b>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Questions</h2>
+        <p>FPV Sim is an open-source hobby project. You can read every line of code it runs at <a href="https://github.com/cheesejaguar/fpv-sim" rel="noopener">github.com/cheesejaguar/fpv-sim</a> and ask questions by <a href="https://github.com/cheesejaguar/fpv-sim/issues" rel="noopener">opening an issue</a>.</p>
+      </section>
+
+      <footer>
+        <p>Third-party licenses: <a href="/licenses.txt">licenses.txt</a>. Last updated October 2026.</p>
+      </footer>
+    </main>
+  </body>
+</html>
