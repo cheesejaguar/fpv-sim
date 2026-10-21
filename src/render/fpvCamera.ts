@@ -65,7 +65,7 @@ void main() {
   float lum = exp(logAvg);
   // mid-grey target in linear light (the camera gamma brightens it to ~0.43 on screen); ~7 stops
   // of range: dark interiors brighten (noisily) but are not pushed to daylight, sky is pulled down
-  float target = clamp(0.12 / lum, 0.06, 8.0);
+  float target = clamp(0.12 / lum, 0.06, 5.0);
   float prev = texture2D(prevExp, vec2(0.5)).r;
   if (prev <= 0.0) prev = target;
   // cameras react faster to over-exposure (bursting out into the sky) than to darkness
@@ -85,7 +85,14 @@ vec3 tone(vec3 c, float e) {
   c *= e;
   // WDR: log-ish compression of highlights, lift shadows
   c = mix(c, log2(1.0 + c * 3.0) / log2(4.0), wdr);
-  return c;
+  // highlight shoulder (what a camera's WDR does): bright areas such as windows seen from a dark
+  // interior roll off smoothly instead of hard-clipping to flat white. Half of it acts on luminance,
+  // so bright sky keeps some of its colour rather than desaturating completely.
+  const float K = 0.62;
+  vec3 perCh = min(c, K) + (1.0 - K) * (1.0 - exp(-max(c - K, 0.0) / (1.0 - K)));
+  float L = max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  float Ls = min(L, K) + (1.0 - K) * (1.0 - exp(-max(L - K, 0.0) / (1.0 - K)));
+  return mix(perCh, min(c * (Ls / L), vec3(1.0)), 0.7);
 }
 // camera transfer curve (Rec.709-like gamma): the frame buffers are linear light
 vec3 oetf(vec3 c) { return pow(max(c, 0.0), vec3(gammaOut)); }
@@ -127,8 +134,6 @@ void main() {
   vec3 cL = tone(useprev ? texture2D(prevFrame, suv - dl).rgb : texture2D(frame, suv - dl).rgb, e);
   vec3 cR = tone(useprev ? texture2D(prevFrame, suv + dl).rgb : texture2D(frame, suv + dl).rgb, e);
   vec3 sharp = cY + (cY - 0.5 * (cL + cR)) * 0.6;
-  // small-sensor CMOS flare around the sun and blown-out sky: gentle and bounded
-  sharp += min(max(tone(textureLod(frame, suv, 4.0).rgb, e) - 0.95, 0.0) * 0.35, vec3(0.12));
   sharp = oetf(sharp); cC = oetf(cC);
   vec3 yiq = vec3(rgb2yiq(sharp).x, rgb2yiq(cC).yz);
   // OSD is overlaid at the FC (MAX7456), i.e. before the RF link degrades it
@@ -185,9 +190,6 @@ void main() {
     c = mix(c, blur, 0.15 + 0.5 * block);
   }
   c = tone(c, e);
-  // bloom from bright sky / sun
-  vec3 glow = min(max(tone(textureLod(frame, uv, 4.0).rgb, e) - 0.95, 0.0) * 0.3, vec3(0.1));
-  c += glow;
   c = oetf(c);
   // HD OSD is drawn by the VTX/goggles after decoding: crisp
   vec4 o = osdAt(uv);

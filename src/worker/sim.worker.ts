@@ -467,6 +467,8 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
     case 'reset': {
       if (m.repair) quad.repair();
       if (m.fullBattery) { buildQuad(); } else respawn();
+      // debug / test hook: put the quad somewhere specific (e.g. inside a building)
+      if (m.at) { quad.reset({ x: m.at.x, y: m.at.y, z: m.at.z }, (m.at.yawDeg * Math.PI) / 180); env.wake.reset(); lastPos = { ...quad.s.pos }; }
       break;
     }
     case 'cli': {

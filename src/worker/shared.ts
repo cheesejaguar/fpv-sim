@@ -94,7 +94,7 @@ export type ToWorker =
   | { type: 'init'; sab: SharedArrayBuffer; spec: unknown; settings: SimSettings }
   | { type: 'spec'; spec: unknown }
   | { type: 'settings'; settings: SimSettings }
-  | { type: 'reset'; repair?: boolean; fullBattery?: boolean }
+  | { type: 'reset'; repair?: boolean; fullBattery?: boolean; at?: { x: number; y: number; z: number; yawDeg: number } }
   | { type: 'cli'; text: string }
   | { type: 'cliBatch'; lines: string[]; id: number }
   | { type: 'factoryReset' }

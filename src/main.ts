@@ -603,4 +603,4 @@ requestAnimationFrame(animate);
 gameMenu.open('title');
 
 // debugging handle (inspect from devtools)
-(window as any).__fpv = { mp, menu: gameMenu, hud, osdCells: () => (osd.hasContent && view.view === 'fpv' && view.osd ? osdRects(osd.occupied, osd.cols, osd.rows, fpv.layout.osd) : []), frameRect: () => fpv.layout.frame, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };
+(window as any).__fpv = { mp, menu: gameMenu, hud, teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(); send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); }, osdCells: () => (osd.hasContent && view.view === 'fpv' && view.osd ? osdRects(osd.occupied, osd.cols, osd.rows, fpv.layout.osd) : []), frameRect: () => fpv.layout.frame, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };
