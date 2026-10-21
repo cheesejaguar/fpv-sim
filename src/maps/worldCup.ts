@@ -1,4 +1,4 @@
-// "FPV World Cup Stadium": the flagship race map. A floodlit stadium bowl at golden hour with a
+// "FPV Grand Prix Stadium": the flagship race map (id 'field', file name kept from its first name). A floodlit stadium bowl at golden hour with a
 // championship-style course flown inside safety netting, watched from tiered grandstands.
 //
 // Course design follows what top-level events actually use, with the openings made a little
@@ -86,7 +86,7 @@ function courseGates(): GateDef[] {
 const NET_X = 62, NET_Y = 38, NET_H = 7;
 const STAND_X = 68, STAND_Y = 48, ROWS = 22, ROW_D = 0.85, ROW_RISE = 0.42, STAND_Z0 = 1.6;
 const SPONSORS: [string, number][] = [
-  ['FPV WORLD CUP', 0x0b1a3a], ['KESTREL CELLS', 0xd2401e], ['HELIX FRAMES', 0x111111], ['PROPWASH ENERGY', 0x14743c],
+  ['FPV GRAND PRIX', 0x0b1a3a], ['KESTREL CELLS', 0xd2401e], ['HELIX FRAMES', 0x111111], ['PROPWASH ENERGY', 0x14743c],
   ['OPEN SIM LEAGUE', 0x5a1f8a], ['NANOSKY RADIO', 0x0f5ea8], ['GYRO LABS 8K', 0x222831], ['FLY SAFE · FLY FAST', 0xc99a06],
 ];
 
@@ -179,7 +179,7 @@ export function worldCupMap(): MapDef {
   for (const s of [-1, 1]) {
     const x = s * (STAND_X + ROWS * ROW_D + 4), z = STAND_Z0 + ROWS * ROW_RISE + 9;
     for (const dy of [-8, 8]) prims.push({ kind: 'cyl', c: { x, y: dy, z: 0 }, r: 0.4, h: z - 5, mat: 'metal' });
-    box(prims, { x, y: 0, z }, { x: 10, y: 0.4, z: 5.6 }, 90 * deg, { visual: 'screen', text: s < 0 ? 'FPV WORLD CUP|GRAND FINAL' : 'LIVE|PILOTS ARM YOUR QUADS', color: 0x05070d, mat: 'metal', tag: 'screen' });
+    box(prims, { x, y: 0, z }, { x: 10, y: 0.4, z: 5.6 }, 90 * deg, { visual: 'screen', text: s < 0 ? 'FPV GRAND PRIX|FINAL HEAT' : 'LIVE|PILOTS ARM YOUR QUADS', color: 0x05070d, mat: 'metal', tag: 'screen' });
   }
 
   // --- start / finish: timing gantry over gate 0, start pads behind it ---
@@ -205,7 +205,7 @@ export function worldCupMap(): MapDef {
   }
 
   return {
-    id: 'field', name: 'FPV World Cup Stadium', size: 200, terrain, groundMat: 'grass', prims, gates, decor,
+    id: 'field', name: 'FPV Grand Prix Stadium', size: 200, terrain, groundMat: 'grass', prims, gates, decor,
     spawn: { pos: { x: -44, y: pads[1], z: 0.25 }, yaw: 0 }, sun: { azimuthDeg: 245, elevationDeg: 12 }, sky: 'dusk',
     pilot: { x: 0, y: -42, z: 2.9 },
     wakeZones: [], elevationM: 50, trees,

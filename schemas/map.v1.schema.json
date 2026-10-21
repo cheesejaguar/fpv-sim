@@ -146,9 +146,11 @@
           "enum": [
             "clear",
             "overcast",
-            "dusk"
+            "dusk",
+            "night"
           ],
-          "default": "clear"
+          "default": "clear",
+          "description": "Sky and ambient light. night: a dark sky lit by the moon (the sun direction) and the map's lights."
         },
         "sun": {
           "type": "object",
@@ -869,6 +871,51 @@
         "required": [
           "min",
           "max"
+        ],
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        }
+      }
+    },
+    "lights": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Point lights (interior fixtures, floodlights), at most 8. The illuminance at distance d is about intensity / d² (the sun is about 4.5).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pos": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Light position [x, y, z] (m)."
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "sRGB colour \"#rrggbb\" (default white)."
+          },
+          "intensity": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "range": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1000,
+            "description": "Cut-off distance (m)."
+          }
+        },
+        "required": [
+          "pos",
+          "intensity",
+          "range"
         ],
         "additionalProperties": false,
         "patternProperties": {

@@ -1,8 +1,8 @@
-// The World Cup stadium course: every gate counts in order along a clean racing line that never
+// The Grand Prix stadium course: every gate counts in order along a clean racing line that never
 // touches an obstacle, openings keep the FAI free space, and pass detection for every gate kind.
 import { describe, expect, test } from 'vitest';
 import { gatePassed, inOpening, openingCentre } from '../src/maps/gates';
-import { MAPS } from '../src/maps/maps';
+import { MAP_LIST, MAPS } from '../src/maps/maps';
 import { BoxPrim, GateDef, MapDef, PrimitiveWorld, spawnGroundZ } from '../src/maps/world';
 import { WORLD_CUP_LINE } from '../src/maps/worldCup';
 import { ContactHit, MATERIALS } from '../src/sim/contact';
@@ -30,7 +30,15 @@ function racingLine(laps: number): V3[] {
   return out;
 }
 
-describe('FPV World Cup Stadium course', () => {
+describe('FPV Grand Prix Stadium course', () => {
+  test('is named FPV Grand Prix Stadium (no "World Cup": that echoes the FAI Drone Racing World Cup)', () => {
+    expect(map.name).toBe('FPV Grand Prix Stadium');
+    expect(MAP_LIST.field.name).toBe(map.name);
+    const texts = [...map.prims, ...(map.decor ?? [])].map((p) => (p.kind === 'box' ? p.text ?? '' : '')).join(' ');
+    expect(texts).not.toMatch(/world\s*cup/i);
+    expect(texts).toMatch(/GRAND PRIX/);
+  });
+
   test('is a championship-sized course of mixed gate kinds', () => {
     const kinds = new Set(map.gates.map((g) => g.kind));
     for (const k of ['square', 'arch', 'flag', 'dive', 'hurdle', 'ladder'] as const) expect(kinds.has(k)).toBe(true);
