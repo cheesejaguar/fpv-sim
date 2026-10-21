@@ -79,6 +79,9 @@ uniform sampler2D frame, prevFrame, osd, expTex;
 uniform float time, cnr, osdOn, wdr, frameH, frameW, oddField, interlaced, freeze, block, lost, hdz, gammaOut;
 uniform vec4 osdRect;   // x0,y0,x1,y1 in frame uv
 uniform vec2 screenFit; // scale of frame quad on screen (letterbox)
+// Texture reads below use explicit LOD 0: they happen inside per-line / per-block choices (interlaced
+// fields, macroblocks), where implicit derivatives are undefined. Apple GPUs (Metal, every Mac
+// browser) then pick a far-too-blurry mip on alternate lines, which showed as heavy banding.
 // sin-free hash (Hoskins): fract(sin(x)*k) collapses to 0 for large x in fp32
 float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 tone(vec3 c, float e) {
@@ -99,7 +102,7 @@ vec3 oetf(vec3 c) { return pow(max(c, 0.0), vec3(gammaOut)); }
 vec4 osdAt(vec2 uv) {
   vec2 o = (uv - osdRect.xy) / (osdRect.zw - osdRect.xy);
   if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) return vec4(0.0);
-  return texture2D(osd, vec2(o.x, o.y)) * osdOn;
+  return textureLod(osd, vec2(o.x, o.y), 0.0) * osdOn;
 }
 `;
 
@@ -120,19 +123,19 @@ void main() {
   float e = texture2D(expTex, vec2(0.5)).r;
   bool useprev = interlaced > 0.5 && mod(line, 2.0) == oddField;
   // luma: full bandwidth tap, chroma: wide horizontal blur (~1.3 MHz vs 4.2 MHz luma)
-  vec3 cY = useprev ? texture2D(prevFrame, suv).rgb : texture2D(frame, suv).rgb;
+  vec3 cY = useprev ? textureLod(prevFrame, suv, 0.0).rgb : textureLod(frame, suv, 0.0).rgb;
   vec3 cC = vec3(0.0);
   for (int i = -3; i <= 3; i++) {
     vec2 ou = suv + vec2(float(i) * 1.6 / frameW, 0.0);
-    cC += useprev ? texture2D(prevFrame, ou).rgb : texture2D(frame, ou).rgb;
+    cC += useprev ? textureLod(prevFrame, ou, 0.0).rgb : textureLod(frame, ou, 0.0).rgb;
   }
   cC /= 7.0;
   cY = tone(cY, e); cC = tone(cC, e);
   // sharpening ringing typical of analog cameras
   // (taps from the same field as the centre sample, or moving edges ghost)
   vec2 dl = vec2(1.5 / frameW, 0.0);
-  vec3 cL = tone(useprev ? texture2D(prevFrame, suv - dl).rgb : texture2D(frame, suv - dl).rgb, e);
-  vec3 cR = tone(useprev ? texture2D(prevFrame, suv + dl).rgb : texture2D(frame, suv + dl).rgb, e);
+  vec3 cL = tone(useprev ? textureLod(prevFrame, suv - dl, 0.0).rgb : textureLod(frame, suv - dl, 0.0).rgb, e);
+  vec3 cR = tone(useprev ? textureLod(prevFrame, suv + dl, 0.0).rgb : textureLod(frame, suv + dl, 0.0).rgb, e);
   vec3 sharp = cY + (cY - 0.5 * (cL + cR)) * 0.6;
   sharp = oetf(sharp); cC = oetf(cC);
   vec3 yiq = vec3(rgb2yiq(sharp).x, rgb2yiq(cC).yz);
@@ -174,7 +177,7 @@ void main() {
     float strip = floor(uv.y * frameH / 8.0);
     float sh = hash(vec2(strip, floor(time * 90.0)));
     if (sh < block * 0.35) suv.x = fract(uv.x + (hash(vec2(strip, time)) - 0.5) * 0.2 * block);
-    c = texture2D(frame, suv).rgb;
+    c = textureLod(frame, suv, 0.0).rgb;
     float px = hash(floor(uv * vec2(frameW, frameH) / 2.0) + floor(time * 90.0));
     if (px < block * block * 0.25) c = vec3(hash(uv + time), hash(uv - time), hash(uv * 3.0 + time));
   } else {
@@ -184,7 +187,7 @@ void main() {
     vec2 bid = floor(uv / bs);
     float bh = hash(bid + floor(time * 20.0));
     if (block > 0.05) suv = mix(uv, (bid + 0.5) * bs, smoothstep(0.3, 1.0, block) * step(bh, block));
-    c = (bh < block * 0.6 && freeze < 0.5) ? texture2D(prevFrame, suv).rgb : texture2D(frame, suv).rgb;
+    c = (bh < block * 0.6 && freeze < 0.5) ? textureLod(prevFrame, suv, 0.0).rgb : textureLod(frame, suv, 0.0).rgb;
     // encoder smoothing at high motion (bitrate starvation)
     vec3 blur = textureLod(frame, suv, 1.5).rgb;
     c = mix(c, blur, 0.15 + 0.5 * block);
