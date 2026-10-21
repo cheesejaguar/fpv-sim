@@ -2,6 +2,7 @@
 // telemetry, race / drill panel, crash banner (+ rumble and impact sound), and lays it out around the OSD.
 import { buttonName } from '../input/gamepad';
 import { webHidSupported } from '../input/steamHid';
+import { formatLap } from '../net/leaderboard';
 import { el, touchOnly } from '../ui/dom';
 import { armingAdvice, CoachGlyphs } from '../ui/hud/coach';
 import { Hud, KeyHint, osdRects } from '../ui/hud/hud';
@@ -39,6 +40,17 @@ export class HudController {
   private mpTitle = el('b');
   private mpText = el('p');
   private mpNotice = el('div', { class: 'card notice warn status' }, this.mpTitle, this.mpText);
+  // a lap just set a personal best (or would have, but doesn't count): shown for a few seconds
+  private lapTitle = el('b');
+  private lapText = el('p');
+  private lapNotice = el('div', { class: 'card notice status' }, this.lapTitle, this.lapText);
+  // a personal best that could go on the leaderboard: offered while disarmed, posted only on request
+  private postTitle = el('b');
+  private postText = el('p');
+  private postHow = el('p', { class: 'sub' });
+  private postNotice: HTMLElement;
+  /** Open the initials entry for the pending personal best (wired by the app). */
+  onPostLap: (() => void) | null = null;
   private lostSince = -1;
   private armedSince = -1;
   private layoutAt = 0;
@@ -47,6 +59,9 @@ export class HudController {
 
   constructor(private ctx: AppCtx, private sticks: SticksView, private spectrum: SpectrumView) {
     this.hud = new Hud(sticks.canvas, spectrum.canvas);
+    this.postNotice = el('div', { class: 'card notice pb' }, this.postTitle, this.postText, this.postHow,
+      el('button', { onmousedown: (e: MouseEvent) => e.preventDefault(), onclick: () => this.onPostLap?.() }, 'Post to leaderboard'),
+      el('button', { class: 'ghost', onmousedown: (e: MouseEvent) => e.preventDefault(), onclick: () => ctx.lb.skip() }, 'Not now'));
     const k = (t: string) => el('kbd', {}, t);
     this.padNotice = el('div', { class: 'card notice warn' },
       el('b', {}, 'No controller: keyboard fallback'),
@@ -106,6 +121,20 @@ export class HudController {
     if (input.blocked) notices.push(this.radioNotice);
     else if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(this.setupNotice);
     if (ctx.audio.blocked) notices.push(this.soundChip);
+    const lap = ctx.lb.noteNow(now);
+    if (lap) {
+      setText(this.lapTitle, lap.kind === 'pb' ? `NEW PERSONAL BEST · ${formatLap(lap.lapMs)}` : `LAP NOT COUNTED · ${formatLap(lap.lapMs)}`);
+      setText(this.lapText, lap.text);
+      this.lapNotice.className = `card notice status ${lap.kind === 'pb' ? 'pb' : 'warn'}`;
+      notices.push(this.lapNotice);
+    } else if (ctx.lb.pending && !armed) {
+      const p = ctx.lb.pending;
+      setText(this.postTitle, `POST YOUR LAP · ${formatLap(p.lapMs)}`);
+      setText(this.postText, `New personal best with the ${p.summary}.`);
+      // with a controller the way in is the menu; on the keyboard L is a shortcut
+      setText(this.postHow, input.active ? 'Open the menu, then Post your lap, to add your initials.' : 'Press L (or Esc, then Post your lap) to add your initials.');
+      notices.push(this.postNotice);
+    }
     { // multiplayer connection notice
       const mp = ctx.mp;
       if (mp.room && (mp.status === 'reconnecting' || mp.status === 'error')) {

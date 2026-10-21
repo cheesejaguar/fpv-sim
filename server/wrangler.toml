@@ -20,6 +20,10 @@ class_name = "Room"
 name = "LOBBY"
 class_name = "Lobby"
 
+[[durable_objects.bindings]]
+name = "LEADERBOARD"
+class_name = "Leaderboard"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
@@ -28,6 +32,11 @@ new_sqlite_classes = ["Room"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Lobby"]
+
+# v3: global lap leaderboards (SQLite tables)
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["Leaderboard"]
 
 # ---- Optional abuse limits: each one is used only if its binding exists (none is required) ----
 #
@@ -47,7 +56,13 @@ new_sqlite_classes = ["Lobby"]
 # id = "<namespace id printed by the create command>"
 #
 # IP_SALT (secret): salt for the hashed client IPs that cap listed rooms per client in the server
-# browser (3). Optional; set it with  npx wrangler secret put IP_SALT
+# browser (3), and for the hashed IPs and browser tokens stored with leaderboard entries. Optional;
+# set it with  npx wrangler secret put IP_SALT
+#
+# ADMIN_TOKEN (secret): enables DELETE /leaderboard/<entry id> (removal requests, moderation):
+#   npx wrangler secret put ADMIN_TOKEN
+#   curl -X DELETE -H "Authorization: Bearer <token>" https://<relay>/leaderboard/123
+# Entry ids are in GET /leaderboard?map=<map>&class=<class> (or class=all).
 
 # ---- Local development: npx wrangler dev --env dev   (or: npm run dev) ----
 # The same worker, with localhost pages allowed. Durable Object bindings and vars are not inherited
@@ -62,3 +77,7 @@ class_name = "Room"
 [[env.dev.durable_objects.bindings]]
 name = "LOBBY"
 class_name = "Lobby"
+
+[[env.dev.durable_objects.bindings]]
+name = "LEADERBOARD"
+class_name = "Leaderboard"

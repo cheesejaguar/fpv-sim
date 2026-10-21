@@ -11,8 +11,13 @@ import { CoachAdvice, adviceSig } from './coach';
 export interface Rect { x: number; y: number; w: number; h: number }
 /** One key / button hint: glyph text, glyph style (key | a | b | x | y | sh), action label. */
 export interface KeyHint { glyph: string; cls: string; label: string }
-/** Lap panel. gates = 0: no course on this map, only the room roster (board) is shown. */
-export interface RaceInfo { lap: number; last: number; best: number; gate: number; gates: number; room?: string; board?: { name: string; color: string; lap: number; best: number; me: boolean }[] }
+/** Lap panel. gates = 0: no course on this map, only the room roster (board) is shown. pb: the
+ *  pilot's personal best here with this drone class (s); record: the global leaderboard's fastest. */
+export interface RaceInfo {
+  lap: number; last: number; best: number; gate: number; gates: number; room?: string;
+  board?: { name: string; color: string; lap: number; best: number; me: boolean }[];
+  pb?: number; record?: { initials: string; lap: number; mine: boolean };
+}
 export interface DrillInfo { inBox: boolean; offBy: number; elapsed: number; score: number; best: number }
 
 type Edge = 'top' | 'bottom' | 'left' | 'right';
@@ -97,7 +102,8 @@ export class Hud {
     const flash = this.flash && now < this.flash.until ? this.flash.kind : null;
     const t = (s: number) => (s > 0 && s < Infinity ? `${s.toFixed(2)} s` : '—');
     const board = r.board ?? [];
-    const sig = `r|${r.lap}|${t(r.last)}|${t(r.best)}|${r.gate}/${r.gates}|${r.room ?? ''}|${flash ?? ''}|${board.map((b) => `${b.name}${b.color}${b.lap}${t(b.best)}${b.me}`).join(',')}`;
+    const rec = r.record;
+    const sig = `r|${r.lap}|${t(r.last)}|${t(r.best)}|${r.gate}/${r.gates}|${r.room ?? ''}|${flash ?? ''}|${board.map((b) => `${b.name}${b.color}${b.lap}${t(b.best)}${b.me}`).join(',')}|${t(r.pb ?? 0)}|${rec ? `${rec.initials}${t(rec.lap)}${rec.mine}` : ''}`;
     if (sig !== this.raceSig) {
       this.raceSig = sig;
       const list = board.length ? el('ol', { class: 'board' }, ...board.map((b, i) => el('li', { class: b.me ? 'me' : '' },
@@ -112,7 +118,9 @@ export class Hud {
         this.raceEl.className = `card race${flash ? ` flash${flash === 'best' ? ' flash-best' : ''}` : ''}`;
         const kids: HTMLElement[] = [
           el('div', { class: 'lap' }, el('span', { class: 'k' }, 'LAP'), el('span', { class: 'v' }, String(r.lap)), flash === 'best' ? el('span', { class: 'tag' }, 'NEW BEST') : null),
-          el('dl', {}, el('dt', {}, 'Last'), el('dd', {}, t(r.last)), el('dt', {}, 'Best'), el('dd', { class: 'best' }, t(r.best))),
+          el('dl', {}, el('dt', {}, 'Last'), el('dd', {}, t(r.last)), el('dt', {}, 'Best'), el('dd', { class: 'best' }, t(r.best)),
+            ...(r.pb ? [el('dt', { title: 'Your personal best on this track with this drone class' }, 'PB'), el('dd', {}, t(r.pb))] : []),
+            ...(rec ? [el('dt', { title: 'Fastest lap on the global leaderboard for this drone class' }, 'Record'), el('dd', { class: rec.mine ? 'rec mine' : 'rec' }, el('span', { class: 'ini' }, rec.initials), t(rec.lap))] : [])),
           el('div', { class: 'gate' }, `Gate ${r.gate} / ${r.gates}`),
           el('div', { class: 'bar' }, el('i', { style: { width: `${(100 * (r.gate - 1)) / Math.max(1, r.gates)}%` } })),
         ];

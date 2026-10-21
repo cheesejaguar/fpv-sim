@@ -237,6 +237,31 @@ a.gm-btn { text-decoration: none; }
 .gm-empty > svg { width: 48px; height: 48px; color: var(--gm-secondary); margin-bottom: 10px; }
 .gm-empty h4 { margin: 0 0 6px; font-family: var(--gm-font-display); font-weight: 400; color: var(--gm-fg); font-size: 20px; }
 
+/* ---------- leaderboard ---------- */
+.lb-filter { margin: 0; min-width: min(280px, 100%); }
+.gm-table.lb .gm-row { cursor: default; }
+.gm-table.lb th:first-child, .gm-table.lb td:first-child { width: 64px; }
+.gm-table.lb td:last-child, .gm-table.lb th:last-child { text-align: right; color: var(--gm-fg-muted); font-size: 14px; }
+.lb-rank { display: inline-grid; place-items: center; min-width: 34px; height: 34px; border-radius: 50%; font-family: var(--gm-font-display); font-size: 16px; background: var(--gm-muted); font-variant-numeric: tabular-nums; }
+.lb-rank.r1 { background: linear-gradient(135deg, #fde68a, #f59e0b); color: #1f1300; box-shadow: 0 0 16px rgba(245, 158, 11, 0.45); }
+.lb-rank.r2 { background: linear-gradient(135deg, #e2e8f0, #94a3b8); color: #0f172a; }
+.lb-rank.r3 { background: linear-gradient(135deg, #fdba74, #c2410c); color: #1c0a00; }
+.lb-ini-cell { font-family: var(--gm-font-display); font-size: 20px; letter-spacing: 0.18em; margin-right: 10px; }
+.lb-time { font-family: var(--gm-font-display); font-size: 18px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.lb-drone { color: #cbd5e1; }
+.lb-row.me td { background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.55); }
+.lb-row.me td:first-child { box-shadow: -4px 0 0 var(--gm-ok); }
+.lb-mine { margin: 0 0 6px; }
+.gm-card.lb-mine { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.gm-card.lb-mine h3 { margin-bottom: 2px; }
+.gm-card.lb-mine p { margin: 0; color: #cbd5e1; }
+.lb-new { max-width: 760px; }
+.lb-new .gm-tagline { margin: 10px 0 4px; color: var(--gm-ok); }
+.lb-hero { font-variant-numeric: tabular-nums; }
+.lb-hint { margin: 0 0 16px; }
+.lb-status { margin-top: 16px; max-width: 560px; }
+.lb-result svg { color: var(--gm-warn); }
+
 /* ---------- guide ---------- */
 .gm-guide { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 24px; align-items: start; }
 .gm-chapters { display: grid; gap: 6px; position: sticky; top: 0; }
@@ -355,6 +380,10 @@ a.gm-btn { text-decoration: none; }
   .gm-crumbs { order: 3; width: 100%; }
   .gm-table thead { display: none; }
   .gm-row td:nth-child(3), .gm-row td:nth-child(4) { display: none; }
+  /* leaderboard: rank, pilot, lap time (the drone and date go) */
+  .gm-table.lb .gm-row td:nth-child(3) { display: table-cell; }
+  .gm-table.lb .gm-row td:nth-child(5) { display: none; }
+  .gm-table.lb .gm-row td:nth-child(3) { border-right: 1px solid var(--gm-border-soft); border-radius: 0 var(--gm-radius-sm) var(--gm-radius-sm) 0; }
   .gm-foot .gm-hint:nth-child(n+4) { display: none; }
   .gm-foot .gm-wide { display: none; }
 }

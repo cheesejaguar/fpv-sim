@@ -289,7 +289,9 @@ export class MenuNav {
 
   private host(): HTMLElement { return this.hooks.scope().closest<HTMLElement>('.gm') ?? document.body; }
 
-  private open(o: NavOverlay) {
+  /** Give the pad and keys to an overlay (dropdown list, on-screen keyboard, arcade initials entry). */
+  open(o: NavOverlay) {
+    if (this.overlay === o) return;
     this.overlay?.close();
     this.overlay = o;
     o.onClose = () => { if (this.overlay === o) this.overlay = null; };

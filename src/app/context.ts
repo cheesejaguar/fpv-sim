@@ -16,6 +16,7 @@ import type { VideoLink } from '../render/videoLink';
 import type { Blackbox } from '../ui/blackbox';
 import type { ViewSettings } from '../ui/settingsPanel';
 import type { Shared, SimSettings, Telemetry, ToWorker } from '../worker/shared';
+import type { LapBoard } from './leaderboard';
 import type { DrillState, RaceState } from './race';
 
 export interface AppCtx {
@@ -52,6 +53,8 @@ export interface AppCtx {
   pilot: { x: number; y: number; z: number };
   race: RaceState;
   drill: DrillState;
+  /** personal bests + the global lap leaderboard */
+  lb: LapBoard;
   logLines: string[];
   log(t: string): void;
 }
