@@ -203,9 +203,9 @@ export function validNewGame<M extends string>(raw: unknown, modes: readonly M[]
 }
 
 // ---------------------------------------------------------------------------------------------
-// Personal bests + leaderboard (fpv-pbs, fpv-initials, fpv-lb-client)
+// Personal bests + leaderboard (fpv-pbs, fpv-initials, fpv-lb-client, fpv-lb-mine)
 
-/** A personal best lap. submitted: its leaderboard entry once posted (id: to mark the pilot's rows). */
+/** A personal best lap. submitted: the leaderboard entry it was posted as (its rank is looked up by id). */
 export interface PbRecord { lapMs: number; splitsMs: number[]; at: number; summary: string; submitted?: { id: number; at: number } }
 /** Keyed by `${track}|${class}` (track: the map id, or `map:course`). */
 export type PbTable = Record<string, PbRecord>;

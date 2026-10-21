@@ -2,9 +2,9 @@
 // telemetry, race / drill panel, crash banner (+ rumble and impact sound), and lays it out around the OSD.
 import { buttonName } from '../input/gamepad';
 import { webHidSupported } from '../input/steamHid';
+import { formatLap } from '../net/leaderboard';
 import { el, touchOnly } from '../ui/dom';
 import { armingAdvice, CoachGlyphs } from '../ui/hud/coach';
-import { formatLap } from '../net/leaderboard';
 import { Hud, KeyHint, osdRects } from '../ui/hud/hud';
 import { newestTime, R, sampleRing } from '../worker/shared';
 import type { AppCtx } from './context';

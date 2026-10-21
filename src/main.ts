@@ -9,8 +9,8 @@ import { AppCtx, makeLog } from './app/context';
 import { initDvr } from './app/dvr';
 import { startFrameLoop } from './app/frameLoop';
 import { HudController } from './app/hudController';
-import { courseOf, LapBoard } from './app/leaderboard';
 import { SpectrumView, SticksView } from './app/instruments';
+import { courseOf, LapBoard } from './app/leaderboard';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { simHardwareCli } from './bf/defaults';
@@ -233,7 +233,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') gameMenu.toggle();
   if (e.code === 'KeyR') sendReset();
   if (e.code === 'KeyL' && !Atomics.load(ctx.sh.ctrl, 5)) gameMenu.openInitials(); // post a new personal best (disarmed)
-  const a =({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum' } as Record<string, SimAction>)[e.code];
+  const a = ({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum' } as Record<string, SimAction>)[e.code];
   if (a) simAction(a);
 });
 // Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the
