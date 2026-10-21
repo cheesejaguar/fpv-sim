@@ -77,9 +77,12 @@ export function peripheralsCli(): string[] {
   ];
 }
 
-/** Gyro / PID loop matching the simulated chip: a BMI270 runs gyro and PID at 3.2 kHz (denom 1). */
+/**
+ * Gyro / PID loop matching the simulated chip: a BMI270 runs gyro and PID at 3.2 kHz (denom 1);
+ * the blackbox keeps logging at ~2 kHz (1/2 of 3.2 kHz, 1/4 of 8 kHz).
+ */
 export function loopCli(build: DroneBuild): string[] {
-  return build.params.imuChip.sampleRateHz < 8000 ? ['set pid_process_denom = 1'] : [];
+  return build.params.imuChip.sampleRateHz < 8000 ? ['set pid_process_denom = 1', 'set blackbox_sample_rate = 1/2'] : ['set blackbox_sample_rate = 1/4'];
 }
 
 export function simHardwareCli(build: DroneBuild, opts: { keepOsdLayout: boolean; propsOut: boolean | null }): string[] {
@@ -130,6 +133,7 @@ export function defaultCli(build: DroneBuild): string[] {
     'set small_angle = 25',
     'set pid_process_denom = 1',
     ...peripheralsCli(),
+    ...loopCli(build),
     // long range: GPS rescue brings it home on failsafe (arming then waits for a fix with 8+ sats)
     `set failsafe_procedure = ${s.frame === 'f7-lr' ? 'GPS-RESCUE' : 'DROP'}`,
     // debug[0..2] = fully filtered gyro: the worker's spectrum overlay compares it with the raw IMU

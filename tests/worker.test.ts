@@ -6,8 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { WorkerBridge } from '../src/app/bridge';
 import { Betaflight } from '../src/bf/bfModule';
-import { defaultCli } from '../src/bf/defaults';
-import { buildDrone, DEFAULT_SPEC } from '../src/builder/derive';
+import { defaultCli, simHardwareCli } from '../src/bf/defaults';
+import { buildDrone, DEFAULT_SPEC, PRESETS } from '../src/builder/derive';
 import { BblRecorder } from '../src/worker/bbl';
 import { BaroModel, Brownout, CurrentSensor, OverloadGovernor, seedOf } from '../src/worker/fcHardware';
 import { EepromStore, runCliBatch } from '../src/worker/fwCli';
@@ -60,6 +60,23 @@ describe.skipIf(!have)('EEPROM persistence (real Betaflight WASM)', () => {
     const got = runCliBatch(b.bf, ['get craft_name', 'get roll_rc_rate'], b.advance);
     expect(got).toMatch(/craft_name = KEEPME/);
     expect(got).toMatch(/roll_rc_rate = 123/);
+  }, 120000);
+
+  test('every preset\'s defaults and post-import hardware lines are accepted by Betaflight 4.5.5', async () => {
+    const seen = new Set<string>();
+    for (const spec of PRESETS) {
+      const b = buildDrone(spec), key = `${spec.fc}|${spec.frame}|${spec.video}`;
+      if (seen.has(key)) continue; seen.add(key);
+      const a = await bench();
+      a.bf.init(); a.advance(300);
+      const out = runCliBatch(a.bf, [...defaultCli(b).filter((l) => l !== 'save'), ...simHardwareCli(b, { keepOsdLayout: false, propsOut: null }), 'save'], a.advance);
+      expect(out, spec.name).not.toMatch(/ERROR|INVALID|PARSING FAILED/i);
+      const got = runCliBatch(a.bf, ['get failsafe_procedure', 'get pid_process_denom', 'get blackbox_sample_rate', 'get small_angle'], a.advance).replace(/\r/g, '');
+      expect(got).toMatch(new RegExp(`failsafe_procedure = ${spec.frame === 'f7-lr' ? 'GPS-RESCUE' : 'DROP'}`));
+      expect(got).toMatch(/small_angle = 25/);
+      expect(got).toMatch(b.params.imuChip.sampleRateHz < 8000 ? /blackbox_sample_rate = 1\/2/ : /blackbox_sample_rate = 1\/4/);
+    }
+    expect(seen.size).toBeGreaterThan(3);
   }, 120000);
 
   test('a blank / foreign image is reset by the firmware at boot and shows as dirty', async () => {
