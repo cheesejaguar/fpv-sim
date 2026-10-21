@@ -77,7 +77,13 @@ function airfoil(a: AirfoilParams, alpha: number, out: { cl: number; cd: number 
   out.cd = w > 0 ? (1 - w) * cdLin + w * Math.max(0.03 + 1.9 * s * s, cdLin) : cdLin;
 }
 
-export interface BemtResult { T: number; Q: number; H: number; vi: number }
+/**
+ * T thrust, Q torque, H in-plane drag; Ms / Mc first-harmonic hub moments of the rigid blades:
+ * Ms = Σ m·sinψ (advancing side lifts more: rolls the disc toward the retreating side) and
+ * Mc = −Σ m·cosψ (front of the disc lifts more under the skewed wake: tilts the disc's leading edge
+ * up, i.e. blowback), m = blade root flap moment, ψ = 0 downwind.
+ */
+export interface BemtResult { T: number; Q: number; H: number; vi: number; Ms: number; Mc: number }
 
 const RADIAL = 14, AZIM = 16;
 
@@ -104,14 +110,19 @@ export function bemtSolve(g: PropGeometry, rho: number, omega: number, vc: numbe
   }
   const af = { cl: 0, cd: 0 };
   const elements = (vi: number) => {
-    let T = 0, Q = 0, H = 0;
-    const up = vc + vi;
+    let T = 0, Q = 0, H = 0, Ms = 0, Mc = 0;
+    // Skewed wake in edgewise flow: the induced inflow grows toward the rear of the disc, Glauert /
+    // Coleman linear inflow λ(r,ψ) = λ0 (1 + kx (r/R) cosψ), kx = tan(χ/2), χ = wake skew angle
+    // (Coleman, Feingold & Stempin 1945, NACA ARR L5E10; Leishman, Principles of Helicopter Aerodynamics)
+    const ax = vc + vi, vw = Math.sqrt(vip * vip + ax * ax);
+    const kx = vip > 1e-9 ? Math.min(1, vip / Math.max(1e-9, vw + ax)) : 0;
     for (let j = 0; j < AZIM; j++) {
       const psi = ((j + 0.5) / AZIM) * 2 * Math.PI;
-      const sp = Math.sin(psi);
+      const sp = Math.sin(psi), cp = Math.cos(psi);
       for (let k = 0; k < RADIAL; k++) {
         const r = rs[k];
         const ut = omega * r + vip * sp;
+        const up = vc + vi * (1 + kx * (r / R) * cp);
         const phi = Math.atan2(up, ut);
         const U2 = ut * ut + up * up;
         airfoil(g.airfoil, th[k] - phi, af);
@@ -121,14 +132,16 @@ export function bemtSolve(g: PropGeometry, rho: number, omega: number, vc: numbe
         const F = Math.min(1, (2 / Math.PI) * Math.acos(Math.min(1, Math.exp(-f))));
         const qd = 0.5 * rho * U2 * cs[k] * dr;
         const cphi = Math.cos(phi), sphi = Math.sin(phi);
-        T += qd * (af.cl * cphi - af.cd * sphi) * F;
+        const dT = qd * (af.cl * cphi - af.cd * sphi) * F;
+        T += dT;
+        Ms += dT * r * sp; Mc -= dT * r * cp;
         const dFt = qd * (af.cl * sphi + af.cd * cphi);
         Q += dFt * r;
         H += dFt * sp;
       }
     }
     const kb = B / AZIM;
-    return { T: T * kb, Q: Q * kb, H: H * kb };
+    return { T: T * kb, Q: Q * kb, H: H * kb, Ms: Ms * kb, Mc: Mc * kb };
   };
   let vi = omega > 1 ? Math.sqrt(Math.max(0.01, elements(0).T) / (2 * rho * A)) : 0;
   let res = elements(vi);
@@ -158,13 +171,17 @@ export function bemtSolve(g: PropGeometry, rho: number, omega: number, vc: numbe
     res = elements(vi);
     if (done) break;
   }
-  return { T: res.T, Q: res.Q, H: res.H, vi };
+  return { T: res.T, Q: res.Q, H: res.H, vi, Ms: res.Ms, Mc: res.Mc };
 }
 
 export interface BemtTable {
   nb: number; ng: number;
   ct: Float32Array; cq: Float32Array; ch: Float32Array; cvi: Float32Array; // cvi = vi / q
+  /** Rigid-blade hub moment coefficients M / (rho A q² R): advancing-side (cms) and fore-aft (cmc). */
+  cms: Float32Array; cmc: Float32Array;
   R: number; A: number;
+  /** Blade pitch angle at 0.75R (rad), for the flapping-drag inflow term. */
+  theta75: number;
   ctScale: number; cqScale: number;
   /** Reference tip speed (m/s) at which the table was calibrated; used for Reynolds corrections. */
   tipRef: number;
@@ -185,6 +202,7 @@ export function buildBemtTable(g: PropGeometry, calib?: PropCalibration): BemtTa
   const tipRef = 2600 * R; // reference tip speed for Reynolds number (~25k rpm)
   const n = NB * NG;
   const ct = new Float32Array(n), cq = new Float32Array(n), ch = new Float32Array(n), cvi = new Float32Array(n);
+  const cms = new Float32Array(n), cmc = new Float32Array(n);
   for (let i = 0; i < NB; i++) {
     const beta = betaOf(i);
     for (let j = 0; j < NG; j++) {
@@ -197,6 +215,7 @@ export function buildBemtTable(g: PropGeometry, calib?: PropCalibration): BemtTa
       const den = rho * A * q * q;
       const idx = i * NG + j;
       ct[idx] = res.T / den; cq[idx] = res.Q / (den * R); ch[idx] = res.H / den; cvi[idx] = res.vi / q;
+      cms[idx] = res.Ms / (den * R); cmc[idx] = res.Mc / (den * R);
     }
   }
   const j0 = (NG - 1) >> 1;
@@ -208,14 +227,15 @@ export function buildBemtTable(g: PropGeometry, calib?: PropCalibration): BemtTa
     cqScale = calib.torqueNm / (cq0 * rho * A * (w * R) ** 2 * R);
   }
   return {
-    nb: NB, ng: NG, ct, cq, ch, cvi, R, A, ctScale, cqScale,
+    nb: NB, ng: NG, ct, cq, ch, cvi, cms, cmc, R, A, ctScale, cqScale,
+    theta75: Math.atan(g.pitchM / (2 * Math.PI * 0.75 * R)),
     tipRef: calib ? ((calib.rpm * 2 * Math.PI) / 60) * R : tipRef,
     kT: ct0 * ctScale * rho * A * R * R,
     kQ: cq0 * cqScale * rho * A * R * R * R,
   };
 }
 
-/** Bilinear lookup of (CT, CQ, CH, Cvi) at (beta, gamma); writes out[0..3] (unscaled). */
+/** Bilinear lookup of (CT, CQ, CH, Cvi, CMs, CMc) at (beta, gamma); writes out[0..5] (unscaled). */
 export function tableLookup(t: BemtTable, beta: number, gamma: number, out: Float64Array): void {
   const bn = Math.max(0, Math.min(1, beta / (Math.PI / 2)));
   const fi = Math.pow(bn, 1 / BETA_EXP) * (t.nb - 1);
@@ -228,4 +248,6 @@ export function tableLookup(t: BemtTable, beta: number, gamma: number, out: Floa
   out[1] = t.cq[a] * w00 + t.cq[b] * w01 + t.cq[c] * w10 + t.cq[d] * w11;
   out[2] = t.ch[a] * w00 + t.ch[b] * w01 + t.ch[c] * w10 + t.ch[d] * w11;
   out[3] = t.cvi[a] * w00 + t.cvi[b] * w01 + t.cvi[c] * w10 + t.cvi[d] * w11;
+  out[4] = t.cms[a] * w00 + t.cms[b] * w01 + t.cms[c] * w10 + t.cms[d] * w11;
+  out[5] = t.cmc[a] * w00 + t.cmc[b] * w01 + t.cmc[c] * w10 + t.cmc[d] * w11;
 }

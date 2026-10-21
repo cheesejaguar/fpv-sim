@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'vitest';
 import { buildDrone, DEFAULT_SPEC, PRESETS, propGeometry } from '../src/builder/derive';
 import { byId, PROPS } from '../src/data/catalog';
-import { RotorAero } from '../src/sim/rotor';
+import { RotorAero, emptyRotorOut } from '../src/sim/rotor';
 import { Battery, batteryFromSpec, ocvPerCell } from '../src/sim/battery';
 import { bemtSolve, DEFAULT_AIRFOIL } from '../src/sim/bemt';
 import { GroundPlane } from '../src/sim/contact';
@@ -86,7 +86,7 @@ describe('generated 5" 6S freestyle quad', () => {
     const wPerKg = (q.s.vbus * q.s.ibus) / build.params.mass;
     expect(wPerKg).toBeGreaterThan(140); expect(wPerKg).toBeLessThan(320);
   });
-  test('punch-out: 120..220 A, voltage sags but stays above 3.2 V/cell, motor tau 15..60 ms', () => {
+  test('punch-out (ESC current limit off, as shipped): battery-limited inrush, WOT 120..230 A, motor t63 18..30 ms', () => {
     const q = new QuadSim(build.params, 8000); const env = calmEnv();
     q.reset({ x: 0, y: 0, z: 2 });
     const idle = 48 + Math.round(0.055 * 1999);
@@ -98,9 +98,12 @@ describe('generated 5" 6S freestyle quad', () => {
     for (let i = 0; i < steps; i++) { q.command([2047, 2047, 2047, 2047], false); q.step(DT, env); holdLevel(q); trace.push(q.motors[0].s.omega); peakI = Math.max(peakI, q.s.ibus); minV = Math.min(minV, q.s.vbus); }
     wEnd = trace[trace.length - 1];
     t63 = trace.findIndex((w) => w > w0 + 0.63 * (wEnd - w0)) * DT;
-    expect(peakI).toBeGreaterThan(120); expect(peakI).toBeLessThan(230);
-    expect(minV / 6).toBeGreaterThan(3.2);
-    expect(t63).toBeGreaterThan(0.015); expect(t63).toBeLessThan(0.06);
+    // spinning four props up draws a few hundred amps for ~20 ms (the low-rpm power protection
+    // and the pack's own sag bound it) and settles at the static WOT current
+    expect(peakI).toBeGreaterThan(250); expect(peakI).toBeLessThan(650);
+    expect(q.s.ibus).toBeGreaterThan(120); expect(q.s.ibus).toBeLessThan(230);
+    expect(minV / 6).toBeGreaterThan(2.6);
+    expect(t63).toBeGreaterThan(0.018); expect(t63).toBeLessThan(0.03);
   });
   test('yaw reaction: CW props spinning up yaw the frame CCW', () => {
     const q = new QuadSim(build.params, 8000); const env = calmEnv();
@@ -141,7 +144,7 @@ describe('propeller in oblique inflow (Gemfan 51466 at 18k rpm)', () => {
 
 describe('rotor runtime effects', () => {
   const build = buildDrone(DEFAULT_SPEC), t = build.params.rotors[0].table, R = t.R;
-  const o = { thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0 }, w = 2000;
+  const o = emptyRotorOut(), w = 2000;
   const run = (hG: number, hC: number) => { const a = new RotorAero(t, 1); a.evaluate(w, 0, 0, 1.225, hG, 0, DT, o, hC); return { ...o }; };
   test('ground effect raises thrust and lowers torque; ceiling effect raises thrust (clamped)', () => {
     const free = run(Infinity, Infinity), ge = run(0.6 * R, Infinity), ce = run(Infinity, 0.5 * R);

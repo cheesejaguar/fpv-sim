@@ -19,9 +19,15 @@ export interface RotorAeroOut {
   hForce: number;  // N, in-plane drag opposing in-plane relative velocity
   vi: number;      // induced velocity m/s
   vrs: number;     // 0..1 VRS/prop-wash intensity indicator
+  /** Hub moments of the blades in edgewise flow (N·m), rigid-blade values: advancing side up / leading edge up. */
+  mAdv: number; mFront: number;
+  /** Flapping phase lag (rad): the hub moment pattern turns this far in the spin direction. */
+  flapLag: number;
 }
 
-const out4 = new Float64Array(4);
+export const emptyRotorOut = (): RotorAeroOut => ({ thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0, mAdv: 0, mFront: 0, flapLag: 0 });
+
+const out6 = new Float64Array(6);
 
 /**
  * Unit-variance OU process shared by all rotors of one airframe: the part of the prop-wash
@@ -61,6 +67,16 @@ export class RotorAero {
    * induced velocity (the duct inlet no longer sees clean, axisymmetric inflow).
    */
   ductGain = 0;
+  /** Blade Lock number γ = ρ a c R⁴ / I_β (aerodynamic vs inertial flap forces; ~0.6-0.9 for FPV props). */
+  lock = 0.8;
+  /** Blade first flap-bending frequency, non-rotating (Hz). */
+  flapHz = 200;
+  /**
+   * Lumped rotor drag beyond the uniform-inflow BEMT H, as a gain on the classic flapping tilt
+   * (see evaluate). Calibrated: ≈0.04 N/(m/s) total per 5" rotor at hover rpm (Faessler et al. 2018,
+   * RA-L 3(2), identified rotor drag; Kai et al. 2017), ~2.5x the BEMT H alone.
+   */
+  flapDrag = 1.45;
 
   constructor(table: BemtTable, seed: number) {
     this.table = table;
@@ -84,20 +100,21 @@ export class RotorAero {
     const OR = W * R;
     const V = Math.sqrt(vcEff * vcEff + vip * vip);
     const q2 = OR * OR + V * V;
-    if (q2 < 1e-6) { o.thrust = 0; o.torque = 0; o.hForce = 0; o.vi = 0; o.vrs = 0; return; }
+    if (q2 < 1e-6) { o.thrust = 0; o.torque = 0; o.hForce = 0; o.vi = 0; o.vrs = 0; o.mAdv = 0; o.mFront = 0; o.flapLag = 0; return; }
     const beta = Math.atan2(V, OR);
     const gamma = V > 1e-6 ? Math.atan2(vcEff, vip) : 0;
-    tableLookup(t, beta, gamma, out4);
+    tableLookup(t, beta, gamma, out6);
     const den = rho * A * q2;
-    let T = out4[0] * t.ctScale * den;
-    let Q = out4[1] * t.cqScale * den * R;
+    let T = out6[0] * t.ctScale * den;
+    const T0 = T, mS = out6[4] * t.ctScale * den * R, mC = out6[5] * t.ctScale * den * R;
+    let Q = out6[1] * t.cqScale * den * R;
     // Low-Reynolds-number correction: blade profile drag (and so torque) rises, and lift falls
     // slightly, as the section Reynolds number drops below the calibration point (Re ~ q).
     const reRatio = Math.sqrt(q2) / t.tipRef;
     if (reRatio < 1) { Q *= Math.min(1.45, Math.pow(Math.max(reRatio, 0.05), -0.18)); T *= Math.max(0.9, Math.pow(Math.max(reRatio, 0.05), 0.03)); }
-    let H = out4[2] * t.ctScale * den;
+    let H = out6[2] * t.ctScale * den;
     // the table's vi belongs to the uncalibrated BEMT thrust; momentum theory has vi ~ sqrt(T)
-    const vi = out4[3] * Math.sqrt(q2) * Math.sqrt(t.ctScale);
+    const vi = out6[3] * Math.sqrt(q2) * Math.sqrt(t.ctScale);
 
     if (this.ductGain > 0 && T > 0) {
       const vh = Math.sqrt(T / (2 * rho * A)) + 1e-6;
@@ -164,7 +181,23 @@ export class RotorAero {
     T *= d.thrustFactor; Q *= d.torqueFactor;
     if (d.broken) { T *= 0.45; }
 
-    if (rev) { T = -T * this.reverseEfficiency; }
+    // Rotor drag: blade flapping tilts the tip-path plane back from the relative wind by
+    // a1 = 2μ(4θ.75/3 − λ)/(1 − μ²/2) (Prouty; Leishman, blade flapping) and the thrust with it, ∝ T·μ (∝ rpm at
+    // a given speed, lumped with the induced drag as in Mahony, Kumar & Corke 2012, IEEE RAM 19(3)).
+    // A duct turns the inflow axial and shields the blades from most of it.
+    if (OR > 1 && T !== 0) {
+      const mu = Math.min(0.5, vip / OR), lam = (vcEff + vi) / OR;
+      const a1 = Math.min(0.25, Math.max(0, (2 * mu * ((4 / 3) * t.theta75 - lam)) / (1 - 0.5 * mu * mu)));
+      H += this.flapDrag * (this.ductGain > 0 ? 0.4 : 1) * Math.abs(T) * a1;
+    }
+    // Hub moments ride on the blade lift: scale the rigid-blade table values by everything applied
+    // to the thrust since (Reynolds, duct, ground / ceiling, wash, damage). Flapping lag
+    // ψ = atan((γ/8)(Ω/ω_β0)²): stiff (hingeless) blade, centre-spring equivalent, the aerodynamic
+    // flap damping γ/8·Ω² against the bending stiffness I_β·ω_β0² (Bramwell, hingeless rotors).
+    const kM = T0 !== 0 ? T / T0 : 0;
+    const wf = 2 * Math.PI * this.flapHz;
+    o.mAdv = mS * kM; o.mFront = mC * kM; o.flapLag = Math.atan((this.lock / 8) * (W / wf) * (W / wf));
+    if (rev) { T = -T * this.reverseEfficiency; o.mAdv = -o.mAdv * this.reverseEfficiency; o.mFront = -o.mFront * this.reverseEfficiency; }
     o.thrust = T; o.torque = Q; o.hForce = H; o.vi = vi; o.vrs = vrs;
   }
 }

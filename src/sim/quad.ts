@@ -7,7 +7,7 @@ import { ColliderSphere, CollisionWorld, ContactHit, MATERIALS, restitutionAt, S
 import { FlexMode, GyroChip, Imu } from './imu';
 import { V3, Quat, v3, quat, rotate, rotateInv, cross, qintegrate, Rng } from './math';
 import { Motor, MotorParams } from './motor';
-import { CommonNoise, RotorAero, RotorAeroOut, pristineDamage } from './rotor';
+import { CommonNoise, RotorAero, RotorAeroOut, emptyRotorOut, pristineDamage } from './rotor';
 import { WakeField } from './wake';
 import { Wind } from './wind';
 import { G0, isa } from './atmosphere';
@@ -27,10 +27,16 @@ export interface RotorConfig {
   imbalance?: number;
   /** Crash strength: impact energy (J) at which the prop / motor shaft+bell / arm fails half the time. */
   strength?: { prop: number; shaft: number; arm: number };
+  /** Blade Lock number and non-rotating first flap-bending frequency (Hz): set the flapping lag. */
+  lock?: number;
+  flapHz?: number;
 }
 
 /** Crash strength scale (J): prop per g^(2/3) (x (0.5 + blade stiffness)), motor per g^(2/3), 5" arm (15 x 5 mm). */
 export const STRENGTH = { prop: 9, shaft: 1.5, arm: 30 };
+
+/** Broadband vibration torque per rotor into the arm modes, and straight to the board, × imbalance force × hub height. */
+const VIB_BROADBAND = 0.3, VIB_FLOOR = 6;
 
 /** Crash damage to a motor position beyond the prop (which lives in RotorAero.damage). */
 export interface MotorDamage {
@@ -51,6 +57,8 @@ export interface QuadParams {
   imuChip: GyroChip;
   flex: { roll: FlexMode; pitch: FlexMode; yaw: FlexMode };
   mountIsolation: number;
+  /** Per-build seed: sensor calibration errors, cell spread, arm detuning, ESC randomness. */
+  seed?: number;
 }
 
 export interface QuadEnv {
@@ -107,6 +115,8 @@ export class QuadSim {
   motorDamage: MotorDamage[];
   /** Wind at each rotor hub (world): CG wind + rotor-scale gust gradients. Read by the rotor aero. */
   rotorWind: V3[];
+  /** Vibration torque each rotor puts into its arm this step (body, N·m): drives the IMU's arm modes. */
+  rotorVib: V3[];
   private windTimer = 0;
   private windAgl = 0;
   private axis0: V3[];
@@ -136,16 +146,18 @@ export class QuadSim {
     // canopy drag: N per (m depth · (m/s)²), ∝ the airframe's mean drag area
     this.foliageDrag = 70 * (p.cdA.x + p.cdA.y + p.cdA.z) / 3;
     this.physicsHz = physicsHz;
-    this.motors = p.rotors.map((r) => new Motor(r.motor, ambientC));
+    this.motors = p.rotors.map((r, i) => new Motor(r.motor, ambientC, ((p.seed ?? 0) + 0x9e37 * (i + 1)) >>> 0));
     const washCommon = new CommonNoise(99);
     this.aero = p.rotors.map((r, i) => {
       const a = new RotorAero(r.table, 100 + i);
       a.common = washCommon;
       a.ductGain = r.ductGain ?? 0;
       a.damage.imbalance = r.imbalance ?? a.damage.imbalance;
+      if (r.lock) a.lock = r.lock;
+      if (r.flapHz) a.flapHz = r.flapHz;
       return a;
     });
-    this.rotorOut = p.rotors.map(() => ({ thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0 }));
+    this.rotorOut = p.rotors.map(() => emptyRotorOut());
     this.phase = p.rotors.map((_, i) => i * 1.3);
     this.rotorExtraTorque = p.rotors.map(() => 0);
     this.groundCache = p.rotors.map(() => Infinity);
@@ -153,7 +165,8 @@ export class QuadSim {
     this.wakeVel = p.rotors.map(() => v3());
     this.wakeTurb = p.rotors.map(() => 0);
     this.battery = new Battery(p.battery, soc, ambientC);
-    this.imu = new Imu(p.imuChip, physicsHz, p.flex);
+    this.imu = new Imu(p.imuChip, physicsHz, p.flex, p.seed ?? 42, p.rotors.map((r) => r.pos));
+    this.rotorVib = p.rotors.map(() => v3());
     this.imu.mountIsolation = p.mountIsolation;
     this.s = {
       pos: v3(), vel: v3(), q: quat(), w: v3(), time: 0, specForce: v3(0, 0, G0), accWorld: v3(),
@@ -179,13 +192,13 @@ export class QuadSim {
     s.q = { w: Math.cos(yaw / 2), x: 0, y: 0, z: Math.sin(yaw / 2) };
     s.crashed = false; s.maxImpact = 0; s.touching = false;
     s.accWorld = v3(); s.specForce = v3(0, 0, G0);
-    for (const m of this.motors) { m.s.omega = 0; m.s.current = 0; m.s.omegaDot = 0; m.s.busCurrent = 0; m.s.torqueMotor = 0; m.s.duty = 0; }
+    for (const m of this.motors) m.resetDynamics();
     this.rotorExtraTorque.fill(0);
     this.cState.fill(0); this.hD.fill(0); this.windTimer = 0;
     this.evAge.fill(0); this.evProp.fill(0); this.evStrike.fill(0); this.evMotor.fill(0); this.evArm.fill(0); this.evTouch.fill(0);
     for (const v of this.wakeVel) { v.x = v.y = v.z = 0; }
     this.wakeTurb.fill(0);
-    for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = 0; }
+    for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = o.mAdv = o.mFront = o.flapLag = 0; }
     // IMU filter / flex states restart (a crash can saturate them); keep the chip's bias
     this.imu.resetState();
     if (!Number.isFinite(this.battery.s.voltage) || !Number.isFinite(this.battery.s.soc)) {
@@ -213,25 +226,18 @@ export class QuadSim {
     const rho = this.air.rho;
 
     // ---------- electrical bus: Thevenin battery feeding all ESCs ----------
-    // Each driven ESC draws I_k = a_k*V - b_k unless it is current-limited, in which case it draws
-    // a constant D*I_lim/eta. Solve V = vth - rth*sum(I), re-classifying limited ESCs (<= 3 passes).
+    // Each driven ESC draws I_k = a_k*V - b_k at its applied duty (an enabled current limiter acts
+    // through that duty, with a lag, as the real PI does): V = vth - rth*sum(I) is linear in V.
     const th = this.battery.thevenin();
     const iAux = p.auxPowerW / Math.max(6, s.vbus);
-    let V = s.vbus;
-    for (let pass = 0; pass < 3; pass++) {
-      let A = 0, B = 0, C = iAux;
-      for (const m of this.motors) {
-        const c = m.busCoeffs();
-        if (!c.driven) continue;
-        const D = m.dutyFromCmd();
-        const i = (D * V - m.kt() * m.s.omega) / m.rEff();
-        const lim = m.p.escCurrentLimitA;
-        if (pass > 0 && Math.abs(i) > lim) C += (D * Math.sign(i) * lim) / m.p.escEfficiency;
-        else { A += c.a; B += c.b; }
-      }
-      V = (th.vth + th.rth * (B - C)) / (1 + th.rth * A);
-      if (V < 0) V = 0;
+    let A = 0, B = 0;
+    for (const m of this.motors) {
+      const c = m.busCoeffs();
+      if (!c.driven) continue;
+      A += c.a; B += c.b;
     }
+    let V = (th.vth + th.rth * (B - iAux)) / (1 + th.rth * A);
+    if (V < 0) V = 0;
     s.vbus = V;
 
     // ---------- kinematics ----------
@@ -272,7 +278,7 @@ export class QuadSim {
     const doWake = this.wakeTimer <= 0;
     if (doWake) this.wakeTimer = 0.001;
 
-    let busI = 0;
+    let busI = 0, floor2 = 0;
     const h = this.hTot; h.x = h.y = h.z = 0; // total rotor angular momentum (body); own storage: t5 is scratch for contacts()
     for (let k = 0; k < n; k++) {
       const rc = p.rotors[k], m = this.motors[k], ro = this.aero[k];
@@ -309,7 +315,20 @@ export class QuadSim {
       ro.evaluate(omegaAir, vc, vip, rho, this.groundCache[k], this.wakeTurb[k], dt, o, this.ceilCache[k]);
       // aerodynamic forces on the body
       let fx = rc.axis.x * o.thrust, fy = rc.axis.y * o.thrust, fz = rc.axis.z * o.thrust;
-      if (vip > 1e-4) { const k2 = o.hForce / vip; fx -= ipx * k2; fy -= ipy * k2; fz -= ipz * k2; }
+      if (vip > 1e-4) {
+        const k2 = o.hForce / vip; fx -= ipx * k2; fy -= ipy * k2; fz -= ipz * k2;
+        // blade hub moments in edgewise flow, wind axes x' (rotor's in-plane motion through the air),
+        // y' = axis × x': rigid blades roll the advancing side up (M = −dir·mAdv·x', cancels between
+        // the CW and CCW pairs) and lift the leading edge (−mFront·y', blowback: the nose pitches
+        // up with speed); flapping turns the pattern by the lag in the spin direction (the advancing-
+        // side part becomes blowback too) and keeps cos(lag) of it at the hub.
+        const ix = ipx / vip, iy = ipy / vip, iz = ipz / vip, a = rc.axis;
+        const yx = a.y * iz - a.z * iy, yy = a.z * ix - a.x * iz, yz = a.x * iy - a.y * ix;
+        const m0 = -rc.dir * o.mAdv, m1 = -o.mFront, g = Math.cos(o.flapLag);
+        const c = Math.cos(rc.dir * o.flapLag) * g, sn = Math.sin(rc.dir * o.flapLag) * g;
+        const mx = m0 * c - m1 * sn, my = m0 * sn + m1 * c;
+        Tq.x += mx * ix + my * yx; Tq.y += mx * iy + my * yy; Tq.z += mx * iz + my * yz;
+      }
       // vibration (what Betaflight's RPM filter / dynamic notch exist to remove):
       //  - static imbalance: a force rotating in the rotor plane at 1x rpm, acting at the prop's
       //    height above the CG (hub + bell, ~R/4), so it rocks roll and pitch, not just yaw
@@ -328,10 +347,14 @@ export class QuadSim {
       const hubLift = 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)); // ≈ R/4
       const hp = this.hubTmp; hp.x = rc.pos.x; hp.y = rc.pos.y; hp.z = rc.pos.z + hubLift;
       const vt = cross(this.t3, hp, ft);
-      // + broadband bearing / commutation noise (∝ rpm²): it excites the frame's own resonance,
-      // the hump a real gyro spectrum shows between the motor harmonics
-      const bn = 0.3 * fImb * hubLift;
-      vibT.x += vt.x + bn * this.rng.gauss(); vibT.y += vt.y + bn * this.rng.gauss(); vibT.z += vt.z + 0.3 * bn * this.rng.gauss();
+      // + broadband bearing / commutation / blade-turbulence noise (∝ rpm²): part excites the
+      // arm's own resonance (the hump a real gyro spectrum shows between the motor harmonics), part
+      // reaches the board directly as a floor rising with throttle (Imu.sample)
+      const bn = VIB_BROADBAND * fImb * hubLift;
+      const rv = this.rotorVib[k];
+      rv.x = vt.x + bn * this.rng.gauss(); rv.y = vt.y + bn * this.rng.gauss(); rv.z = vt.z + 0.3 * bn * this.rng.gauss();
+      vibT.x += rv.x; vibT.y += rv.y; vibT.z += rv.z;
+      const fl = VIB_FLOOR * fImb * hubLift; floor2 += fl * fl;
       F.x += fx; F.y += fy; F.z += fz;
       ft.x = fx; ft.y = fy; ft.z = fz;
       const rt = cross(this.t3, rc.pos, ft);
@@ -401,7 +424,7 @@ export class QuadSim {
     qintegrate(s.q, w, dt);
 
     // ---------- sensors & battery ----------
-    this.imu.sample(w, s.specForce, vibT, vibF, m, dt);
+    this.imu.sample(w, s.specForce, vibT, vibF, m, dt, this.rotorVib, Math.sqrt(floor2));
     this.battery.step(s.ibus, dt, env.ambientC, U);
     s.time += dt;
     if (this.corrupt()) {
@@ -552,6 +575,14 @@ export class QuadSim {
       Fw.x += f.x; Fw.y += f.y; Fw.z += f.z;
       const fB = rotateInv(this.t3, s.q, f);
       const tq = cross(this.t4, c.pos, fB);
+      if (isProp) {
+        // a blade strike's moment about the shaft brakes the rotor (rotorExtraTorque below); the free
+        // bearing passes only the force and the off-axis moment on to the frame
+        const rc = p.rotors[c.rotor], a = rc.axis;
+        const rx = c.pos.x - rc.pos.x, ry = c.pos.y - rc.pos.y, rz = c.pos.z - rc.pos.z;
+        const ma = a.x * (ry * fB.z - rz * fB.y) + a.y * (rz * fB.x - rx * fB.z) + a.z * (rx * fB.y - ry * fB.x);
+        tq.x -= a.x * ma; tq.y -= a.y * ma; tq.z -= a.z * ma;
+      }
       Tq.x += tq.x; Tq.y += tq.y; Tq.z += tq.z;
       // rolling resistance: a small torque against the body rate while pressed on a surface
       const wm = Math.hypot(s.w.x, s.w.y, s.w.z);
@@ -585,6 +616,12 @@ export class QuadSim {
       if (this.evTouch[k]) this.evAge[k] += dt;
       if (this.evAge[k] > 0 && (!this.evTouch[k] || this.evAge[k] > 0.03)) {
         if (env.damageEnabled) this.rollDamage(k);
+        if (this.evStrike[k] > 0) {
+          // the strike yanked the rotor's speed down: a chance the ESC loses sync (severity = share
+          // of the rotor's kinetic energy the blades spent on the obstacle)
+          const m = this.motors[k], J = p.rotors[k].motor.rotorInertia + p.rotors[k].propInertia;
+          m.strike(this.evStrike[k] / (0.5 * J * m.s.omega * m.s.omega + this.evStrike[k] + 1e-9));
+        }
         this.evAge[k] = 0; this.evProp[k] = this.evStrike[k] = this.evMotor[k] = this.evArm[k] = 0;
       }
     }
@@ -672,6 +709,8 @@ export class QuadSim {
     this.aero.forEach((a, k) => { a.damage = pristineDamage(); a.damage.imbalance = this.p.rotors[k].imbalance ?? a.damage.imbalance; });
     this.p.rotors.forEach((r, k) => { r.axis.x = this.axis0[k].x; r.axis.y = this.axis0[k].y; r.axis.z = this.axis0[k].z; });
     for (const m of this.motorDamage) { m.shaftBend = 0; m.armBendDeg = 0; }
+    // replaced motors: healthy magnets and windings
+    for (const m of this.motors) { m.s.burnt = false; m.s.ktHealth = 1; m.s.peakC = m.s.tempC; }
     this.impactLog = [];
     this.damageLog = [];
   }
