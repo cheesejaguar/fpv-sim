@@ -142,6 +142,10 @@ describe('MultiplayerClient', () => {
     last().open(); last().drop(4001);
     expect(mp.status).toBe('error'); expect(mp.failure).toBe('full'); expect(mp.error).toContain('full');
     mp.join('FULLR', ME);
+    last().open(); last().recv({ t: 'bye', code: 4001, msg: 'room full' }); // the relay says so before closing
+    expect(mp.failure).toBe('full');                                        // at once, not at onclose
+    expect(last().closedWith).not.toBeNull();
+    mp.join('FULLR', ME);
     last().open(); last().recv(welcome(1)); last().drop(4001); // full after a reconnect race: also final
     vi.advanceTimersByTime(60_000);
     expect(mp.failure).toBe('full');

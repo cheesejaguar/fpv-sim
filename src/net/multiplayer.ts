@@ -237,6 +237,13 @@ export class MultiplayerClient {
         break;
       }
       case 'error': this.error = m.msg; this.changed(); break;
+      case 'bye': { // act now: the close handshake can take seconds to reach onclose
+        const ws = this.ws;
+        this.ws = null;
+        try { ws?.close(); } catch { /* ignore */ }
+        this.dropped(m.code, false);
+        break;
+      }
     }
   }
 

@@ -66,10 +66,12 @@ describe('RoomCore', () => {
     const ok = socks.map((s) => room.open(s));
     expect(ok.filter(Boolean).length).toBe(MAX_SOCKETS);
     expect(socks[MAX_SOCKETS].closed?.code).toBe(1013); // busy: try again (half-open sockets are swept)
+    expect(socks[MAX_SOCKETS].sent).toEqual([{ t: 'bye', code: 1013, msg: 'room busy' }]); // told first
     socks.slice(0, MAX_PLAYERS).forEach((s, i) => room.message(s, hello(`P${i}`)));
     expect(room.players().length).toBe(MAX_PLAYERS);
     room.message(socks[MAX_PLAYERS], hello('Late'));
     expect(socks[MAX_PLAYERS].closed?.code).toBe(4001);
+    expect(socks[MAX_PLAYERS].last('bye')).toEqual({ t: 'bye', code: 4001, msg: 'room full' });
     expect(room.players().length).toBe(MAX_PLAYERS);
     const extra = new FakeSock();
     expect(room.open(extra)).toBe(false);
@@ -87,6 +89,7 @@ describe('RoomCore', () => {
     now = HELLO_TIMEOUT_MS;
     expect(room.sweep()).toBe(1);
     expect(quiet.closed?.code).toBe(4008);
+    expect(quiet.sent).toEqual([{ t: 'bye', code: 4008, msg: 'hello timeout' }]);
     expect(pilot.closed).toBeNull();
     expect(room.helloDeadline()).toBeNull();
     expect(room.size).toBe(1);

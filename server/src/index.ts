@@ -25,9 +25,10 @@ export interface Env {
 }
 
 const CODE_RE = /^[A-Z0-9]{4,8}$/;
-export const ROOMS_CACHE_MS = 3_000;   // GET /rooms: one lobby read per isolate per 3 s
-export const REPORT_URGENT_MS = 1_000; // join / leave reach the directory at once (at most 1/s)
-export const REPORT_MIN_MS = 5_000;    // other changes (map) at most every 5 s
+// (not exported: every export of a Worker's main module must be a handler or a Durable Object class)
+const ROOMS_CACHE_MS = 3_000;   // GET /rooms: one lobby read per isolate per 3 s
+const REPORT_URGENT_MS = 1_000; // join / leave reach the directory at once (at most 1/s)
+const REPORT_MIN_MS = 5_000;    // other changes (map) at most every 5 s
 
 function allowList(env: Env): string[] { return (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean); }
 

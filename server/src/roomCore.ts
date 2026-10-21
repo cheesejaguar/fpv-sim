@@ -75,9 +75,9 @@ export class RoomCore {
 
   /** A socket connected. Returns false (and closes it) if the room is full or has too many sockets. */
   open(sock: Sock, at = this.now(), ip = ''): boolean {
-    if (this.players().length >= MAX_PLAYERS) { sock.close(4001, 'room full'); return false; }
+    if (this.players().length >= MAX_PLAYERS) { this.bye(sock, 4001, 'room full'); return false; }
     // half-open connections that never say hello are swept after HELLO_TIMEOUT_MS: "try again later"
-    if (this.conns.size >= MAX_SOCKETS) { sock.close(1013, 'room busy'); return false; }
+    if (this.conns.size >= MAX_SOCKETS) { this.bye(sock, 1013, 'room busy'); return false; }
     this.conns.set(sock, { sock, info: null, tokens: RATE_LIMIT_PER_S, lastRefill: this.now(), at, ip: OWNER_RE.test(ip) ? ip : '' });
     return true;
   }
@@ -107,17 +107,24 @@ export class RoomCore {
     return c.info;
   }
 
-  /** Close a socket from our side (oversized message, room full at hello, hello timeout). */
-  drop(sock: Sock, code: number, reason: string): PlayerInfo | null {
+  /** Close a socket from our side (oversized message, room full at hello, hello timeout). tell: send
+   *  a last {t:'bye'} first, so the client can act at once (the close handshake itself can take
+   *  seconds to reach its onclose); never for abuse such as oversized messages. */
+  drop(sock: Sock, code: number, reason: string, tell = false): PlayerInfo | null {
     const left = this.close(sock);
-    try { sock.close(code, reason); } catch { /* already closed */ }
+    if (tell) this.bye(sock, code, reason);
+    else try { sock.close(code, reason); } catch { /* already closed */ }
     return left;
+  }
+  private bye(sock: Sock, code: number, reason: string) {
+    this.send(sock, { t: 'bye', code, msg: reason });
+    try { sock.close(code, reason); } catch { /* already closed */ }
   }
 
   /** Close sockets that have not said hello within HELLO_TIMEOUT_MS. Returns how many were closed. */
   sweep(t = this.now()): number {
     let n = 0;
-    for (const c of [...this.conns.values()]) if (!c.info && t - c.at >= HELLO_TIMEOUT_MS) { this.drop(c.sock, 4008, 'hello timeout'); n++; }
+    for (const c of [...this.conns.values()]) if (!c.info && t - c.at >= HELLO_TIMEOUT_MS) { this.drop(c.sock, 4008, 'hello timeout', true); n++; }
     return n;
   }
   /** When the next un-hello'd socket times out (ms epoch), or null. */
@@ -149,7 +156,7 @@ export class RoomCore {
 
     if (m.t === 'hello') {
       if (c.info) return res; // a repeated hello changes nothing (and costs nothing)
-      if (this.players().length >= MAX_PLAYERS) { this.drop(sock, 4001, 'room full'); return res; }
+      if (this.players().length >= MAX_PLAYERS) { this.drop(sock, 4001, 'room full', true); return res; }
       const info: PlayerInfo = {
         id: this.nextIdV++,
         name: sanitizeName(m.name),

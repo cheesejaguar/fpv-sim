@@ -19,7 +19,9 @@ export type RelayMsg =
   | { t: 'map'; map: string; by: number }
   | { t: 'lap'; id: number; lap: number; last: number; best: number }
   | { t: 'pong'; c?: number }
-  | { t: 'error'; msg: string };
+  | { t: 'error'; msg: string }
+  /** the relay is about to close this connection with `code` (room full, busy, hello timeout) */
+  | { t: 'bye'; code: number; msg: string };
 
 const MAX_RAW = 32_768;   // a welcome with 8 pilots is ~1 KB
 const MAX_PLAYERS = 32;
@@ -87,6 +89,7 @@ export function parseRelay(raw: unknown): RelayMsg | null {
       return { t: 'lap', id: m.id, lap: Math.floor(m.lap), last: m.last, best: m.best };
     case 'pong': return fin(m.c, 1e15) ? { t: 'pong', c: m.c } : { t: 'pong' };
     case 'error': { const msg = cleanName(m.msg, 160); return { t: 'error', msg: msg ?? 'server error' }; }
+    case 'bye': return Number.isInteger(m.code) && m.code >= 1000 && m.code <= 4999 ? { t: 'bye', code: m.code, msg: cleanName(m.msg, 160) ?? '' } : null;
     default: return null; // unknown types (a newer relay) are ignored
   }
 }
