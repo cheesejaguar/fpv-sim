@@ -12,7 +12,7 @@ import { BblRecorder } from '../src/worker/bbl';
 import { BaroModel, Brownout, CurrentSensor, OverloadGovernor, seedOf } from '../src/worker/fcHardware';
 import { EepromStore, runCliBatch } from '../src/worker/fwCli';
 import { IdbKv, MemoryKv } from '../src/worker/kv';
-import { createShared, DEFAULT_SETTINGS, FromWorker, stickAt, STICK_N, ToWorker, writeStick } from '../src/worker/shared';
+import { createShared, DEFAULT_SETTINGS, FromWorker, stickAt, STICK_N, StickSampler, ToWorker, writeStick } from '../src/worker/shared';
 
 const FW = new URL('../public/bf/betaflight.mjs', import.meta.url);
 const have = existsSync(FW);
@@ -149,6 +149,63 @@ describe('timestamped stick ring', () => {
     // wrap-around: only the last STICK_N - 1 samples are trusted
     for (let i = 0; i < 3 * STICK_N; i++) { ch[0] = i; writeStick(sh, 5000 + i, ch); }
     stickAt(sh, 0, out); expect(out[0]).toBe(3 * STICK_N - (STICK_N - 1));
+  });
+
+  /** Drive a StickSampler: reports every gapMs (stick f(t), AUX1 aux(t)), polled every 1.25 ms, 250 Hz packets. */
+  function drive(gapMs: number, f: (tMs: number) => number, ms: number, aux: (tMs: number) => number = () => 1000) {
+    const sh = createShared(), sampler = new StickSampler(2.5), ch = new Float32Array(16).fill(1500), out = new Float32Array(16);
+    const pk: { t: number; v: number; aux: number }[] = [];
+    let rep = 0, poll = 0;
+    for (let tp = 0; tp <= ms; tp += 4) {
+      for (; poll <= tp; poll += 1.25) {
+        while (rep + gapMs <= poll) rep += gapMs;
+        ch[0] = f(rep); ch[4] = aux(rep); writeStick(sh, 1e12 + rep, ch);
+      }
+      sampler.sample(sh, 1e12 + tp, out);
+      pk.push({ t: tp, v: out[0], aux: out[4] });
+    }
+    return { sampler, pk };
+  }
+
+  test('slow input (BLE radio): rate detected, sticks reconstructed between reports, AUX untouched', () => {
+    // 60 Hz reports of a slow sine sweep: after a warm-up the packets carry a smooth ramp, not a staircase
+    const wave = (t: number) => 1500 + 300 * Math.sin(t / 400);
+    const { sampler, pk } = drive(1000 / 60, wave, 3000);
+    expect(sampler.inputMs).toBeCloseTo(1000 / 60, 0);
+    expect(sampler.interpMs).toBeGreaterThan(1000 / 60); expect(sampler.interpMs).toBeLessThan(1000 / 60 + 5);
+    const late = pk.filter((p) => p.t > 1500);
+    const steps = late.slice(1).map((p, i) => p.v - late[i].v);
+    const dups = steps.filter((s) => s === 0).length;
+    console.log(`60 Hz input: inputMs ${sampler.inputMs.toFixed(1)}, delay ${sampler.interpMs.toFixed(1)} ms, duplicate packets ${dups} of ${steps.length}`);
+    expect(dups).toBe(0);
+    // every packet step close to the true slope over 4 ms (no 4-packet jumps)
+    for (let i = 0; i < steps.length; i++) {
+      const tr = wave(late[i + 1].t) - wave(late[i].t);
+      expect(Math.abs(steps[i] - tr)).toBeLessThan(0.15 * Math.abs(tr) + 0.3);
+    }
+    // the reconstruction lags the stick by ~ latency + one report interval, no more
+    const lag = late.map((p) => { let best = 0, e = Infinity; for (let d = 0; d < 40; d += 0.25) { const x = Math.abs(wave(p.t - d) - p.v); if (x < e) { e = x; best = d; } } return best; });
+    const meanLag = lag.reduce((a, b) => a + b, 0) / lag.length;
+    expect(meanLag).toBeGreaterThan(1000 / 60); expect(meanLag).toBeLessThan(1000 / 60 + 8);
+    // a fast pad (250 Hz) keeps the newest-sample path: no added delay
+    const fast = drive(4, wave, 2000);
+    expect(fast.sampler.interpMs).toBe(0);
+    // AUX switches are never interpolated or delayed by it: the arm switch flips within one report + latency
+    const sw = drive(1000 / 60, wave, 3000, (t) => (t > 2000 ? 2000 : 1000));
+    const flip = sw.pk.find((p) => p.aux === 2000)!;
+    expect(flip.t - 2000).toBeLessThan(1000 / 60 + 4);
+    expect(sw.pk.every((p) => p.aux === 1000 || p.aux === 2000)).toBe(true);
+  });
+
+  test('slow input: a move after a pause is not smeared over the pause', () => {
+    // stick still (with ±1 µs of ADC noise reports at 60 Hz) until 2 s, then a 100 µs step
+    const f = (t: number) => (t < 2000 ? 1500 + (Math.floor(t / 16) % 2) : 1600);
+    const { pk, sampler } = drive(1000 / 60, f, 2600);
+    const after = pk.filter((p) => p.t >= 2000);
+    const t50 = after.find((p) => p.v >= 1550)!.t - 2000, t100 = after.find((p) => p.v >= 1599.9)!.t - 2000;
+    console.log(`step through a 60 Hz input: half way after ${t50} ms, there after ${t100} ms (delay ${sampler.interpMs.toFixed(1)} ms)`);
+    expect(t100).toBeLessThan(2.5 + 2 * (1000 / 60) + 3 + 8); // latency + one report wait + the ramp, packet rounding
+    expect(t100 - t50).toBeLessThan(1000 / 60 + 4);
   });
 });
 
