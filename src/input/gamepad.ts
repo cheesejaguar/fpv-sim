@@ -26,6 +26,10 @@ export interface AxisBind {
  */
 export interface ButtonBind { index: number; mode: 'toggle' | 'hold' | 'cycle3' | 'switch3'; src?: 'button' | 'axis'; invert?: boolean }
 
+export type SimAction = 'battery' | 'camera' | 'telemetry' | 'drill' | 'spectrum';
+/** Buttons free in flight on every standard-mapping pad (Xbox / DualSense / Steam Input / WebHID). */
+export const STANDARD_ACTIONS: Record<SimAction, number> = { battery: 1, camera: 12, telemetry: 13, drill: 14, spectrum: 15 };
+
 export type ControllerKind = 'xbox' | 'playstation' | 'steam' | 'dji' | 'generic';
 
 export interface InputProfile {
@@ -36,6 +40,9 @@ export interface InputProfile {
   arm: ButtonBind | null; mode: ButtonBind | null; turtle: ButtonBind | null; beeper: ButtonBind | null;
   reset: number | null;  // respawn button
   menu: number | null;
+  /** Sim actions (standard gamepads: B new battery, D-pad camera / telemetry / drill / spectrum).
+   *  Missing in profiles saved before they existed: the standard defaults apply. */
+  actions?: Partial<Record<SimAction, number | null>>;
   kind?: ControllerKind;
   needsSetup?: boolean;  // stick order unknown: prompt the radio setup wizard
 }
@@ -173,6 +180,7 @@ export class InputManager {
   armed = false; modeIdx = 0; turtle = false; beeper = false;
   onReset: (() => void) | null = null;
   onMenu: (() => void) | null = null;
+  onAction: ((a: SimAction) => void) | null = null;
   keyboard = new KeyboardInput();
   /** While a menu is open its buttons navigate it: no arming, mode / turtle changes or respawns. */
   get suspended() { return this.keyboard.suspended; }
@@ -257,8 +265,21 @@ export class InputManager {
     if (p.turtle) { if (p.turtle.mode === 'toggle') { if (turtle.rise) this.turtle = !this.turtle; } else this.turtle = turtle.on; }
     if (p.beeper) this.beeper = beep.on;
     if (edge(p.reset)) { this.armed = false; this.turtle = false; this.onReset?.(); }
+    for (const [a, b] of Object.entries(this.actionButtons(pad, p))) if (edge(b)) this.onAction?.(a as SimAction);
     if (edge(p.menu)) this.onMenu?.();
     this.prevButtons = pressed;
+  }
+
+  /** Button for each sim action on this pad (none on radios / unmapped joysticks). */
+  actionButtons(pad: { mapping: string }, p: InputProfile): Partial<Record<SimAction, number>> {
+    const std = pad.mapping === 'standard' || p.kind === 'steam' || p.kind === 'xbox' || p.kind === 'playstation';
+    const taken = new Set([p.arm, p.mode, p.turtle, p.beeper].filter((b) => b && (b.src ?? 'button') === 'button').map((b) => b!.index).concat([p.reset, p.menu].filter((x): x is number => x != null)));
+    const out: Partial<Record<SimAction, number>> = {};
+    for (const a of Object.keys(STANDARD_ACTIONS) as SimAction[]) {
+      const b = p.actions?.[a] !== undefined ? p.actions[a] : std && !p.needsSetup ? STANDARD_ACTIONS[a] : null;
+      if (b != null && !taken.has(b)) out[a] = b;
+    }
+    return out;
   }
 
   /** Haptic feedback on pads that support it (Xbox, DualSense in Chrome/Edge). */

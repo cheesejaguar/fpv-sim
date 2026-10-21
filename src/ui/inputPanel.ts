@@ -52,7 +52,7 @@ export function inputPanel(im: InputManager): HTMLElement {
     const pad = im.active;
     const notes = section('Controller notes',
       el('ul', {},
-        el('li', {}, el('b', {}, 'Xbox (Series / One / 360) and PS5 DualSense: '), 'plug in by USB or pair over Bluetooth, then press a button with this page focused. They’re recognised automatically (Mode 2: left stick throttle/yaw, right stick pitch/roll; RB / R1 arms, LB / L1 changes flight mode, A / ✕ respawns). Crashes rumble the controller in Chrome and Edge.'),
+        el('li', {}, el('b', {}, 'Xbox (Series / One / 360) and PS5 DualSense: '), 'plug in by USB or pair over Bluetooth, then press a button with this page focused. They’re recognised automatically (Mode 2: left stick throttle/yaw, right stick pitch/roll; RB / R1 arms, LB / L1 changes flight mode, A / ✕ respawns, B / ○ fresh battery, D-pad ↑ camera, ↓ telemetry, ← hover drill, → noise spectrum). Crashes rumble the controller in Chrome and Edge.'),
         el('li', {}, el('b', {}, 'DJI FPV Remote Controller 3: '), 'power it on and connect its USB-C port to the computer; it appears as “DJI Virtual Joystick”. Move a stick, then run the stick & switch setup once. If its throttle springs back to centre, the “Full stick range” throttle mode treats centre as 50%; DJI’s manual describes adjusting the throttle stick for manual (M-mode) flying.'),
         el('li', {}, el('b', {}, 'Other RC radios (EdgeTX / OpenTX, USB joystick mode) and HID joysticks: '), 'same as the DJI radio — run the setup.'),
         el('li', {}, el('b', {}, 'Gamepad throttle: '), 'gamepad sticks spring to centre. Pick “Full stick range” (centre = 50%), “Upper half only”, or “Analog trigger”.'),

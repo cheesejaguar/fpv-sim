@@ -7,6 +7,8 @@ import './hud.css';
 import { el } from '../dom';
 
 export interface Rect { x: number; y: number; w: number; h: number }
+/** One key / button hint: glyph text, glyph style (key | a | b | x | y | sh), action label. */
+export interface KeyHint { glyph: string; cls: string; label: string }
 export interface RaceInfo { lap: number; last: number; best: number; gate: number; gates: number; board?: { name: string; color: string; lap: number; best: number; me: boolean }[] }
 export interface DrillInfo { inBox: boolean; offBy: number; elapsed: number; score: number; best: number }
 
@@ -28,7 +30,7 @@ export class Hud {
   private crashEl = el('div', { class: 'crash' });
   private noticeEl = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' } });
   private keysSig = '';
-  private keysWant: { mode: 'pad' | 'kb'; collapsed: boolean } = { mode: 'kb', collapsed: false };
+  private keysWant: { items: KeyHint[]; collapsed: boolean } = { items: [], collapsed: false };
   /** Last layout, for tests / debugging: every placed widget and whether it touches the OSD. */
   lastLayout: { name: string; rect: Rect; overlapsOsd: boolean }[] = [];
 
@@ -81,18 +83,14 @@ export class Hud {
   }
 
   /** Key hints: full while disarmed, a single dim "menu" chip once flying (layout may collapse more). */
-  keys(mode: 'pad' | 'kb', collapsed: boolean) { this.keysWant = { mode, collapsed }; this.show('keys', true); }
+  /** items[0] is the menu hint, the only one left when collapsed (a few seconds after arming). */
+  keys(items: KeyHint[], collapsed: boolean) { this.keysWant = { items, collapsed }; this.show('keys', true); }
 
-  private renderKeys(mode: 'pad' | 'kb', collapsed: boolean, inBar: boolean) {
-    const sig = `${mode}|${collapsed}|${inBar}`;
+  private renderKeys(all: KeyHint[], collapsed: boolean, inBar: boolean) {
+    const sig = `${all.map((k) => k.glyph + k.label).join()}|${collapsed}|${inBar}`;
     if (sig === this.keysSig) return;
     this.keysSig = sig;
-    const g = (cls: string, t: string) => el('span', { class: `kg ${cls}` }, t);
-    const h = (glyph: HTMLElement, label: string) => el('span', { class: 'kh' }, glyph, label);
-    const menu = mode === 'pad' ? h(g('sh', 'Start'), 'Menu') : h(g('key', 'Esc'), 'Menu');
-    const items = collapsed ? [menu] : mode === 'pad'
-      ? [menu, h(g('sh', 'RB'), 'Arm'), h(g('sh', 'LB'), 'Mode'), h(g('a', 'A'), 'Respawn'), h(g('x', 'X'), 'Turtle'), h(g('key', 'C'), 'Camera'), h(g('key', 'H'), 'Telemetry')]
-      : [menu, h(g('key', 'Space'), 'Arm'), h(g('key', '1-3'), 'Mode'), h(g('key', 'R'), 'Reset'), h(g('key', 'B'), 'Battery'), h(g('key', 'C'), 'Camera'), h(g('key', 'H'), 'Telemetry'), h(g('key', 'G'), 'Drill'), h(g('key', 'F'), 'Spectrum')];
+    const items = (collapsed ? all.slice(0, 1) : all).map((k) => el('span', { class: 'kh' }, el('span', { class: `kg ${k.cls}` }, k.glyph), k.label));
     this.keysEl.className = `card keys${collapsed ? ' dim' : ''}${inBar && !collapsed ? ' vert' : ''}`;
     this.keysEl.replaceChildren(...items);
   }
@@ -130,10 +128,10 @@ export class Hud {
       // key hints: try the vertical list (fits a letterbox bar), then the row, then the single chip
       let r: Rect | null = null;
       if (name === 'keys') {
-        const { mode, collapsed } = this.keysWant;
-        if (!collapsed) { this.renderKeys(mode, false, true); r = tryPlace(); }
-        if (!r && !collapsed) { this.renderKeys(mode, false, false); r = tryPlace(); }
-        if (!r) { this.renderKeys(mode, true, false); r = tryPlace(); }
+        const { items, collapsed } = this.keysWant;
+        if (!collapsed) { this.renderKeys(items, false, true); r = tryPlace(); }
+        if (!r && !collapsed) { this.renderKeys(items, false, false); r = tryPlace(); }
+        if (!r) { this.renderKeys(items, true, false); r = tryPlace(); }
       } else r = tryPlace();
       if (!r && name === 'notices') { node.classList.add('narrow'); r = tryPlace(); }
       else if (r && name === 'notices') node.classList.remove('narrow');

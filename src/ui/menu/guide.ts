@@ -29,6 +29,10 @@ export const CHAPTERS: Chapter[] = [
       <tr><td>Turtle mode (AUX3)</td><td>X</td><td>□</td><td>T</td></tr>
       <tr><td>Beeper (AUX4)</td><td>Y (hold)</td><td>△ (hold)</td><td>—</td></tr>
       <tr><td>Respawn after a crash</td><td>A</td><td>✕</td><td>R</td></tr>
+      <tr><td>Respawn with a fresh battery</td><td>B</td><td>○</td><td>B</td></tr>
+      <tr><td>Camera: FPV / chase / line of sight</td><td>D-pad ↑</td><td>D-pad ↑</td><td>C</td></tr>
+      <tr><td>Telemetry overlay</td><td>D-pad ↓</td><td>D-pad ↓</td><td>H</td></tr>
+      <tr><td>Hover drill / noise spectrum</td><td>D-pad ← / →</td><td>D-pad ← / →</td><td>G / F</td></tr>
       <tr><td>Pause menu</td><td>Menu / Start</td><td>Options</td><td>Esc</td></tr>
       </tbody></table>
       <p>Sticks are <b>Mode 2</b>: left stick is throttle (up/down) and yaw (left/right), right stick is pitch and roll. Radios and other controllers can be remapped in <b>Settings → Controller</b>.</p>

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import './style.css';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from './builder/derive';
-import { InputManager } from './input/gamepad';
+import { buttonName, InputManager, SimAction } from './input/gamepad';
 import { webHidSupported } from './input/steamHid';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
 import { MAPS, preloadMap } from './maps/maps';
@@ -23,7 +23,7 @@ import { builderPanel } from './ui/builderPanel';
 import { el } from './ui/dom';
 import { inputPanel } from './ui/inputPanel';
 import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
-import { DrillInfo, Hud, osdRects } from './ui/hud/hud';
+import { DrillInfo, Hud, KeyHint, osdRects } from './ui/hud/hud';
 import { DEFAULT_VIEW, settingsPanel, ViewSettings } from './ui/settingsPanel';
 import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, newestTime, R, REC, sampleRing, SimSettings, Telemetry, ToWorker } from './worker/shared';
 
@@ -119,6 +119,15 @@ const audio = new MotorAudio();
 const input = new InputManager();
 input.onReset = () => { onRespawn(); send({ type: 'reset', repair: true }); };
 input.onMenu = () => gameMenu.toggle();
+input.onAction = (a) => simAction(a);
+/** Shared by keyboard keys and controller buttons (B, D-pad). */
+function simAction(a: SimAction) {
+  if (a === 'camera') { const order: ViewSettings['view'][] = ['fpv', 'chase', 'los']; applyView({ ...view, view: order[(order.indexOf(view.view) + 1) % 3] }); }
+  if (a === 'telemetry') applyView({ ...view, telemetry: !view.telemetry });
+  if (a === 'drill') { drill.on = !drill.on; drill.t0 = -1; drill.inside = 0; }
+  if (a === 'battery') sendReset(true);
+  if (a === 'spectrum') toggleSpectrum();
+}
 const blackbox = new Blackbox();
 // Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
 const mp = new MultiplayerClient();
@@ -222,11 +231,8 @@ window.addEventListener('keydown', (e) => {
   if (menuOpen) return; // the menu handles its own keys
   if (e.code === 'Escape') gameMenu.toggle();
   if (e.code === 'KeyR') sendReset();
-  if (e.code === 'KeyC') { const order: ViewSettings['view'][] = ['fpv', 'chase', 'los']; applyView({ ...view, view: order[(order.indexOf(view.view) + 1) % 3] }); }
-  if (e.code === 'KeyH') applyView({ ...view, telemetry: !view.telemetry });
-  if (e.code === 'KeyG') { drill.on = !drill.on; drill.t0 = -1; drill.inside = 0; }
-  if (e.code === 'KeyB') sendReset(true);
-  if (e.code === 'KeyF') toggleSpectrum();
+  const a = ({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum' } as Record<string, SimAction>)[e.code];
+  if (a) simAction(a);
 });
 // Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the
 // browser may suspend the context later (tab switch, audio device change).
@@ -260,6 +266,22 @@ let lostSince = -1;
 // Browsers block audio until a click / key press on the page (controller buttons don't count).
 const soundChip = el('div', { class: 'chip' }, 'Click or press a key to enable sound');
 let armedSince = -1;
+const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['Space', 'Arm'], ['1-3', 'Mode'], ['R', 'Reset'], ['B', 'Battery'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
+/** Key hints for what is in use: keyboard keys, or this controller's own buttons (by family). */
+function keyHints(): KeyHint[] {
+  const pad = input.active;
+  if (!pad) return KB_HINTS;
+  const p = input.profileFor(pad), acts = input.actionButtons(pad, p);
+  const DPAD: Record<number, string> = { 12: '↑', 13: '↓', 14: '←', 15: '→' };
+  const btn = (i: number) => ({ glyph: DPAD[i] ?? buttonName(p.kind, i).replace(/ \(\d+\)$/, '').replace(/^button /, '#'), cls: DPAD[i] ? 'sh' : (['a', 'b', 'x', 'y'][i] ?? 'sh') });
+  const out: KeyHint[] = [];
+  const add = (i: number | null | undefined, label: string) => { if (i != null) out.push({ ...btn(i), label }); };
+  const sw = (b: { index: number; src?: string } | null) => (b && (b.src ?? 'button') === 'button' ? b.index : null);
+  add(p.menu, 'Menu'); if (!out.length) out.push({ glyph: 'Esc', cls: 'key', label: 'Menu' });
+  add(sw(p.arm), 'Arm'); add(sw(p.mode), 'Mode'); add(p.reset, 'Respawn'); add(acts.battery, 'Battery');
+  add(sw(p.turtle), 'Turtle'); add(acts.camera, 'Camera'); add(acts.telemetry, 'Telemetry'); add(acts.drill, 'Drill'); add(acts.spectrum, 'Spectrum');
+  return out;
+}
 let hudLayoutAt = 0;
 
 function drawSticks() {
@@ -356,7 +378,7 @@ function updateHud() {
   if (audio.blocked) notices.push(soundChip);
   hud.notices(notices);
   // key hints collapse to a single "menu" chip a few seconds after arming
-  hud.keys(input.active ? 'pad' : 'kb', armedSince >= 0 && now - armedSince > 3000);
+  hud.keys(keyHints(), armedSince >= 0 && now - armedSince > 3000);
   if (view.telemetry && tel) {
     const b = tel.battery;
     const spd = Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]) * 3.6;
