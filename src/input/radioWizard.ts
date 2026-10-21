@@ -2,7 +2,7 @@
 // in USB-joystick mode (DJI FPV Remote Controller 3, EdgeTX/OpenTX radios), HID joysticks, or any
 // pad the pilot wants to remap. Each step asks for one movement and detects which axis (and which
 // direction) or which button / switch responded, then records endpoints for calibration.
-import { AxisBind, ButtonBind, InputProfile } from './gamepad';
+import type { AxisBind, ButtonBind, InputProfile } from './gamepad';
 
 export type WizardStepKey = 'center' | 'throttle' | 'yaw' | 'pitch' | 'roll' | 'sweep' | 'arm' | 'mode' | 'done';
 
@@ -81,7 +81,9 @@ export class RadioWizard {
       const b = this.profile[st.key];
       // positive bound value must mean: throttle up, yaw right, pitch forward, roll right
       this.profile[st.key] = { ...b, src: 'axis', index: hit.index, invert: hit.delta < 0, min: -1, center: 0, max: 1 };
-      if (st.key === 'throttle') this.profile.throttleMode = 'full';
+      // a radio's throttle doesn't spring back: full travel. A standard gamepad keeps its (self-
+      // centring) mode, unless it was the trigger, which this step just replaced with a stick
+      if (st.key === 'throttle' && (pad.mapping !== 'standard' || this.profile.throttleMode === 'trigger')) this.profile.throttleMode = pad.mapping === 'standard' ? 'upper' : 'full';
       this.used.add(hit.index);
       this.message = `${st.key} → axis ${hit.index}${hit.delta < 0 ? ' (reversed)' : ''}`;
       this.next(pad);
@@ -125,4 +127,20 @@ export class RadioWizard {
     });
     return best;
   }
+}
+
+/** Pad state to compare against when listening for "the control the pilot just used". */
+export interface ControlBase { axes: number[]; buttons: boolean[] }
+export const controlBase = (pad: Gamepad): ControlBase => ({ axes: [...pad.axes], buttons: pad.buttons.map((b) => b.pressed || b.value > 0.5) });
+
+/** First control used since `base`: a newly pressed button, else the axis that moved most. */
+export function detectControl(pad: Gamepad, base: ControlBase): { src: 'button'; index: number } | { src: 'axis'; index: number; delta: number; rest: number } | null {
+  const bi = pad.buttons.findIndex((b, i) => (b.pressed || b.value > 0.5) && !base.buttons[i]);
+  if (bi >= 0) return { src: 'button', index: bi };
+  let best: { src: 'axis'; index: number; delta: number; rest: number } | null = null;
+  pad.axes.forEach((v, i) => {
+    const d = v - (base.axes[i] ?? 0);
+    if (Math.abs(d) > MOVE && (!best || Math.abs(d) > Math.abs(best.delta))) best = { src: 'axis', index: i, delta: d, rest: base.axes[i] ?? 0 };
+  });
+  return best;
 }
