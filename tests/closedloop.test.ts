@@ -59,6 +59,7 @@ describe.skipIf(!have)('Betaflight WASM closed loop', () => {
     r.run(1);
     const out = r.cli(defaultCli(r.build));
     expect(out).toContain('saving');
+    expect(out).not.toMatch(/ERROR|INVALID/i); // every default setting exists in this firmware
     r.run(4); // boot grace + gyro calibration on the real (biased, noisy) IMU signal
     expect(r.bf.armingDisableFlags()).toBe(0);
     r.rc[4] = 1900; // arm

@@ -10,6 +10,7 @@ export interface ViewSettings {
   renderScale: number;
   cubeSize: number;
   displayCompMs: number;   // subtract the monitor/browser pipeline from the emulated latency
+  displayCompAuto: boolean; // estimate it from the measured frame interval instead
   latencyOverrideMs: number; // 0 = from video system
   audio: boolean; volume: number;
   telemetry: boolean;
@@ -19,7 +20,7 @@ export interface ViewSettings {
   highlightGate: boolean;  // make the next race gate glow
 }
 
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: true, osd: true, view: 'fpv', linkEffects: true, highlightGate: true };
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: true, osd: true, view: 'fpv', linkEffects: true, highlightGate: true };
 
 export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
@@ -62,7 +63,9 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
           slider({ label: 'Render scale', min: 0.5, max: 2, step: 0.25, value: v.renderScale, onInput: (x) => { v.renderScale = x; pushV(); } }).row,
           select('Cube map resolution', [{ value: '512', label: '512' }, { value: '768', label: '768' }, { value: '1024', label: '1024' }, { value: '1536', label: '1536' }], String(v.cubeSize), (x) => { v.cubeSize = +x; pushV(); }),
           slider({ label: 'Latency override (0 = system)', min: 0, max: 150, step: 1, value: v.latencyOverrideMs, unit: 'ms', onInput: (x) => { v.latencyOverrideMs = x; pushV(); } }).row,
-          slider({ label: 'Display pipeline compensation', min: 0, max: 50, step: 1, value: v.displayCompMs, unit: 'ms', hint: 'Your monitor + browser already add latency; it is subtracted from the emulated glass-to-glass delay', onInput: (x) => { v.displayCompMs = x; pushV(); } }).row,
+          checkbox('Auto-measure display latency', v.displayCompAuto, (x) => { v.displayCompAuto = x; pushV(); }),
+          slider({ label: 'Display pipeline compensation', min: 0, max: 50, step: 1, value: v.displayCompMs, unit: 'ms', hint: 'Your monitor + browser already add latency; it is subtracted from the emulated glass-to-glass delay (used when auto-measure is off)', onInput: (x) => { v.displayCompMs = x; pushV(); } }).row,
+          el('p', { class: 'note' }, 'A 60 Hz monitor and browser add ~30-45 ms by themselves, as much as an analog or HDZero system: for the true feel of those, use a 144 Hz+ display.'),
         ),
         section('Audio / HUD',
           checkbox('Motor sound', v.audio, (x) => { v.audio = x; pushV(); }),

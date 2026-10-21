@@ -7,7 +7,7 @@
 // NOTE: maps.ts imports this module and this module imports maps.ts (gate geometry). Keep this
 // module's top level free of calls into maps.ts, and packageEntry() free of top-level state access.
 import { V3 } from '../sim/math';
-import type { WakeZone } from '../sim/wind';
+import type { WakeZone, WindVolume } from '../sim/wind';
 import { doomMapDef } from './doomMap';
 import { buildGatePrims, type MapEntry } from './maps';
 import { quakeMapDef } from './quakeMap';
@@ -27,6 +27,7 @@ export const BUDGETS = {
   gates: 64,
   trees: 3000,
   wakeZones: 32,
+  indoor: 32,                     // indoor wind volumes
   geometry: 16,                   // geometry entries
   brushes: 20000,                 // convex brushes from Quake / Doom sources + mesh collision slabs
   meshTriangles: 150000,          // drawn glTF triangles, all meshes
@@ -72,6 +73,8 @@ export type PrimDoc =
 export interface GateDoc { kind: GateDef['kind']; pos: Vec2 | Vec3; yawDeg?: number; width?: number; height?: number; stack?: number; onTop?: boolean }
 export interface TreeDoc { pos: Vec2; height: number; radius: number; type: 'pine' | 'oak' }
 export interface WakeDoc { pos: Vec2; radius: number; height: number; intensity: number }
+/** Enclosed space (axis-aligned box, min / max corners): wind inside is scaled by windScale. */
+export interface IndoorDoc { min: Vec3; max: Vec3; windScale?: number }
 export type GeometryDoc =
   | { type: 'quake'; src: string; scale?: number; ambient?: number; spawnClass?: string; textures?: string }
   | { type: 'doom'; src: string; scale?: number; textures: string }
@@ -93,6 +96,7 @@ export interface MapDocV1 {
   gates?: GateDoc[];
   trees?: TreeDoc[];
   wakeZones?: WakeDoc[];
+  indoor?: IndoorDoc[];
   geometry?: GeometryDoc[];
 }
 
@@ -202,7 +206,7 @@ const IMG = /\.(png|jpe?g|webp)$/i;
 export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[] } {
   const c = new Checker();
   const R = 'map.json';
-  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'geometry'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
+  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'geometry'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
   const d = raw;
   if (d.format !== undefined && d.format !== FORMAT) c.err(`${R}.format`, `must be "${FORMAT}" (got ${show(d.format)})`);
   if (d.formatVersion !== undefined && d.formatVersion !== FORMAT_VERSION) c.err(`${R}.formatVersion`, typeof d.formatVersion === 'number' && d.formatVersion > FORMAT_VERSION ? `${d.formatVersion} is newer than this simulator supports (${FORMAT_VERSION}); update the simulator` : `must be ${FORMAT_VERSION}`);
@@ -304,6 +308,11 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
   c.arr(d, 'wakeZones', R, BUDGETS.wakeZones, (w, P) => {
     if (!c.obj(w, P, ['pos', 'radius', 'height', 'intensity'], ['pos', 'radius', 'height', 'intensity'])) return;
     c.vec(w, 'pos', P, 2); c.num(w, 'radius', P, { gt: 0 }); c.num(w, 'height', P, { gt: 0 }); c.num(w, 'intensity', P, { min: 0, max: 5 });
+  });
+  c.arr(d, 'indoor', R, BUDGETS.indoor, (w, P) => {
+    if (!c.obj(w, P, ['min', 'max', 'windScale'], ['min', 'max'])) return;
+    const a = c.vec(w, 'min', P, 3), b = c.vec(w, 'max', P, 3); c.num(w, 'windScale', P, { min: 0, max: 1 });
+    if (a && b && a.length === 3 && b.length === 3 && !(a[0] < b[0] && a[1] < b[1] && a[2] < b[2])) c.err(P, 'min must be below max on every axis');
   });
   let bases = 0;
   c.arr(d, 'geometry', R, BUDGETS.geometry, (g, P) => {
@@ -735,6 +744,8 @@ export async function loadMapPackage(src: PackageSource, opts: LoadOptions = {})
       elevationM: doc.elevationM ?? base?.elevationM ?? 0,
       trees: (doc.trees ?? []).map((t) => ({ x: t.pos[0], y: t.pos[1], h: t.height, r: t.radius, type: t.type })),
     };
+    const indoor: WindVolume[] = [...(base?.indoor ?? []), ...(doc.indoor ?? []).map((v) => ({ min: { x: v.min[0], y: v.min[1], z: v.min[2] }, max: { x: v.max[0], y: v.max[1], z: v.max[2] }, scale: v.windScale ?? 0.1 }))];
+    if (indoor.length) def.indoor = indoor;
     const ground = doc.ground ? doc.ground.visible : base?.ground;
     if (ground !== undefined) def.ground = ground;
     const pilot = doc.pilot ? { x: doc.pilot[0], y: doc.pilot[1], z: doc.pilot[2] } : doc.spawn ? undefined : base?.pilot;

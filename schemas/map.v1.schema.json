@@ -798,7 +798,7 @@
     "wakeZones": {
       "type": "array",
       "maxItems": 32,
-      "description": "Turbulent wake behind buildings.",
+      "description": "Obstacles (building / tree line footprint) that shed a wake downwind: shelter, lee downdraft, roof-edge updraft and turbulence.",
       "items": {
         "type": "object",
         "properties": {
@@ -829,6 +829,46 @@
           "radius",
           "height",
           "intensity"
+        ],
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        }
+      }
+    },
+    "indoor": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Enclosed spaces (axis-aligned boxes): the wind inside is scaled by windScale (default 0.1).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "min": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "windScale": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "min",
+          "max"
         ],
         "additionalProperties": false,
         "patternProperties": {

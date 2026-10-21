@@ -88,6 +88,7 @@ public/maps/community/<id>/
   "gates": [ … ],
   "trees": [ … ],
   "wakeZones": [ … ],
+  "indoor": [ … ],
   "geometry": [ … ]
 }
 ```
@@ -188,16 +189,22 @@ split-S stack).
 
 With a 2-element `pos` the gate stands on the terrain.
 
-### trees, wakeZones
+### trees, wakeZones, indoor
 
 ```json
 { "pos": [-55, 45], "height": 14, "radius": 3.5, "type": "oak" }
 { "pos": [40, 40], "radius": 8, "height": 14, "intensity": 1.0 }
+{ "min": [-18, 9, 0], "max": [18, 31, 12], "windScale": 0.1 }
 ```
 
-Trees are drawn instanced and collide as a trunk cylinder plus a foliage sphere (soft material).
-Wake zones add turbulence to the wind downstream of buildings. `intensity` 1 is a typical
-building.
+Trees are drawn instanced and collide as a trunk cylinder plus a solid core; the rest of the
+canopy is a porous drag volume (a quad slows down inside it and its props get nicked).
+A wake zone is an obstacle (building, silo, tree line): centre `pos`, footprint `radius` and
+`height`. The wake is laid out downwind of it for the live wind direction: sheltered, more
+turbulent air behind it (eddies about half the obstacle height), a downdraft on the lee side and
+an updraft at the windward roof edge. `intensity` 1 is a typical building.
+`indoor` boxes (`min` / `max` corners) are enclosed spaces in an outdoor map: the wind inside
+is multiplied by `windScale` (default 0.1). For a fully indoor map use `environment.windScale`.
 
 ### geometry: external sources
 
@@ -257,7 +264,7 @@ the numbers.
 | any single file | 8 MiB |
 | `size` (half-extent) | 2000 m |
 | primitives (including the 3-8 parts each gate generates) | 5 000 |
-| gates / trees / wake zones / geometry entries | 64 / 3 000 / 32 / 16 |
+| gates / trees / wake zones / indoor boxes / geometry entries | 64 / 3 000 / 32 / 32 / 16 |
 | convex brushes (Quake / Doom geometry + mesh collision) | 20 000 |
 | glTF triangles drawn, all meshes | 150 000 |
 | glTF triangles with `collision: "mesh"` | 20 000 |

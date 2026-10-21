@@ -88,6 +88,6 @@
     {"pos":[102.2,-8.8],"height":12.7,"radius":2.4,"type":"pine"}
   ],
   "wakeZones": [
-    {"pos":[40,40],"radius":8,"height":14,"intensity":1}
+    {"pos":[40,40],"radius":3.5,"height":12.4,"intensity":1}
   ]
 }

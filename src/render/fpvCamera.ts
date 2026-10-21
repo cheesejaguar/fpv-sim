@@ -58,21 +58,24 @@ precision highp float;
 varying vec2 vUv;
 uniform sampler2D frame;
 uniform sampler2D prevExp;
-uniform float k;
+uniform float kUp, kDown;
 void main() {
-  float logAvg = textureLod(frame, vec2(0.5), 12.0).a;
+  // log-average over the whole frame, blended with a centre-weighted meter (what FPV cams do)
+  float logAvg = mix(textureLod(frame, vec2(0.5), 12.0).a, textureLod(frame, vec2(0.5), 5.0).a, 0.4);
   float lum = exp(logAvg);
-  float target = clamp(0.2 / lum, 0.25, 8.0);
+  // ~8.5 stops of range: dark interiors brighten (noisily), bright sky is pulled down
+  float target = clamp(0.2 / lum, 0.06, 24.0);
   float prev = texture2D(prevExp, vec2(0.5)).r;
   if (prev <= 0.0) prev = target;
-  gl_FragColor = vec4(mix(prev, target, k), 0.0, 0.0, 1.0);
+  // cameras react faster to over-exposure (bursting out into the sky) than to darkness
+  gl_FragColor = vec4(mix(prev, target, target > prev ? kUp : kDown), 0.0, 0.0, 1.0);
 }`;
 
 const commonPost = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D frame, prevFrame, osd, expTex;
-uniform float time, cnr, osdOn, wdr, frameH, frameW, oddField, interlaced, freeze, block;
+uniform float time, cnr, osdOn, wdr, frameH, frameW, oddField, interlaced, freeze, block, lost, hdz, gammaOut;
 uniform vec4 osdRect;   // x0,y0,x1,y1 in frame uv
 uniform vec2 screenFit; // scale of frame quad on screen (letterbox)
 // sin-free hash (Hoskins): fract(sin(x)*k) collapses to 0 for large x in fp32
@@ -83,6 +86,8 @@ vec3 tone(vec3 c, float e) {
   c = mix(c, log2(1.0 + c * 3.0) / log2(4.0), wdr);
   return c;
 }
+// camera transfer curve (Rec.709-like gamma): the frame buffers are linear light
+vec3 oetf(vec3 c) { return pow(max(c, 0.0), vec3(gammaOut)); }
 vec4 osdAt(vec2 uv) {
   vec2 o = (uv - osdRect.xy) / (osdRect.zw - osdRect.xy);
   if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) return vec4(0.0);
@@ -116,9 +121,14 @@ void main() {
   cC /= 7.0;
   cY = tone(cY, e); cC = tone(cC, e);
   // sharpening ringing typical of analog cameras
-  vec3 cL = tone(texture2D(frame, suv - vec2(1.5 / frameW, 0.0)).rgb, e);
-  vec3 cR = tone(texture2D(frame, suv + vec2(1.5 / frameW, 0.0)).rgb, e);
+  // (taps from the same field as the centre sample, or moving edges ghost)
+  vec2 dl = vec2(1.5 / frameW, 0.0);
+  vec3 cL = tone(useprev ? texture2D(prevFrame, suv - dl).rgb : texture2D(frame, suv - dl).rgb, e);
+  vec3 cR = tone(useprev ? texture2D(prevFrame, suv + dl).rgb : texture2D(frame, suv + dl).rgb, e);
   vec3 sharp = cY + (cY - 0.5 * (cL + cR)) * 0.6;
+  // small-sensor CMOS flare / bloom around the sun and bright sky
+  sharp += max(tone(textureLod(frame, suv, 4.0).rgb, e) - 0.8, 0.0) * 0.8;
+  sharp = oetf(sharp); cC = oetf(cC);
   vec3 yiq = vec3(rgb2yiq(sharp).x, rgb2yiq(cC).yz);
   // OSD is overlaid at the FC (MAX7456), i.e. before the RF link degrades it
   vec4 o = osdAt(suv);
@@ -145,24 +155,39 @@ void main() {
 const digitalFS = commonPost + /* glsl */ `
 void main() {
   vec2 uv = (vUv - 0.5) / screenFit + 0.5;
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-  float e = texture2D(expTex, vec2(0.5)).r;
-  // link margin -> compression quality: block size grows, blocks smear from the previous frame
-  vec2 bs = vec2(16.0) / vec2(frameW, frameH) * (1.0 + block * 3.0);
-  vec2 bid = floor(uv / bs);
-  float bh = hash(bid + floor(time * 20.0));
-  vec2 suv = uv;
-  if (block > 0.05) {
-    suv = mix(uv, (bid + 0.5) * bs, smoothstep(0.3, 1.0, block) * step(bh, block));
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || lost > 0.5) {
+    // no signal: goggles show black (the HD OSD travels over the same link, so it is gone too)
+    gl_FragColor = vec4(vec3(0.0), 1.0); return;
   }
-  vec3 c = (bh < block * 0.6 || freeze > 0.5) ? texture2D(prevFrame, suv).rgb : texture2D(frame, suv).rgb;
-  // mild encoder smoothing at high motion (bitrate starvation)
-  vec3 blur = textureLod(frame, suv, 1.5).rgb;
-  c = mix(c, blur, 0.15 + 0.5 * block);
+  float e = texture2D(expTex, vec2(0.5)).r;
+  vec2 suv = uv;
+  vec3 c;
+  if (hdz > 0.5) {
+    // HDZero: no inter-frame compression; a weak link shows as torn horizontal strips and pixel
+    // errors that grow gradually, with no smearing and no added latency
+    float strip = floor(uv.y * frameH / 8.0);
+    float sh = hash(vec2(strip, floor(time * 90.0)));
+    if (sh < block * 0.35) suv.x = fract(uv.x + (hash(vec2(strip, time)) - 0.5) * 0.2 * block);
+    c = texture2D(frame, suv).rgb;
+    float px = hash(floor(uv * vec2(frameW, frameH) / 2.0) + floor(time * 90.0));
+    if (px < block * block * 0.25) c = vec3(hash(uv + time), hash(uv - time), hash(uv * 3.0 + time));
+  } else {
+    // DJI / Walksnail: link margin -> compression quality: block size grows, blocks smear from the
+    // previous frame; when frozen the decoder keeps showing its last frame
+    vec2 bs = vec2(16.0) / vec2(frameW, frameH) * (1.0 + block * 3.0);
+    vec2 bid = floor(uv / bs);
+    float bh = hash(bid + floor(time * 20.0));
+    if (block > 0.05) suv = mix(uv, (bid + 0.5) * bs, smoothstep(0.3, 1.0, block) * step(bh, block));
+    c = (bh < block * 0.6 && freeze < 0.5) ? texture2D(prevFrame, suv).rgb : texture2D(frame, suv).rgb;
+    // encoder smoothing at high motion (bitrate starvation)
+    vec3 blur = textureLod(frame, suv, 1.5).rgb;
+    c = mix(c, blur, 0.15 + 0.5 * block);
+  }
   c = tone(c, e);
   // bloom from bright sky / sun
   vec3 glow = max(tone(textureLod(frame, uv, 4.0).rgb, e) - 0.85, 0.0);
   c += glow * 0.6;
+  c = oetf(c);
   // HD OSD is drawn by the VTX/goggles after decoding: crisp
   vec4 o = osdAt(uv);
   c = mix(c, o.rgb, o.a);
@@ -197,7 +222,7 @@ export class FpvCamera {
       vertexShader: quadVS, fragmentShader: fisheyeFS, depthTest: false, depthWrite: false,
       uniforms: { cube: { value: this.cubeRT.texture }, camToWorld: { value: new THREE.Matrix3() }, halfFovDiag: { value: 1.4 }, aspect: { value: 4 / 3 }, kb: { value: new THREE.Vector4() }, omegaCam: { value: new THREE.Vector3() }, readout: { value: 0.016 } },
     });
-    this.expMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: exposureFS, depthTest: false, uniforms: { frame: { value: null }, prevExp: { value: null }, k: { value: 0.1 } } });
+    this.expMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: exposureFS, depthTest: false, uniforms: { frame: { value: null }, prevExp: { value: null }, kUp: { value: 0.1 }, kDown: { value: 0.1 } } });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fisheyeMat);
     this.quadScene.add(this.quad);
   }
@@ -210,13 +235,17 @@ export class FpvCamera {
   setVideo(v: VideoSpec, renderScale = 1) {
     this.video = v;
     const aspect = v.kind === 'analog' ? 4 / 3 : 16 / 9;
-    const h = Math.round((v.kind === 'analog' ? 480 : 720) * renderScale);
+    // analog: the video standard's active lines (NTSC 480, PAL 576)
+    const h = Math.round((v.kind === 'analog' ? (v.resolution[1] >= 576 ? 576 : 480) : 720) * renderScale);
     const w = Math.round(h * aspect);
     this.frameRT.dispose(); this.prevRT.dispose();
     this.frameRT = this.makeFrameRT(w, h); this.prevRT = this.makeFrameRT(w, h);
     const u = this.fisheyeMat.uniforms;
     u.aspect.value = aspect;
-    u.halfFovDiag.value = THREE.MathUtils.degToRad(v.fovDeg) / 2;
+    // the frame corner must map to half the rated FOV after distortion: feed the shader the
+    // distorted angle θ_d(halfFov) as its corner radius
+    const hf = THREE.MathUtils.degToRad(v.fovDeg) / 2, [k1, k2, k3, k4] = v.fisheyeK, h2 = hf * hf;
+    u.halfFovDiag.value = hf * (1 + k1 * h2 + k2 * h2 * h2 + k3 * h2 ** 3 + k4 * h2 ** 4);
     u.kb.value.set(...v.fisheyeK);
     u.readout.value = v.rollingShutterMs / 1000;
     this.postMat?.dispose();
@@ -224,9 +253,9 @@ export class FpvCamera {
       vertexShader: quadVS, fragmentShader: v.kind === 'analog' ? analogFS : digitalFS, depthTest: false,
       uniforms: {
         frame: { value: null }, prevFrame: { value: null }, osd: { value: null }, expTex: { value: null },
-        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, wdr: { value: v.kind === 'analog' ? 0.55 : 0.35 },
+        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
         frameW: { value: w }, frameH: { value: h }, oddField: { value: 0 }, interlaced: { value: v.interlaced ? 1 : 0 },
-        freeze: { value: 0 }, block: { value: 0 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) }, screenFit: { value: new THREE.Vector2(1, 1) },
+        freeze: { value: 0 }, block: { value: 0 }, lost: { value: 0 }, hdz: { value: v.system === 'hdzero' ? 1 : 0 }, gammaOut: { value: 1 / 2.2 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) }, screenFit: { value: new THREE.Vector2(1, 1) },
       },
     });
   }
@@ -248,7 +277,9 @@ export class FpvCamera {
     const src = this.expRT[this.expIdx], dst = this.expRT[1 - this.expIdx];
     this.expMat.uniforms.frame.value = this.frameRT.texture;
     this.expMat.uniforms.prevExp.value = src.texture;
-    this.expMat.uniforms.k.value = 1 - Math.exp(-Math.max(dtSinceLast, 0.001) / 0.15);
+    const dts = Math.max(dtSinceLast, 0.001);
+    this.expMat.uniforms.kUp.value = 1 - Math.exp(-dts / 0.3);   // brightening into the dark
+    this.expMat.uniforms.kDown.value = 1 - Math.exp(-dts / 0.1); // pulling down a sudden bright scene
     this.quad.material = this.expMat;
     r.setRenderTarget(dst);
     r.render(this.quadScene, this.quadCam);
@@ -258,12 +289,14 @@ export class FpvCamera {
   }
 
   /** Composite to the screen with link artefacts and OSD. */
-  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number }, osdOn: boolean) {
+  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean) {
     const r = this.renderer;
     const u = this.postMat.uniforms;
     u.frame.value = this.frameRT.texture; u.prevFrame.value = this.prevRT.texture; u.expTex.value = this.expRT[this.expIdx].texture;
     u.osd.value = osdTex; u.osdOn.value = osdOn && osdTex ? 1 : 0;
-    u.time.value = time; u.cnr.value = link.cnr; u.freeze.value = link.freeze ? 1 : 0; u.block.value = link.block;
+    // analog noise and tearing change once per video field, not per monitor refresh
+    u.time.value = this.video.kind === 'analog' ? Math.floor(time * this.video.fps) / this.video.fps : time;
+    u.cnr.value = link.cnr; u.freeze.value = link.freeze ? 1 : 0; u.block.value = link.block; u.lost.value = link.lost;
     u.oddField.value = this.field;
     // letterbox to screen
     const size = r.getSize(new THREE.Vector2());

@@ -15,7 +15,10 @@
 export interface AirfoilParams {
   cl0: number;        // zero-alpha lift (camber)
   clAlpha: number;    // per rad (low-Re thin section ~ 5.2-5.7)
-  alphaStall: number; // rad
+  clMax: number;      // positive stall CL (low-Re, Re ~ 5e4-1e5: ~1.1-1.3)
+  clMin: number;      // negative stall CL
+  stallDecay: number; // rad: e-fold of the post-stall lift drop from clMax toward flat-plate
+  stallSmooth: number;// CL units: rounding of the lift-curve knee at stall
   cd0: number;
   cdK: number;        // quadratic drag-polar coefficient
   clMinDrag: number;
@@ -31,8 +34,30 @@ export interface PropGeometry {
   airfoil: AirfoilParams;
 }
 
-export const DEFAULT_AIRFOIL: AirfoilParams = { cl0: 0.38, clAlpha: 5.3, alphaStall: 0.30, cd0: 0.022, cdK: 0.028, clMinDrag: 0.35 };
+export const DEFAULT_AIRFOIL: AirfoilParams = { cl0: 0.1, clAlpha: 5.3, clMax: 1.3, clMin: -0.85, stallDecay: 0.4, stallSmooth: 0.06, cd0: 0.022, cdK: 0.028, clMinDrag: 0.35 };
 
+/**
+ * Section polar at chord Reynolds number re (DEFAULT_AIRFOIL is for Re ~ 1e5, a 5" prop at 0.75R).
+ * Below that the laminar separation bubble thickens: profile drag rises ~ Re^-1/2 and CLmax falls
+ * (Selig, Guglielmo et al. low-Re airfoil tests; Brandt & Selig 2011 / Deters, Ananda & Selig 2014
+ * for 2.5-5" props: efficiency and the CT(J) slope degrade sharply below Re ~ 5e4). Matters for
+ * whoop props (Re ~ 1.5-3e4), whose measured static torque is ~2x a Re-1e5 polar.
+ */
+export function airfoilAtRe(re: number, base: AirfoilParams = DEFAULT_AIRFOIL): AirfoilParams {
+  const r = Math.max(0.15, Math.min(3, re / 1e5));
+  return { ...base, cd0: base.cd0 * Math.min(2.4, Math.max(0.75, Math.pow(r, -0.5))), clMax: base.clMax + 0.15 * Math.log10(Math.min(1.5, r)) };
+}
+
+/** Smooth min / max (log-sum-exp) with rounding k, stable for widely separated arguments. */
+const smin = (x: number, y: number, k: number) => { const m = Math.min(x, y); return m - k * Math.log(Math.exp((m - x) / k) + Math.exp((m - y) / k)); };
+const smax = (x: number, y: number, k: number) => -smin(-x, -y, k);
+
+// Low-Reynolds thin cambered section (Re ~ 3e4-1.5e5; cf. Selig/UIUC low-Re airfoil data, and the
+// small-prop measurements of Brandt & Selig 2011): linear lift to a modest CLmax ~ 1.2-1.3, then a
+// gradual (not abrupt) loss toward flat-plate lift 2 sin a cos a as the separation bubble bursts.
+// The lift curve is min(linear, post-stall) with a rounded knee, so the inboard (high-alpha) part
+// of a static prop sits just past the knee and progressively unstalls as advance ratio rises, while
+// the outboard blade keeps a live lift slope: CT(J) is flat-ish at J = 0 and falls off ~ J^2.
 function airfoil(a: AirfoilParams, alpha: number, out: { cl: number; cd: number }): void {
   let al = alpha;
   while (al > Math.PI) al -= 2 * Math.PI;
@@ -40,15 +65,16 @@ function airfoil(a: AirfoilParams, alpha: number, out: { cl: number; cd: number 
   const clLin = a.cl0 + a.clAlpha * al;
   const cdLin = a.cd0 + a.cdK * (clLin - a.clMinDrag) ** 2;
   const s = Math.sin(al), c = Math.cos(al);
-  const clFp = 2 * s * c * 0.95;
-  const cdFp = 0.03 + 1.9 * s * s;
-  // smooth blend into post-stall flat-plate behaviour (positive and negative stall)
-  const aStallNeg = -a.alphaStall - (2 * a.cl0) / a.clAlpha;
-  const wPos = 1 / (1 + Math.exp(-(al - a.alphaStall) / 0.06));
-  const wNeg = 1 / (1 + Math.exp((al - aStallNeg) / 0.06));
-  const w = Math.min(1, wPos + wNeg);
-  out.cl = (1 - w) * Math.min(clLin, a.cl0 + a.clAlpha * (a.alphaStall + 0.1)) + w * clFp;
-  out.cd = (1 - w) * cdLin + w * Math.max(cdFp, cdLin);
+  const aS = (a.clMax - a.cl0) / a.clAlpha, aSN = (a.clMin - a.cl0) / a.clAlpha;
+  const clFp = 2 * s * c * 0.95, k = a.stallSmooth;
+  // (branches skipped where the knee rounding / stall sigmoid is < 1e-4: table build cost)
+  let cl = clLin;
+  if (clLin > a.clMax - 8 * k) cl = smin(clLin, clFp + (a.clMax - 1.9 * Math.sin(aS) * Math.cos(aS)) * Math.exp(Math.min(30, -(al - aS) / a.stallDecay)), k);
+  if (clLin < a.clMin + 8 * k) cl = smax(cl, clFp + (a.clMin - 1.9 * Math.sin(aSN) * Math.cos(aSN)) * Math.exp(Math.min(30, (al - aSN) / a.stallDecay)), k);
+  out.cl = cl;
+  // drag: attached polar, rising into flat-plate drag through stall
+  const w = Math.min(1, (al > aS - 0.5 ? 1 / (1 + Math.exp(-(al - aS) / 0.05)) : 0) + (al < aSN + 0.5 ? 1 / (1 + Math.exp((al - aSN) / 0.05)) : 0));
+  out.cd = w > 0 ? (1 - w) * cdLin + w * Math.max(0.03 + 1.9 * s * s, cdLin) : cdLin;
 }
 
 export interface BemtResult { T: number; Q: number; H: number; vi: number }

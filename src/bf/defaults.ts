@@ -42,6 +42,22 @@ export function osdLayout(video: { osd: 'sd' | 'hd'; fps: number }): Record<stri
  * mode used by the noise-spectrum overlay. OSD element positions are only reset when the import
  * didn't bring its own.
  */
+/**
+ * Battery settings matching the simulated pack. Without vbat_max_cell_voltage = 445 Betaflight
+ * (default 430) miscounts LiHV packs: a full 6S HV (26.1 V) reads as 7S, and a full 1S HV (4.35 V)
+ * as USB power. bat_capacity drives the mAh-based warnings and the OSD battery %.
+ */
+export function batteryCli(build: DroneBuild): string[] {
+  const b = build.info.components.battery;
+  const liion = b.chemistry === 'LiIon';
+  return [
+    `set vbat_max_cell_voltage = ${b.chemistry === 'LiHV' ? 445 : 430}`,
+    `set vbat_warning_cell_voltage = ${liion ? 300 : 350}`,
+    `set vbat_min_cell_voltage = ${liion ? 280 : 330}`,
+    `set bat_capacity = ${Math.round(b.capacityMah * (b.parallel || 1))}`,
+  ];
+}
+
 export function simHardwareCli(build: DroneBuild, opts: { keepOsdLayout: boolean; propsOut: boolean | null }): string[] {
   const m = build.info.components.motor, v = build.info.components.video;
   const propsOut = opts.propsOut ?? build.spec.propDirection === 'props-out';
@@ -53,6 +69,7 @@ export function simHardwareCli(build: DroneBuild, opts: { keepOsdLayout: boolean
     `set vcd_video_system = ${osdGrid(v).vcd}`,
     'set current_meter = ADC',
     'set battery_meter = ADC',
+    ...batteryCli(build),
     'set debug_mode = GYRO_FILTERED',
     'aux 0 0 0 1700 2100 0 0',
     'aux 1 1 1 1700 2100 0 0',
@@ -78,8 +95,7 @@ export function defaultCli(build: DroneBuild): string[] {
     `set motor_kv = ${Math.round(m.kv)}`,
     `set yaw_motors_reversed = ${s.propDirection === 'props-out' ? 'ON' : 'OFF'}`,
     'set dshot_idle_value = 550',
-    'set vbat_warning_cell_voltage = 350',
-    'set vbat_min_cell_voltage = 330',
+    ...batteryCli(build),
     `set vcd_video_system = ${grid.vcd}`,
     'set current_meter = ADC',
     'set battery_meter = ADC',

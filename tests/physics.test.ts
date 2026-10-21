@@ -1,6 +1,8 @@
 // Validation of the generated flight model against published / measured FPV quad behaviour.
 import { describe, expect, test } from 'vitest';
-import { buildDrone, DEFAULT_SPEC, PRESETS } from '../src/builder/derive';
+import { buildDrone, DEFAULT_SPEC, PRESETS, propGeometry } from '../src/builder/derive';
+import { byId, PROPS } from '../src/data/catalog';
+import { RotorAero } from '../src/sim/rotor';
 import { Battery, batteryFromSpec, ocvPerCell } from '../src/sim/battery';
 import { bemtSolve, DEFAULT_AIRFOIL } from '../src/sim/bemt';
 import { GroundPlane } from '../src/sim/contact';
@@ -36,6 +38,18 @@ describe('BEMT propeller', () => {
 });
 
 describe('LiPo battery', () => {
+  test('an emptied pack collapses under load instead of holding a voltage forever', () => {
+    const b = new Battery(batteryFromSpec({ chemistry: 'LiPo', cells: 6, capacityMah: 1300, cRating: 120, irPerCellMohm: 3, massG: 215 }), 1, 20);
+    let at3v = -1;
+    for (let t = 0; t < 400; t += 0.01) {
+      b.step(35, 0.01, 20, 10);
+      if (at3v < 0 && b.cellVoltage() < 3.0) at3v = t;
+    }
+    expect(Number.isFinite(b.s.voltage)).toBe(true);
+    expect(at3v).toBeGreaterThan(110); // ~2.3 min of 35 A flying first
+    expect(at3v).toBeLessThan(170);
+    expect(b.cellVoltage()).toBeLessThan(2.7); // dead: well below any ESC / FC cut-out
+  });
   test('OCV table endpoints', () => {
     expect(ocvPerCell('LiPo', 1)).toBeCloseTo(4.2, 2);
     expect(ocvPerCell('LiPo', 0.5)).toBeCloseTo(3.84, 2);
@@ -98,10 +112,62 @@ describe('generated 5" 6S freestyle quad', () => {
   });
 });
 
+// (table builds for every preset prop take several seconds on a loaded machine)
 test('all presets build and give sane hover throttle', () => {
   for (const p of PRESETS) {
     const b = buildDrone(p);
     expect(b.info.hoverThrottle, p.name).toBeGreaterThan(0.12);
     expect(b.info.hoverThrottle, p.name).toBeLessThan(0.5);
   }
+}, 60_000); // builds every preset's BEMT tables (~0.9 s each)
+
+describe('propeller in oblique inflow (Gemfan 51466 at 18k rpm)', () => {
+  const pr = byId(PROPS, 'p-gf51466'), g = propGeometry(pr);
+  const w = (18000 * 2 * Math.PI) / 60, nD = 300 * pr.diameterIn * 0.0254;
+  const T = (vc: number, vip = 0) => bemtSolve(g, 1.225, w, vc, vip).T;
+  const t0 = T(0);
+  test('CT(J) falls ~10-15 % by J = 0.26 and ~35-50 % by J = 0.5 (UIUC-style 5x4.6 data)', () => {
+    expect(T(0.26 * nD) / t0).toBeGreaterThan(0.85); expect(T(0.26 * nD) / t0).toBeLessThan(0.9);
+    expect(T(0.5 * nD) / t0).toBeGreaterThan(0.5); expect(T(0.5 * nD) / t0).toBeLessThan(0.65);
+  });
+  test('translational lift: edgewise flow gives a modest thrust gain', () => {
+    const r = T(0, 20) / t0;
+    expect(r).toBeGreaterThan(1.04); expect(r).toBeLessThan(1.16);
+  });
+  test('heave damping: dT/dvc < 0 at hover', () => {
+    expect(T(0.5) - T(-0.5)).toBeLessThan(0);
+  });
 });
+
+describe('rotor runtime effects', () => {
+  const build = buildDrone(DEFAULT_SPEC), t = build.params.rotors[0].table, R = t.R;
+  const o = { thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0 }, w = 2000;
+  const run = (hG: number, hC: number) => { const a = new RotorAero(t, 1); a.evaluate(w, 0, 0, 1.225, hG, 0, DT, o, hC); return { ...o }; };
+  test('ground effect raises thrust and lowers torque; ceiling effect raises thrust (clamped)', () => {
+    const free = run(Infinity, Infinity), ge = run(0.6 * R, Infinity), ce = run(Infinity, 0.5 * R);
+    expect(ge.thrust / free.thrust).toBeGreaterThan(1.1); expect(ge.torque).toBeLessThan(free.torque);
+    expect(ce.thrust / free.thrust).toBeGreaterThan(1.1); expect(ce.thrust / free.thrust).toBeLessThanOrEqual(1.4 + 1e-9);
+  });
+  test('ducts: ram drag grows with crossflow', () => {
+    const a = new RotorAero(t, 1); a.ductGain = 0.15;
+    a.evaluate(w, 0, 10, 1.225, Infinity, 0, DT, o); const hDuct = o.hForce;
+    new RotorAero(t, 1).evaluate(w, 0, 10, 1.225, Infinity, 0, DT, o);
+    expect(hDuct).toBeGreaterThan(2 * o.hForce);
+  });
+  test('props see the air at motor speed plus the frame yaw rate', () => {
+    const q = new QuadSim(build.params, 8000); const env = calmEnv();
+    q.reset({ x: 0, y: 0, z: 10 });
+    for (let i = 0; i < 2000; i++) { q.command([600, 600, 600, 600], false); q.step(DT, env); holdLevel(q); }
+    q.s.w.z = 30; q.step(DT, env);
+    const ccw = q.p.rotors.map((r, k) => (r.dir === 1 ? q.rotorOut[k].torque : 0)).reduce((a, b) => a + b);
+    const cw = q.p.rotors.map((r, k) => (r.dir === -1 ? q.rotorOut[k].torque : 0)).reduce((a, b) => a + b);
+    expect(ccw / cw).toBeGreaterThan(1.02); // frame turning CCW: the CCW props cut the air faster
+  });
+});
+
+test('top speed: open 5" fast, ducted whoops slow (ram drag)', () => {
+  const top = (s: string) => buildDrone(PRESETS.find((p) => p.name.includes(s))!).info.estTopSpeedKmh;
+  expect(top('Freestyle 6S')).toBeGreaterThan(140); expect(top('Freestyle 6S')).toBeLessThan(210);
+  for (const s of ['65 mm', '75 mm']) { expect(top(s), s).toBeGreaterThan(28); expect(top(s), s).toBeLessThan(46); }
+  expect(top('Cinewhoop')).toBeGreaterThan(65); expect(top('Cinewhoop')).toBeLessThan(100);
+}, 60000);

@@ -8,7 +8,7 @@ import { MAPS, preloadMap } from './maps/maps';
 import { MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from './maps/world';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat, enuToThree, quatEnuToThree } from './render/coords';
-import { buildDroneMesh, DroneModel } from './render/droneMesh';
+import { buildDroneMesh, cameraMountZ, DroneModel } from './render/droneMesh';
 import { FpvCamera } from './render/fpvCamera';
 import { OsdRenderer } from './render/osdRenderer';
 import { buildScene, SceneBundle } from './render/scene';
@@ -136,6 +136,32 @@ function joinRoom(code: string, room?: { name: string; public: boolean }) {
   const p = loadPilot();
   mp.join(code, { name: p.name, color: p.color, frame: build.info.components.frame.sizeClass, map: simSettings.mapId, room });
   history.replaceState(null, '', inviteLink(code));
+}
+let lastShadowAt = 0, brownoutUntil = -1e9;
+// The browser + monitor pipeline (rAF -> compositor -> scan-out) already adds ~1.5 frames plus the
+// panel's response; measure the frame interval and subtract that from the emulated video latency.
+let frameMs = 16.7, lastFrameAt = 0;
+function displayComp(now: number): number {
+  if (lastFrameAt) { const d = now - lastFrameAt; if (d > 2 && d < 100) frameMs += (d - frameMs) * 0.05; }
+  lastFrameAt = now;
+  return view.displayCompAuto ? Math.min(50, 1.5 * frameMs + 6) : view.displayCompMs;
+}
+// Sky ambient in the camera: rays from the lens find how much open sky surrounds it, so a bando's
+// interior is lit by its windows and the sun patches, not by a full outdoor sky (real interiors are
+// ~1-5 % of outdoor ambient). Smoothed so passing a doorway doesn't pop.
+let skyOpen = 1, skyTimer = 0;
+const SKY_DIRS = [[0, 0, 1], [0.6, 0, 0.8], [-0.6, 0, 0.8], [0, 0.6, 0.8], [0, -0.6, 0.8], [0.85, 0.3, 0.42], [-0.85, -0.3, 0.42], [0.3, -0.85, 0.42], [-0.3, 0.85, 0.42]];
+function updateSkyAmbient(dt: number) {
+  skyTimer -= dt;
+  if (skyTimer <= 0) {
+    skyTimer = 0.08;
+    const p = { x: rec[R.px], y: rec[R.py], z: rec[R.pz] };
+    let open = 0;
+    for (const [x, y, z] of SKY_DIRS) if (!(world.raycast(p, { x, y, z }, 40) < 40)) open++;
+    const target = open / SKY_DIRS.length;
+    skyOpen += (target - skyOpen) * 0.35;
+  }
+  sceneB.hemi.intensity = sceneB.hemiBase * (0.04 + 0.96 * skyOpen);
 }
 const drillMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 16), new THREE.MeshBasicMaterial({ color: 0x39b6ff, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
 const chaseCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 3000);
@@ -361,6 +387,7 @@ function updateHud() {
   if (crash && crash !== lastCrash) {
     const v = parseFloat(crash.replace(/[^\d.]/g, '')) || 8;
     input.rumble(Math.min(1, v / 15), Math.min(1, v / 25), 180 + Math.min(320, v * 15));
+    audio.impact(Math.min(1, v / 12), view.view === 'chase' ? 2 : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z));
   }
   lastCrash = crash;
   if (drill.on) {
@@ -457,13 +484,14 @@ function animate(now: number) {
   pilotPos(map, pilot);
   // ---- emulated glass-to-glass latency + camera frame cadence ----
   const baseLat = (view.latencyOverrideMs || v.latencyMs) + link.state.latencyExtraMs;
-  const lat = Math.max(0, baseLat + jitter - view.displayCompMs) / 1000;
+  const lat = Math.max(0, baseLat + jitter - displayComp(now)) / 1000;
   const period = 1 / v.fps;
   const tDisp = head - lat;
   const tCap = Math.floor(tDisp / period) * period;
   // props spin visual
   const rpmNow = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]];
   sceneB.setGateHighlight(nextGate, view.highlightGate, now / 1000);
+  if (view.view !== 'fpv' || gameMenu.backdrop) sceneB.hemi.intensity = sceneB.hemiBase; // spectators: true lighting
   if (gameMenu.backdrop) {
     if (poseAt(head)) {
       const p = drone.root.position;
@@ -478,29 +506,40 @@ function animate(now: number) {
       renderer.render(sceneB.scene, orbitCam);
     }
   } else if (view.view === 'fpv') {
-    if (tCap !== lastCap && poseAt(tCap)) {
+    // (frames only move forward: per-frame jitter must never re-capture an older pose)
+    if (tCap > lastCap && !link.state.freeze && poseAt(tCap)) {
       const dtw = (now - lastCapWall) / 1000; lastCapWall = now;
       lastCap = tCap;
       jitter = (Math.random() - 0.5) * v.latencyJitterMs;
       // lens pose: body pose * camera mount offset
       drone.root.updateMatrixWorld();
-      const camOffset = tmpV.set(build.info.components.frame.plateLengthMm / 2000 + 0.006 - build.info.cgMm.x / 1000, build.info.components.frame.stackHeightMm / 2000 - build.info.cgMm.z / 1000, 0);
+      const camOffset = tmpV.set(build.info.components.frame.plateLengthMm / 2000 + 0.006 - build.info.cgMm.x / 1000, cameraMountZ(build.info.components.frame, build.info.components.motor) - build.info.cgMm.z / 1000, 0);
       lensPos.copy(camOffset).applyQuaternion(drone.root.quaternion).add(drone.root.position);
       lensQ.copy(drone.root.quaternion).multiply(mountQ);
       // angular rate in camera frame (body FLU -> three body -> camera)
       omegaCam.set(rec[R.wx], rec[R.wz], -rec[R.wy]).applyQuaternion(tmpQ.copy(mountQ).invert());
-      drone.root.visible = false;
+      // hide only the camera itself: whoop ducts, props and a 5"'s props at high uptilt are in view
+      for (const o of drone.fpvHidden) o.visible = false;
       sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(drone.root.position);
       sceneB.sun.target.position.copy(drone.root.position);
-      renderer.shadowMap.needsUpdate = true;
+      // shadow map at <= 30 Hz (a full scene pass): plenty for a moving camera
+      if (now - lastShadowAt > 33) { renderer.shadowMap.needsUpdate = true; lastShadowAt = now; }
+      updateSkyAmbient(dtw);
+      spinProps(rpmNow);
       fpv.capture(sceneB.scene, lensPos, lensQ, omegaCam, dtw);
-      drone.root.visible = true;
+      for (const o of drone.fpvHidden) o.visible = true;
       // link budget at capture time
       const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
-      if (view.linkEffects) link.update(v, world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000);
-      else link.state = { ...link.state, cnr: 45, block: 0, freeze: false, latencyExtraMs: 0 };
+      if (view.linkEffects) link.update(v, world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]));
+      else link.state = { ...link.state, cnr: 45, block: 0, freeze: false, lost: 0, latencyExtraMs: 0 };
     }
-    osd.update(sh, now);
+    // 1S brownout: on a punch a whoop's pack sags below what the camera / VTX regulators need
+    // (~2.9-3.0 V), and the video drops out for about a second while they restart
+    const cells = build.info.components.battery.cells;
+    if (cells === 1 && rec[R.vbus] > 0.5 && rec[R.vbus] < 2.95 && now > brownoutUntil + 400) brownoutUntil = now + 800 + Math.random() * 600;
+    if (now < brownoutUntil) { if (v.kind === 'analog') link.state.cnr = -8; else link.state.lost = 1; }
+    // digital HD OSD is sent over the video link: it freezes with the picture
+    if (!(v.kind === 'digital' && (link.state.freeze || link.state.lost))) osd.update(sh, now);
     fpv.present(osd.texture, (osd.cols * 12) / (osd.rows * 18) * (v.kind === 'analog' ? 0.9 : 1), now / 1000, link.state, view.osd && osd.hasContent);
   } else {
     // spectator views show the true (undelayed) state
@@ -529,7 +568,9 @@ function animate(now: number) {
   if (drillMesh.parent !== sceneB.scene) sceneB.scene.add(drillMesh);
   drillMesh.visible = drill.on;
   if (drill.on) enuToThree(map.spawn.pos.x, map.spawn.pos.y, spawnGroundZ(map) + 3, drillMesh.position);
-  audio.update(rpmNow.map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles);
+  // where the listener is: the pilot (FPV / line of sight) or the chase camera
+  const hearD = view.view === 'chase' ? 2 : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z);
+  audio.update(rpmNow.map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles, hearD, rec[R.vrs]);
   updateHud();
 }
 function yawOf(q: THREE.Quaternion) { const e = new THREE.Euler().setFromQuaternion(q, 'YXZ'); return e.y; }

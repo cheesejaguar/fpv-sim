@@ -3,11 +3,11 @@
 // World frame ENU (z up); body frame FLU. Units SI.
 import { Battery, BatteryParams } from './battery';
 import { BemtTable } from './bemt';
-import { ColliderSphere, CollisionWorld, ContactHit, MATERIALS, SurfaceMaterial, zetaFromRestitution } from './contact';
+import { ColliderSphere, CollisionWorld, ContactHit, MATERIALS, restitutionAt, SurfaceMaterial } from './contact';
 import { FlexMode, GyroChip, Imu } from './imu';
 import { V3, Quat, v3, quat, rotate, rotateInv, cross, qintegrate, Rng } from './math';
 import { Motor, MotorParams } from './motor';
-import { RotorAero, RotorAeroOut, pristineDamage } from './rotor';
+import { CommonNoise, RotorAero, RotorAeroOut, pristineDamage } from './rotor';
 import { WakeField } from './wake';
 import { Wind } from './wind';
 import { G0, isa } from './atmosphere';
@@ -25,6 +25,17 @@ export interface RotorConfig {
   ductGain?: number;
   /** Residual static imbalance of a pristine prop (kg·m). */
   imbalance?: number;
+  /** Crash strength: impact energy (J) at which the prop / motor shaft+bell / arm fails half the time. */
+  strength?: { prop: number; shaft: number; arm: number };
+}
+
+/** Crash strength scale (J): prop per g^(2/3) (x (0.5 + blade stiffness)), motor per g^(2/3), 5" arm (15 x 5 mm). */
+export const STRENGTH = { prop: 9, shaft: 1.5, arm: 30 };
+
+/** Crash damage to a motor position beyond the prop (which lives in RotorAero.damage). */
+export interface MotorDamage {
+  shaftBend: number; // 0 = straight; ~1 = badly bent shaft / dented bell (adds 1x-rpm imbalance)
+  armBendDeg: number; // arm bent: thrust axis tilted by this much
 }
 
 export interface QuadParams {
@@ -77,6 +88,7 @@ export class QuadSim {
   private rng = new Rng(7);
   private air = { rho: 1.225, pressure: 101325, tempK: 288, mu: 1.8e-5 };
   private groundCache: number[] = [];
+  private ceilCache: number[] = [];
   private groundTimer = 0;
   private wakeTimer = 0;
   private wakeVel: V3[] = [];
@@ -86,16 +98,49 @@ export class QuadSim {
   private t1 = v3(); private t2 = v3(); private t3 = v3(); private t4 = v3(); private t5 = v3();
   private F = v3(); private Tq = v3(); private Fb = v3();
   private vibF = v3(); private vibT = v3(); private hTot = v3();
-  private airTmp = v3(); private fTmp = v3(); private posTmp = v3(); private dirTmp = v3();
+  private airTmp = v3(); private fTmp = v3(); private hubTmp = v3(); private posTmp = v3(); private dirTmp = v3();
   readonly physicsHz: number;
-  propStrikeLog: { rotor: number; energy: number; time: number }[] = [];
+  /** Impact events that loaded a rotor position: energy (J) seen by its prop, motor shaft and arm. */
+  impactLog: { rotor: number; prop: number; shaft: number; arm: number; time: number }[] = [];
+  /** Every damage roll that did something: part, rotor, impact energy (J). */
+  damageLog: { part: 'chip' | 'break' | 'shaft' | 'arm'; rotor: number; energy: number; time: number }[] = [];
+  motorDamage: MotorDamage[];
+  /** Wind at each rotor hub (world): CG wind + rotor-scale gust gradients. Read by the rotor aero. */
+  rotorWind: V3[];
+  private windTimer = 0;
+  private windAgl = 0;
+  private axis0: V3[];
+  // contacts: per collider state (0 free, 1 touching, 2 centre inside the obstacle: normal frozen)
+  private cState: Uint8Array; private cN: Float64Array; private cD: Float64Array; private cVin: Float64Array;
+  private hD: Float64Array; private hN: Float64Array; private hMat: SurfaceMaterial[];
+  private boundR = 0;
+  private cC: Float64Array; private cW = new Float64Array(36); private cJ = new Float64Array(6); private cEig = new Float64Array([1, 0, 0, 0, 0, 0]);
+  // per-rotor impact event: compression work at prop / motor / arm spheres, rotor energy lost to strikes
+  private evAge: Float64Array; private evProp: Float64Array; private evStrike: Float64Array;
+  private evMotor: Float64Array; private evArm: Float64Array; private evMat: SurfaceMaterial[]; private evTouch: Uint8Array;
+  private foliageDrag = 0;
 
   constructor(p: QuadParams, physicsHz = 8000, soc = 1, ambientC = 20) {
+    // own copy of the rotor axes: a bent arm tilts them (repair() restores)
+    p = { ...p, rotors: p.rotors.map((r) => ({ ...r, axis: { ...r.axis } })) };
     this.p = p;
+    this.axis0 = p.rotors.map((r) => ({ ...r.axis }));
+    this.motorDamage = p.rotors.map(() => ({ shaftBend: 0, armBendDeg: 0 }));
+    this.rotorWind = p.rotors.map(() => v3());
+    const nc = p.colliders.length, nr = p.rotors.length;
+    this.cState = new Uint8Array(nc); this.cN = new Float64Array(nc * 3); this.cD = new Float64Array(nc); this.cVin = new Float64Array(nc); this.cC = new Float64Array(nc);
+    this.hD = new Float64Array(nc); this.hN = new Float64Array(nc * 3); this.hMat = p.colliders.map(() => MATERIALS.grass);
+    for (const c of p.colliders) this.boundR = Math.max(this.boundR, Math.hypot(c.pos.x, c.pos.y, c.pos.z) + c.radius);
+    this.evAge = new Float64Array(nr); this.evProp = new Float64Array(nr); this.evStrike = new Float64Array(nr);
+    this.evMotor = new Float64Array(nr); this.evArm = new Float64Array(nr); this.evMat = p.rotors.map(() => MATERIALS.grass); this.evTouch = new Uint8Array(nr);
+    // canopy drag: N per (m depth · (m/s)²), ∝ the airframe's mean drag area
+    this.foliageDrag = 70 * (p.cdA.x + p.cdA.y + p.cdA.z) / 3;
     this.physicsHz = physicsHz;
     this.motors = p.rotors.map((r) => new Motor(r.motor, ambientC));
+    const washCommon = new CommonNoise(99);
     this.aero = p.rotors.map((r, i) => {
       const a = new RotorAero(r.table, 100 + i);
+      a.common = washCommon;
       a.ductGain = r.ductGain ?? 0;
       a.damage.imbalance = r.imbalance ?? a.damage.imbalance;
       return a;
@@ -104,6 +149,7 @@ export class QuadSim {
     this.phase = p.rotors.map((_, i) => i * 1.3);
     this.rotorExtraTorque = p.rotors.map(() => 0);
     this.groundCache = p.rotors.map(() => Infinity);
+    this.ceilCache = p.rotors.map(() => Infinity);
     this.wakeVel = p.rotors.map(() => v3());
     this.wakeTurb = p.rotors.map(() => 0);
     this.battery = new Battery(p.battery, soc, ambientC);
@@ -135,6 +181,8 @@ export class QuadSim {
     s.accWorld = v3(); s.specForce = v3(0, 0, G0);
     for (const m of this.motors) { m.s.omega = 0; m.s.current = 0; m.s.omegaDot = 0; m.s.busCurrent = 0; m.s.torqueMotor = 0; m.s.duty = 0; }
     this.rotorExtraTorque.fill(0);
+    this.cState.fill(0); this.hD.fill(0); this.windTimer = 0;
+    this.evAge.fill(0); this.evProp.fill(0); this.evStrike.fill(0); this.evMotor.fill(0); this.evArm.fill(0); this.evTouch.fill(0);
     for (const v of this.wakeVel) { v.x = v.y = v.z = 0; }
     this.wakeTurb.fill(0);
     for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = 0; }
@@ -193,10 +241,28 @@ export class QuadSim {
     const vibF = this.vibF, vibT = this.vibT;
     vibF.x = vibF.y = vibF.z = 0; vibT.x = vibT.y = vibT.z = 0;
 
-    // wind at CG (world)
-    env.wind.step(dt, s.pos.z, Math.hypot(s.vel.x, s.vel.y, s.vel.z));
-    const windW = env.wind.at(s.pos, this.t2);
+    // ---------- wind (world) at the CG and at each rotor hub (this.rotorWind) ----------
+    // Dryden runs on airspeed and the height above whatever is below (ground or a roof: 100 Hz ray);
+    // rotor-scale gust gradients make turbulence rock the attitude, not just push the CG.
+    this.windTimer -= dt;
+    if (this.windTimer <= 0) {
+      this.windTimer = 0.01;
+      const gz = Math.max(0, s.pos.z - env.world.groundHeight(s.pos.x, s.pos.y));
+      const dn = this.dirTmp; dn.x = 0; dn.y = 0; dn.z = -1;
+      this.windAgl = Math.min(gz, env.world.raycast(s.pos, dn, Math.min(60, gz + 0.5)));
+    }
+    {
+      const mw = env.wind.meanAt(this.windAgl, this.t2);
+      const ax = mw.x - s.vel.x, ay = mw.y - s.vel.y, az = -s.vel.z, as = Math.sqrt(ax * ax + ay * ay + az * az);
+      const ad = this.t3; if (as > 0.1) { ad.x = ax / as; ad.y = ay / as; ad.z = az / as; }
+      env.wind.step(dt, this.windAgl, as, as > 0.1 ? ad : undefined);
+    }
+    const windW = env.wind.at(s.pos, this.t2, this.windAgl);
     const wcx = windW.x, wcy = windW.y, wcz = windW.z;
+    for (let k = 0; k < n; k++) {
+      const rw = this.rotorWind[k]; rw.x = wcx; rw.y = wcy; rw.z = wcz;
+      env.wind.gradient(rotate(this.t3, s.q, p.rotors[k].pos), rw);
+    }
 
     // ground distance per rotor at 100 Hz, wake sampling at 1 kHz
     this.groundTimer -= dt;
@@ -216,10 +282,11 @@ export class QuadSim {
       // hub world position
       const hubW = rotate(this.t4, s.q, rc.pos);
       hubW.x += s.pos.x; hubW.y += s.pos.y; hubW.z += s.pos.z;
-      if (doWake) this.wakeTurb[k] = env.wake.sample(hubW, this.wakeVel[k]);
+      if (doWake) this.wakeTurb[k] = env.wake.sample(hubW, this.wakeVel[k], k);
       // air velocity at rotor (wind + wake), world -> body
       const aw = this.airTmp;
-      aw.x = wcx + this.wakeVel[k].x; aw.y = wcy + this.wakeVel[k].y; aw.z = wcz + this.wakeVel[k].z;
+      const rw = this.rotorWind[k]; // per-rotor wind (see the wind block above)
+      aw.x = rw.x + this.wakeVel[k].x; aw.y = rw.y + this.wakeVel[k].y; aw.z = rw.z + this.wakeVel[k].z;
       const airB = rotateInv(this.t3, s.q, aw);
       const rx = vx - airB.x, ry = vy - airB.y, rz = vz - airB.z;
       const vc = rx * rc.axis.x + ry * rc.axis.y + rz * rc.axis.z;
@@ -229,31 +296,49 @@ export class QuadSim {
         const axW = rotate(this.dirTmp, s.q, rc.axis);
         axW.x = -axW.x; axW.y = -axW.y; axW.z = -axW.z;
         this.groundCache[k] = env.world.raycast(hubW, axW, 4 * rc.table.R + 0.05);
+        axW.x = -axW.x; axW.y = -axW.y; axW.z = -axW.z;
+        this.ceilCache[k] = env.world.raycast(hubW, axW, 3 * rc.table.R + 0.02);
       }
       const omega = m.s.omega;
       const o = this.rotorOut[k];
-      ro.evaluate(omega, vc, vip, rho, this.groundCache[k], this.wakeTurb[k], dt, o);
+      // the blades meet the air at motor speed plus the frame's own rotation about the prop axis
+      // (inertial spin = dir*omega + w.axis): a yawing frame slows one diagonal's blades through
+      // the air and speeds up the other's. Motor EMF / electrical torque stay on the stator-relative
+      // omega, so the ESCs partly make up for it by spinning the unloaded pair up.
+      const omegaAir = omega + rc.dir * (s.w.x * rc.axis.x + s.w.y * rc.axis.y + s.w.z * rc.axis.z);
+      ro.evaluate(omegaAir, vc, vip, rho, this.groundCache[k], this.wakeTurb[k], dt, o, this.ceilCache[k]);
       // aerodynamic forces on the body
       let fx = rc.axis.x * o.thrust, fy = rc.axis.y * o.thrust, fz = rc.axis.z * o.thrust;
       if (vip > 1e-4) { const k2 = o.hForce / vip; fx -= ipx * k2; fy -= ipy * k2; fz -= ipz * k2; }
-      // vibration: static imbalance rotating in the rotor plane + blade-pass thrust ripple
+      // vibration (what Betaflight's RPM filter / dynamic notch exist to remove):
+      //  - static imbalance: a force rotating in the rotor plane at 1x rpm, acting at the prop's
+      //    height above the CG (hub + bell, ~R/4), so it rocks roll and pitch, not just yaw
+      //  - blade mismatch: blades never produce identical lift, so thrust wobbles at 1x rpm
+      //    (~1.5-2 % pristine, growing with damage), plus blade-pass ripple and a 2x bell term
       this.phase[k] += omega * rc.dir * dt;
       const ph = this.phase[k];
       const fImb = ro.damage.imbalance * omega * omega;
-      const ripple = o.thrust * (0.012 * Math.sin(rc.bladeCount * ph) + 0.004 * Math.sin(2 * ph));
+      const imbRatio = ro.damage.imbalance / Math.max(1e-9, rc.imbalance ?? ro.damage.imbalance);
+      const mismatch = 0.017 * Math.sqrt(Math.max(1, imbRatio));
+      const ripple = o.thrust * (mismatch * Math.sin(ph + 1.3 * k) + 0.012 * Math.sin(rc.bladeCount * ph) + 0.006 * Math.sin(2 * ph + 0.7 * k));
       const vfx = fImb * Math.cos(ph), vfy = fImb * Math.sin(ph), vfz = ripple;
       fx += vfx; fy += vfy; fz += vfz;
       vibF.x += vfx; vibF.y += vfy; vibF.z += vfz;
       const ft = this.fTmp; ft.x = vfx; ft.y = vfy; ft.z = vfz;
-      const vt = cross(this.t3, rc.pos, ft);
-      vibT.x += vt.x; vibT.y += vt.y; vibT.z += vt.z;
+      const hubLift = 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)); // ≈ R/4
+      const hp = this.hubTmp; hp.x = rc.pos.x; hp.y = rc.pos.y; hp.z = rc.pos.z + hubLift;
+      const vt = cross(this.t3, hp, ft);
+      // + broadband bearing / commutation noise (∝ rpm²): it excites the frame's own resonance,
+      // the hump a real gyro spectrum shows between the motor harmonics
+      const bn = 0.3 * fImb * hubLift;
+      vibT.x += vt.x + bn * this.rng.gauss(); vibT.y += vt.y + bn * this.rng.gauss(); vibT.z += vt.z + 0.3 * bn * this.rng.gauss();
       F.x += fx; F.y += fy; F.z += fz;
       ft.x = fx; ft.y = fy; ft.z = fz;
       const rt = cross(this.t3, rc.pos, ft);
       Tq.x += rt.x; Tq.y += rt.y; Tq.z += rt.z;
       // motor dynamics
       const sgn = omega >= 0 ? 1 : -1;
-      const propTorque = o.torque * sgn + this.rotorExtraTorque[k] * sgn;
+      const propTorque = o.torque * (omegaAir >= 0 ? 1 : -1) + this.rotorExtraTorque[k] * sgn;
       this.rotorExtraTorque[k] = 0;
       m.step(V, propTorque, rc.propInertia, dt, env.ambientC, Math.hypot(vc, vip));
       busI += m.s.busCurrent;
@@ -328,27 +413,109 @@ export class QuadSim {
   }
 
   private contacts(env: QuadEnv, dt: number, Fw: V3, Tq: V3): void {
-    const p = this.p, s = this.s;
+    const p = this.p, s = this.s, cs = p.colliders, nc = cs.length, nr = p.rotors.length;
     let touching = false;
     let maxApproach = 0;
     const hit = this.hit;
     const pw = this.posTmp;
-    for (const c of p.colliders) {
+    const cN = this.cN, hN = this.hN;
+    // pass 1: penetration queries (broadphase: one sphere around the whole airframe). A sphere whose
+    // centre ends up inside an obstacle keeps the normal / plane it entered by: the least-penetration
+    // axis of a thin bar or post flips at its mid-plane and used to spit the quad out the far side.
+    const any = env.world.sphere(s.pos, this.boundR, hit);
+    let nTouch = 0;
+    for (let i = 0; i < nc; i++) {
+      this.hD[i] = 0;
+      if (!any) { this.cState[i] = 0; continue; }
+      const c = cs[i];
       const cw = rotate(this.t2, s.q, c.pos);
       pw.x = s.pos.x + cw.x; pw.y = s.pos.y + cw.y; pw.z = s.pos.z + cw.z;
-      if (!env.world.sphere(pw, c.radius, hit)) continue;
+      if (!env.world.sphere(pw, c.radius, hit)) { this.cState[i] = 0; continue; }
+      const r = c.radius, i3 = i * 3, st = this.cState[i];
+      const inside = hit.depth >= r;
+      let depth = hit.depth, frozen = false;
+      if (st !== 0 && (inside || st === 2)) {
+        const ox = cN[i3], oy = cN[i3 + 1], oz = cN[i3 + 2];
+        const dPl = r - (ox * pw.x + oy * pw.y + oz * pw.z - this.cD[i]);
+        // stay frozen while still behind the entry plane, unless back outside with a consistent normal
+        if (dPl > 0 && !(!inside && hit.nx * ox + hit.ny * oy + hit.nz * oz > 0.5)) { depth = dPl; frozen = true; }
+      }
+      if (frozen) this.cState[i] = 2;
+      else {
+        if (st === 0) this.cVin[i] = 0;
+        this.cState[i] = 1;
+        cN[i3] = hit.nx; cN[i3 + 1] = hit.ny; cN[i3 + 2] = hit.nz;
+        this.cD[i] = hit.nx * pw.x + hit.ny * pw.y + hit.nz * pw.z - r + depth;
+        this.hMat[i] = hit.material;
+      }
+      hN[i3] = cN[i3]; hN[i3 + 1] = cN[i3 + 1]; hN[i3 + 2] = cN[i3 + 2];
+      this.hD[i] = depth;
+      nTouch++;
+    }
+    this.evTouch.fill(0);
+    // Hunt–Crossley / Flores damping per contact (e from the impact speed of that contact), floored at
+    // ζ ≈ 0.3 so resting contact stays quiet. Together the dampers must stay inside the explicit
+    // integrator's limit, dt·λmax(M⁻¹·Σ cᵢ jᵢjᵢᵀ) < 2 (jᵢ = [n, r×n] in body axes): λmax by power
+    // iteration on the 6x6, then all scaled by 1/(1 + dt·λ). Symmetric multi-contact hits (flat
+    // landings) are not over-limited the way a per-contact bound would be, a single sphere still gets
+    // all the damping it needs, and no per-contact force clamp is needed (the old 600 N clamp let a
+    // single sphere tunnel through a gate bar).
+    let lam = 0;
+    if (nTouch > 0) {
+      const W = this.cW; W.fill(0);
+      const jj = this.cJ;
+      for (let i = 0; i < nc; i++) {
+        const depth = this.hD[i];
+        if (depth <= 0) continue;
+        const c = cs[i], mat = this.hMat[i];
+        const k = c.kind === 'prop' ? mat.stiffness * 0.15 : mat.stiffness;
+        const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
+        const vin = Math.max(this.cVin[i], 0.5), e = restitutionAt(mat, vin);
+        const cc = Math.max((8 * (1 - e)) / (5 * e * vin) * k * depth, 0.6 * Math.sqrt(k / (1 / p.mass + r2 / this.iMin)));
+        this.cC[i] = cc;
+        const nw = this.t2; nw.x = hN[i * 3]; nw.y = hN[i * 3 + 1]; nw.z = hN[i * 3 + 2];
+        const nb = rotateInv(this.t3, s.q, nw), rn = cross(this.t4, c.pos, nb);
+        jj[0] = nb.x; jj[1] = nb.y; jj[2] = nb.z; jj[3] = rn.x; jj[4] = rn.y; jj[5] = rn.z;
+        for (let a = 0; a < 6; a++) { const ca = cc * jj[a]; for (let b = 0; b < 6; b++) W[a * 6 + b] += ca * jj[b]; }
+      }
+      const x = this.cEig, y = this.cJ, Ii = this.Iinv;
+      // warm start from last step's eigenvector, nudged so it is never orthogonal to the new one
+      let xn = 0;
+      for (let a = 0; a < 6; a++) { x[a] += 0.05; xn += x[a] * x[a]; }
+      xn = Math.sqrt(xn); for (let a = 0; a < 6; a++) x[a] /= xn;
+      for (let it = 0; it < 6; it++) {
+        for (let a = 0; a < 6; a++) { let sum = 0; for (let b = 0; b < 6; b++) sum += W[a * 6 + b] * x[b]; y[a] = sum; }
+        const z0 = y[0] / p.mass, z1 = y[1] / p.mass, z2 = y[2] / p.mass;
+        const z3 = Ii[0] * y[3] + Ii[1] * y[4] + Ii[2] * y[5], z4 = Ii[3] * y[3] + Ii[4] * y[4] + Ii[5] * y[5], z5 = Ii[6] * y[3] + Ii[7] * y[4] + Ii[8] * y[5];
+        const nz = Math.sqrt(z0 * z0 + z1 * z1 + z2 * z2 + z3 * z3 + z4 * z4 + z5 * z5);
+        if (nz < 1e-12) break;
+        lam = nz; // |x| = 1
+        x[0] = z0 / nz; x[1] = z1 / nz; x[2] = z2 / nz; x[3] = z3 / nz; x[4] = z4 / nz; x[5] = z5 / nz;
+      }
+      lam *= 1.1; // power iteration converges from below
+    }
+    const dScale = 1 / (1 + dt * lam);
+    // pass 2: forces
+    for (let i = 0; i < nc; i++) {
+      const depth = this.hD[i];
+      if (depth <= 0) continue;
+      const c = cs[i];
       touching = true;
       // point velocity of the airframe (world): v + q(w x r)
       const wr = cross(this.t3, s.w, c.pos);
       const wrW = rotate(this.t4, s.q, wr);
       let vx = s.vel.x + wrW.x, vy = s.vel.y + wrW.y, vz = s.vel.z + wrW.z;
-      const nx = hit.nx, ny = hit.ny, nz = hit.nz;
+      const nx = hN[i * 3], ny = hN[i * 3 + 1], nz = hN[i * 3 + 2];
       // Normal response uses the airframe velocity only: blades are flimsy and cannot push the
       // frame off a surface at tip speed (including it made the damper explode on prop strikes).
       const vn = vx * nx + vy * ny + vz * nz;
-      if (-vn > maxApproach) maxApproach = -vn;
+      // reported impact speed: the craft's (CG) approach speed, not a spinning arm tip's
+      const vcg = -(s.vel.x * nx + s.vel.y * ny + s.vel.z * nz);
+      if (vcg > maxApproach) maxApproach = vcg;
+      if (-vn > this.cVin[i]) this.cVin[i] = -vn;
+      const isProp = c.kind === 'prop';
       let tipSpeed = 0;
-      if (c.kind === 'prop') {
+      if (isProp) {
         // spinning blades sweep the contact point: blade velocity adds to the sliding velocity
         const rc = p.rotors[c.rotor];
         const om = this.motors[c.rotor].s.omega * rc.dir;
@@ -360,65 +527,152 @@ export class QuadSim {
         const tvW = rotate(this.t5, s.q, tv);
         vx += tvW.x; vy += tvW.y; vz += tvW.z;
       }
-      const mat = hit.material;
+      const mat = this.hMat[i];
       // prop blades flex: much softer than the frame against the same surface
-      const k = c.kind === 'prop' ? mat.stiffness * 0.15 : mat.stiffness;
-      const zeta = zetaFromRestitution(mat.restitution);
-      const cdamp = 2 * zeta * Math.sqrt(k * p.mass * 0.5);
-      let fn = k * hit.depth - cdamp * vn;
+      const k = isProp ? mat.stiffness * 0.15 : mat.stiffness;
+      // effective inverse mass at this point incl. rotation (r²/I), shared by all touching spheres
+      const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
+      const invM = 1 / p.mass + r2 / this.iMin;
+      let fn = k * depth - this.cC[i] * dScale * vn;
       if (fn < 0) fn = 0;
-      if (fn > 600) fn = 600; // per-contact force bound (~100 g on a 600 g quad) for integrator safety
-      // friction (regularised Coulomb) on the sliding velocity
+      // friction (regularised Coulomb) on the sliding velocity, + snag / ploughing on soft ground
       const vnt = vx * nx + vy * ny + vz * nz;
       const tx = vx - vnt * nx, ty = vy - vnt * ny, tz = vz - vnt * nz;
       const vt = Math.sqrt(tx * tx + ty * ty + tz * tz);
-      const mu = c.kind === 'prop' ? Math.min(1, mat.friction + 0.3) : mat.friction;
+      const digs = isProp || c.kind === 'motor';
+      let mu = isProp ? Math.min(1, mat.friction + 0.3) : mat.friction;
+      if (digs) mu += mat.snag * Math.min(1, depth / (0.3 * c.radius));
       // Regularised Coulomb acts as a viscous damper (mu*fn/vReg) below vReg. Keep it inside the
-      // explicit integrator's stability limit for this contact's effective mass, including the
-      // rotational term r²/I: c·dt·(1/m + r²/I) <= 0.5.
-      const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
-      const invM = 1 / p.mass + r2 / this.iMin;
+      // explicit integrator's stability limit for this contact's effective mass: c·dt·(1/m + r²/I) <= 0.5.
       const vReg = Math.max(0.08, 2 * mu * fn * dt * invM);
-      const ftk = vt > 1e-6 ? (mu * fn) / Math.max(vt, vReg) : 0;
+      const plough = digs ? mat.plough * Math.min(depth, c.radius) : 0; // N/(m/s): tips cutting turf
+      const ftk = vt > 1e-6 ? (mu * fn) / Math.max(vt, vReg) + plough : 0;
       const f = this.fTmp;
       f.x = fn * nx - ftk * tx; f.y = fn * ny - ftk * ty; f.z = fn * nz - ftk * tz;
       Fw.x += f.x; Fw.y += f.y; Fw.z += f.z;
       const fB = rotateInv(this.t3, s.q, f);
       const tq = cross(this.t4, c.pos, fB);
       Tq.x += tq.x; Tq.y += tq.y; Tq.z += tq.z;
-      if (c.kind === 'prop') {
+      // rolling resistance: a small torque against the body rate while pressed on a surface
+      const wm = Math.hypot(s.w.x, s.w.y, s.w.z);
+      if (wm > 1e-6 && mat.rolling > 0) {
+        const tr = (mat.rolling * c.radius * fn) / Math.max(wm, 1);
+        Tq.x -= tr * s.w.x; Tq.y -= tr * s.w.y; Tq.z -= tr * s.w.z;
+      }
+      // impact energy for the damage model: compression work done on this sphere
+      const work = vn < 0 ? -fn * vn * dt : 0;
+      const kr = c.rotor;
+      if (kr >= 0 && kr < nr) {
+        this.evTouch[kr] = 1;
+        if (isProp) this.evProp[kr] += work; else if (c.kind === 'motor') this.evMotor[kr] += work; else this.evArm[kr] += work;
+        if (mat.propDamage > this.evMat[kr].propDamage || this.evAge[kr] === 0) this.evMat[kr] = mat;
+      }
+      if (isProp) {
         const rc = p.rotors[c.rotor];
         // braking torque on the rotor from blade friction against the obstacle (faded near zero
         // speed so it brakes the prop to a stop instead of chattering across zero)
         const omAbs = Math.abs(this.motors[c.rotor].s.omega);
-        this.rotorExtraTorque[c.rotor] += Math.min(mu * fn * rc.table.R, 2.0) * Math.min(1, omAbs / 50);
-        if (env.damageEnabled && tipSpeed > 15) {
-          const J = rc.motor.rotorInertia + rc.propInertia;
-          const om = this.motors[c.rotor].s.omega;
-          const energy = 0.5 * J * om * om * mat.propDamage * dt * 60;
-          this.applyPropDamage(c.rotor, energy, mat);
-        }
+        const tb = Math.min(mu * fn * rc.table.R, 2.0) * Math.min(1, omAbs / 50);
+        this.rotorExtraTorque[c.rotor] += tb;
+        if (tipSpeed > 15) this.evStrike[c.rotor] += tb * omAbs * dt; // rotor energy spent hitting it
       }
     }
     s.touching = touching;
     if (maxApproach > 0.5) s.maxImpact = maxApproach;
+    this.foliage(env, dt, Fw);
+    // impact events: one damage roll per rotor per impact (contact over, or every 30 ms while pinned)
+    for (let k = 0; k < nr; k++) {
+      if (this.evTouch[k]) this.evAge[k] += dt;
+      if (this.evAge[k] > 0 && (!this.evTouch[k] || this.evAge[k] > 0.03)) {
+        if (env.damageEnabled) this.rollDamage(k);
+        this.evAge[k] = 0; this.evProp[k] = this.evStrike[k] = this.evMotor[k] = this.evArm[k] = 0;
+      }
+    }
   }
 
-  private applyPropDamage(k: number, energy: number, mat: SurfaceMaterial): void {
-    // energy-scaled stochastic damage: chips (C_T loss), bends (imbalance), breaks
-    const d = this.aero[k].damage;
-    const pChip = Math.min(1, energy / 8);
-    if (this.rng.next() < pChip) {
-      d.thrustFactor *= 1 - 0.04 * this.rng.next() * mat.propDamage;
-      d.torqueFactor *= 1 + 0.02 * this.rng.next();
-      d.imbalance *= 1 + 0.6 * this.rng.next();
-      if (d.thrustFactor < 0.55 || energy > 25 * this.rng.next() + 18) d.broken = true;
-      this.propStrikeLog.push({ rotor: k, energy, time: this.s.time });
+  /** Tree canopies / hedges: porous drag growing with depth, leaves dragging on (and nicking) the props. */
+  private foliage(env: QuadEnv, dt: number, Fw: V3): void {
+    if (!env.world.foliage) return;
+    const d = env.world.foliage(this.s.pos);
+    if (d <= 0) return;
+    const v = this.s.vel, V = Math.hypot(v.x, v.y, v.z);
+    const kf = this.foliageDrag * Math.min(d, 1.5) * V;
+    Fw.x -= kf * v.x; Fw.y -= kf * v.y; Fw.z -= kf * v.z;
+    const dd = Math.min(d, 1);
+    for (let k = 0; k < this.p.rotors.length; k++) {
+      const rc = this.p.rotors[k], om = Math.abs(this.motors[k].s.omega), R = rc.table.R / 0.0635;
+      this.rotorExtraTorque[k] += 4e-6 * dd * om * R * R * R * R;
+      // twigs: random small strikes, ~8/s per prop deep in the canopy at full rpm
+      if (om > 300 && this.rng.next() < 8 * dd * (om / 3000) * dt) {
+        const J = rc.motor.rotorInertia + rc.propInertia;
+        this.evStrike[k] += 0.01 * J * om * om; this.evAge[k] = Math.max(this.evAge[k], dt);
+        if (this.evMat[k].propDamage < MATERIALS.foliage.propDamage) this.evMat[k] = MATERIALS.foliage;
+      }
     }
+  }
+
+  /**
+   * Energy-based crash damage, rolled once per impact event. Part failure follows a Weibull curve
+   * (shape 2) around the part's strength E50 (energy at which it fails half the time):
+   * props from the compression work at their spheres + ~15 % of the rotor energy spent hitting the
+   * obstacle (most goes into blade friction), × the surface's prop damage factor; motor shaft / bell from
+   * motor-sphere hits and part of the prop-strike load through the shaft; arms from arm-sphere and
+   * motor-sphere hits. Hard surfaces bend metal more than turf does.
+   */
+  private rollDamage(k: number): void {
+    const rc = this.p.rotors[k], d = this.aero[k].damage, md = this.motorDamage[k], rng = this.rng;
+    const mat = this.evMat[k];
+    const st = rc.strength ?? { prop: STRENGTH.prop * 1.1 * Math.pow(rc.propMass * 1000, 2 / 3), shaft: STRENGTH.shaft * Math.pow(rc.motor.massKg * 1000, 2 / 3), arm: STRENGTH.arm };
+    const wb = (E: number, E50: number) => 1 - Math.exp(-Math.LN2 * (E / E50) * (E / E50));
+    const Ep = (this.evProp[k] + 0.15 * this.evStrike[k]) * mat.propDamage;
+    const hard = 0.15 + 0.85 * Math.min(1, mat.propDamage) ** 2;
+    const Es = (this.evMotor[k] + 0.15 * this.evProp[k] + 0.05 * this.evStrike[k] + 0.3 * this.evArm[k]) * hard;
+    const Ea = (this.evArm[k] + 0.5 * this.evMotor[k]) * hard;
+    const t = this.s.time;
+    if (Ep > 0.02 * st.prop || Es > 0.02 * st.shaft || Ea > 0.02 * st.arm) this.impactLog.push({ rotor: k, prop: Ep, shaft: Es, arm: Ea, time: t });
+    if (!d.broken && Ep > 0.05 * st.prop) {
+      if (rng.next() < wb(Ep, st.prop)) {
+        d.broken = true; d.imbalance += 8e-6 * (rc.propMass / 0.0043); // a blade (tip) gone
+        this.damageLog.push({ part: 'break', rotor: k, energy: Ep, time: t });
+      } else if (rng.next() < wb(Ep, 0.3 * st.prop)) {
+        const sev = Math.min(1.5, Ep / (0.3 * st.prop));
+        d.thrustFactor *= 1 - (0.02 + 0.06 * rng.next()) * sev * Math.min(1.5, mat.propDamage);
+        d.torqueFactor *= 1 + 0.02 * rng.next() * sev;
+        d.imbalance += rc.propMass * 1e-4 * (0.5 + rng.next()) * sev; // chipped / bent blade tip
+        if (d.thrustFactor < 0.55) d.broken = true;
+        this.damageLog.push({ part: 'chip', rotor: k, energy: Ep, time: t });
+      }
+    }
+    if (Es > 0.05 * st.shaft && rng.next() < wb(Es, st.shaft)) {
+      // bent shaft / dented bell: the rotor runs eccentric -> 1x-rpm imbalance (vibration path)
+      const sev = (0.3 + 0.7 * rng.next()) * Math.min(2, Es / st.shaft);
+      md.shaftBend += sev;
+      d.imbalance += (rc.propMass + 0.4 * rc.motor.massKg) * 1.5e-4 * sev;
+      this.damageLog.push({ part: 'shaft', rotor: k, energy: Es, time: t });
+    }
+    if (Ea > 0.05 * st.arm && rng.next() < wb(Ea, st.arm)) {
+      md.armBendDeg = Math.min(25, md.armBendDeg + (2 + 6 * rng.next()) * Math.min(2, Ea / st.arm));
+      // the arm bends up / down: tilt the thrust axis about the in-plane normal to the arm
+      const a0 = this.axis0[k], h = rc.pos, L = Math.hypot(h.x, h.y) || 1;
+      const ux = -h.y / L, uy = h.x / L, th = (md.armBendDeg * Math.PI) / 180 * (k % 2 ? 1 : -1);
+      const c = Math.cos(th), sn = Math.sin(th), dt = ux * a0.x + uy * a0.y;
+      // Rodrigues about u = (ux, uy, 0)
+      const ax = a0.x * c + (uy * a0.z) * sn + ux * dt * (1 - c);
+      const ay = a0.y * c - (ux * a0.z) * sn + uy * dt * (1 - c);
+      const az = a0.z * c + (ux * a0.y - uy * a0.x) * sn;
+      const l = Math.hypot(ax, ay, az);
+      rc.axis.x = ax / l; rc.axis.y = ay / l; rc.axis.z = az / l;
+      this.damageLog.push({ part: 'arm', rotor: k, energy: Ea, time: t });
+    }
+    if (this.impactLog.length > 256) this.impactLog.splice(0, 64);
+    if (this.damageLog.length > 256) this.damageLog.splice(0, 64);
   }
 
   repair(): void {
     this.aero.forEach((a, k) => { a.damage = pristineDamage(); a.damage.imbalance = this.p.rotors[k].imbalance ?? a.damage.imbalance; });
-    this.propStrikeLog = [];
+    this.p.rotors.forEach((r, k) => { r.axis.x = this.axis0[k].x; r.axis.y = this.axis0[k].y; r.axis.z = this.axis0[k].z; });
+    for (const m of this.motorDamage) { m.shaftBend = 0; m.armBendDeg = 0; }
+    this.impactLog = [];
+    this.damageLog = [];
   }
 }

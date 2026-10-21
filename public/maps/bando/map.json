@@ -842,7 +842,11 @@
     {"pos":[55,5],"height":14.553190430160612,"radius":3,"type":"oak"}
   ],
   "wakeZones": [
-    {"pos":[0,37],"radius":14,"height":16,"intensity":1.5},
-    {"pos":[-38,-6],"radius":12,"height":8,"intensity":1}
+    {"pos":[0,20],"radius":14,"height":12,"intensity":1.5},
+    {"pos":[-38,-6],"radius":10,"height":6.2,"intensity":1}
+  ],
+  "indoor": [
+    {"min":[-18,9,0],"max":[18,31,12],"windScale":0.1},
+    {"min":[-50,-14,0],"max":[-26,2,6],"windScale":0.35}
   ]
 }

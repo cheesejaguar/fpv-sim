@@ -6,7 +6,7 @@
 // Slower side channels: RC link packets (ELRS rate), battery ADC (1 kHz), eRPM telemetry (every
 // step), baro (100 Hz), OSD copy (50 Hz), state ring (1 kHz), telemetry to UI (20 Hz).
 import { Betaflight, armingFlagNames } from '../bf/bfModule';
-import { defaultCli, osdGrid, osdLayout } from '../bf/defaults';
+import { defaultCli, osdGrid, osdLayout, batteryCli } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
 import { packageEntry, urlTableSource } from '../maps/mapFormat';
 import { MAPS, preloadMap, registerMap } from '../maps/maps';
@@ -21,7 +21,7 @@ import { Wind } from '../sim/wind';
 import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, OSD_MAX_COLS, OSD_MAX_ROWS, R, REC, RING_DT, RING_N, Shared, SimSettings, Telemetry, ToWorker } from './shared';
 
 /** Bump when defaultCli() changes so existing users get the new baseline. */
-const DEFAULTS_VERSION = 4; // 4: RSSI dBm OSD element
+const DEFAULTS_VERSION = 5; // 4: RSSI dBm OSD element; 5: battery settings follow the pack (LiHV, capacity)
 
 const post = (m: FromWorker) => (self as unknown as Worker).postMessage(m);
 
@@ -89,8 +89,8 @@ async function kvSet(key: string, v: any): Promise<void> {
 
 function makeEnv(): QuadEnv {
   const ws = map.windScale ?? 1;
-  const w = new Wind({ speed20ft: settings.wind.speed * ws, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: (settings.wind.speed * 0.8 + 1) * ws });
-  w.zones = map.wakeZones;
+  const w = new Wind({ speed20ft: settings.wind.speed * ws, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 * ws }); // calm air: no gusts
+  w.zones = map.wakeZones; w.indoor = map.indoor ?? [];
   return { world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
 }
 
@@ -432,7 +432,7 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       // keep firmware hardware settings in sync with the generated airframe
       if (bf) {
         const b = build.info.components;
-        const lines = [`set motor_poles = ${b.motor.poles}`, `set motor_kv = ${Math.round(b.motor.kv)}`, `set yaw_motors_reversed = ${spec.propDirection === 'props-out' ? 'ON' : 'OFF'}`];
+        const lines = [`set motor_poles = ${b.motor.poles}`, `set motor_kv = ${Math.round(b.motor.kv)}`, `set yaw_motors_reversed = ${spec.propDirection === 'props-out' ? 'ON' : 'OFF'}`, ...batteryCli(build)];
         if (old.video !== spec.video) {
           lines.push(`set vcd_video_system = ${osdGrid(b.video).vcd}`);
           for (const [k, v] of Object.entries(osdLayout(b.video))) lines.push(`set ${k} = ${v}`);
@@ -446,9 +446,11 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       const mapChanged = m.settings.mapId !== settings.mapId;
       const rateChanged = m.settings.physicsHz !== settings.physicsHz;
       settings = m.settings;
+      // still starting up (a slow map package is loading): init picks up the new settings itself
+      if (!env || !quad) break;
       if (mapChanged) { await loadMap(settings.mapId); respawn(); }
       else {
-        env.wind.p = { ...env.wind.p, speed20ft: settings.wind.speed * (map.windScale ?? 1), directionDeg: settings.wind.direction, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: (settings.wind.speed * 0.8 + 1) * (map.windScale ?? 1) };
+        env.wind.p = { ...env.wind.p, speed20ft: settings.wind.speed * (map.windScale ?? 1), directionDeg: settings.wind.direction, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 * (map.windScale ?? 1) };
         env.damageEnabled = settings.damage; env.ambientC = settings.ambientC;
       }
       for (const a of quad.aero) a.propwashScale = settings.propwash;

@@ -4,7 +4,7 @@
 // Coordinates: ENU metres (x east, y north, z up).
 import { CollisionWorld, ContactHit, MATERIALS, SurfaceMaterial } from '../sim/contact';
 import { V3 } from '../sim/math';
-import type { WakeZone } from '../sim/wind';
+import type { WakeZone, WindVolume } from '../sim/wind';
 import type { QuakeLevel } from './quakeMap';
 
 export type Material = keyof typeof MATERIALS;
@@ -40,12 +40,13 @@ export interface MapDef {
   spawn: { pos: V3; yaw: number; groundZ?: number }; // groundZ: floor height at spawn (default: terrain)
   sun: { azimuthDeg: number; elevationDeg: number };
   sky: 'clear' | 'overcast' | 'dusk';
-  wakeZones: WakeZone[];
+  wakeZones: WakeZone[];               // obstacle footprints (building / tree line): wake laid out downwind
   elevationM: number;
   trees: { x: number; y: number; h: number; r: number; type: 'pine' | 'oak' }[];
   ground?: boolean;                   // render the terrain mesh (default true)
   pilot?: V3;                         // pilot / video receiver position (default: beside the spawn)
   windScale?: number;                 // indoor maps: scale the configured wind
+  indoor?: WindVolume[];              // enclosed spaces in an outdoor map: wind × scale inside
   quake?: QuakeLevel;                 // render data for maps loaded from Quake .map sources
   decor?: Prim[];                     // render-only scenery (crowds, screens, LED strips): no collision
   fog?: { color: number; density: number }; // FogExp2 override (default: from sky)
@@ -72,12 +73,54 @@ export class PrimitiveWorld implements CollisionWorld {
   private grid = new Map<number, Prim[]>();
   private boxRot = new Map<BoxPrim, { c: number; s: number; cp: number; sp: number }>();
   readonly brushes = new BrushGrid();
+  // porous drag volumes (tree canopies, foliage spheres, hedges): not solid, see foliage()
+  private canopies = new Map<number, (SpherePrim | BoxPrim)[]>();
+  private tGrad = { x: Infinity, y: Infinity, nx: 0, ny: 0, nz: 1 };
+  private hasCanopy = false;
   constructor(public map: MapDef) {
-    for (const p of map.prims) this.insert(p);
-    for (const t of map.trees) {
-      this.insert({ kind: 'cyl', c: { x: t.x, y: t.y, z: map.terrain(t.x, t.y) - 0.2 }, r: t.r * 0.12, h: t.h * 0.5, mat: 'wood' });
-      this.insert({ kind: 'sphere', c: { x: t.x, y: t.y, z: map.terrain(t.x, t.y) + t.h * 0.62 }, r: t.r, mat: 'foliage' });
+    for (const p of map.prims) {
+      // foliage spheres and thick foliage boxes are volumes; thin ones (safety nets, flags) stay solid
+      if (p.mat === 'foliage' && (p.kind === 'sphere' || (p.kind === 'box' && Math.min(p.half.x, p.half.y, p.half.z) > 0.25))) this.insertCanopy(p);
+      else this.insert(p);
     }
+    for (const t of map.trees) {
+      const g = map.terrain(t.x, t.y);
+      this.insert({ kind: 'cyl', c: { x: t.x, y: t.y, z: g - 0.2 }, r: t.r * 0.12, h: t.h * 0.5, mat: 'wood' });
+      const c = { x: t.x, y: t.y, z: g + t.h * 0.62 };
+      this.insertCanopy({ kind: 'sphere', c, r: t.r, mat: 'foliage' });
+      this.insert({ kind: 'sphere', c, r: t.r * 0.3, mat: 'wood' }); // trunk top + main limbs: solid core
+    }
+  }
+  private insertCanopy(p: SpherePrim | BoxPrim) {
+    const r = p.kind === 'sphere' ? p.r : Math.hypot(p.half.x, p.half.y, p.half.z);
+    if (p.kind === 'box') this.boxRot.set(p, { c: Math.cos(p.yaw), s: Math.sin(p.yaw), cp: Math.cos(p.pitch ?? 0), sp: Math.sin(p.pitch ?? 0) });
+    for (let ix = Math.floor((p.c.x - r) / this.cell); ix <= Math.floor((p.c.x + r) / this.cell); ix++) for (let iy = Math.floor((p.c.y - r) / this.cell); iy <= Math.floor((p.c.y + r) / this.cell); iy++) {
+      const k = this.key(ix, iy);
+      let l = this.canopies.get(k); if (!l) { l = []; this.canopies.set(k, l); }
+      l.push(p);
+    }
+    this.hasCanopy = true;
+  }
+
+  /** Depth of p inside the deepest canopy / foliage volume (m), 0 outside. */
+  foliage(p: V3): number {
+    if (!this.hasCanopy) return 0;
+    const l = this.canopies.get(this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell)));
+    if (!l) return 0;
+    let best = 0;
+    for (const pr of l) {
+      let d: number;
+      if (pr.kind === 'sphere') d = pr.r - Math.hypot(p.x - pr.c.x, p.y - pr.c.y, p.z - pr.c.z);
+      else {
+        const rot = this.boxRot.get(pr)!;
+        const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
+        let lx = rot.c * dx + rot.s * dy; const ly = -rot.s * dx + rot.c * dy; let lz = dz;
+        const tx = rot.cp * lx - rot.sp * lz; lz = rot.sp * lx + rot.cp * lz; lx = tx;
+        d = Math.min(pr.half.x - Math.abs(lx), pr.half.y - Math.abs(ly), pr.half.z - Math.abs(lz));
+      }
+      if (d > best) best = d;
+    }
+    return best;
   }
   private key(ix: number, iy: number) { return (ix + 4096) * 8192 + (iy + 4096); }
   private insert(p: Prim) {
@@ -102,59 +145,69 @@ export class PrimitiveWorld implements CollisionWorld {
     // terrain: approximate surface by tangent plane under the sphere
     const h = this.map.terrain(p.x, p.y);
     if (p.z - radius < h + 0.5) {
-      const e = 0.05;
-      const gx = (this.map.terrain(p.x + e, p.y) - this.map.terrain(p.x - e, p.y)) / (2 * e);
-      const gy = (this.map.terrain(p.x, p.y + e) - this.map.terrain(p.x, p.y - e)) / (2 * e);
-      const nl = Math.hypot(gx, gy, 1);
-      const nx = -gx / nl, ny = -gy / nl, nz = 1 / nl;
+      // terrain normal: central differences, reused within 0.15 m (all of a quad's spheres share one)
+      const tg = this.tGrad;
+      if (Math.abs(p.x - tg.x) > 0.15 || Math.abs(p.y - tg.y) > 0.15) {
+        const e = 0.05;
+        const gx = (this.map.terrain(p.x + e, p.y) - this.map.terrain(p.x - e, p.y)) / (2 * e);
+        const gy = (this.map.terrain(p.x, p.y + e) - this.map.terrain(p.x, p.y - e)) / (2 * e);
+        const nl = Math.hypot(gx, gy, 1);
+        tg.x = p.x; tg.y = p.y; tg.nx = -gx / nl; tg.ny = -gy / nl; tg.nz = 1 / nl;
+      }
+      const nx = tg.nx, ny = tg.ny, nz = tg.nz;
       const d = radius - (p.z - h) * nz;
       if (d > best) { best = d; out.depth = d; out.nx = nx; out.ny = ny; out.nz = nz; out.material = MATERIALS[this.map.groundMat]; }
     }
-    const l = this.grid.get(this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell)));
-    if (l) for (const pr of l) {
-      if (pr.kind === 'box') {
-        const rot = this.boxRot.get(pr)!;
-        // into box frame: yaw about z then pitch about local y
-        let dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
-        let lx = rot.c * dx + rot.s * dy, ly = -rot.s * dx + rot.c * dy, lz = dz;
-        const tx = rot.cp * lx - rot.sp * lz; lz = rot.sp * lx + rot.cp * lz; lx = tx;
-        const hx = pr.half.x, hy = pr.half.y, hz = pr.half.z;
-        const qx = Math.max(-hx, Math.min(hx, lx)), qy = Math.max(-hy, Math.min(hy, ly)), qz = Math.max(-hz, Math.min(hz, lz));
-        let nx = lx - qx, ny = ly - qy, nz = lz - qz;
-        let dist = Math.hypot(nx, ny, nz), depth: number;
-        if (dist > 1e-9) {
-          if (dist >= radius) continue;
-          depth = radius - dist; nx /= dist; ny /= dist; nz /= dist;
-        } else {
-          // centre inside: push out along the axis of least penetration
-          const px = hx - Math.abs(lx), py = hy - Math.abs(ly), pz = hz - Math.abs(lz);
-          if (px < py && px < pz) { nx = Math.sign(lx) || 1; ny = 0; nz = 0; depth = px + radius; }
-          else if (py < pz) { nx = 0; ny = Math.sign(ly) || 1; nz = 0; depth = py + radius; }
-          else { nx = 0; ny = 0; nz = Math.sign(lz) || 1; depth = pz + radius; }
+    // every grid cell the sphere overlaps (a prim just across a cell border is not listed in this one)
+    const cx0 = Math.floor((p.x - radius) / this.cell), cx1 = Math.floor((p.x + radius) / this.cell);
+    const cy0 = Math.floor((p.y - radius) / this.cell), cy1 = Math.floor((p.y + radius) / this.cell);
+    for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+      const l = this.grid.get(this.key(cx, cy));
+      if (l) for (const pr of l) {
+        if (pr.kind === 'box') {
+          const rot = this.boxRot.get(pr)!;
+          // into box frame: yaw about z then pitch about local y
+          let dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
+          let lx = rot.c * dx + rot.s * dy, ly = -rot.s * dx + rot.c * dy, lz = dz;
+          const tx = rot.cp * lx - rot.sp * lz; lz = rot.sp * lx + rot.cp * lz; lx = tx;
+          const hx = pr.half.x, hy = pr.half.y, hz = pr.half.z;
+          const qx = Math.max(-hx, Math.min(hx, lx)), qy = Math.max(-hy, Math.min(hy, ly)), qz = Math.max(-hz, Math.min(hz, lz));
+          let nx = lx - qx, ny = ly - qy, nz = lz - qz;
+          let dist = Math.hypot(nx, ny, nz), depth: number;
+          if (dist > 1e-9) {
+            if (dist >= radius) continue;
+            depth = radius - dist; nx /= dist; ny /= dist; nz /= dist;
+          } else {
+            // centre inside: push out along the axis of least penetration
+            const px = hx - Math.abs(lx), py = hy - Math.abs(ly), pz = hz - Math.abs(lz);
+            if (px < py && px < pz) { nx = Math.sign(lx) || 1; ny = 0; nz = 0; depth = px + radius; }
+            else if (py < pz) { nx = 0; ny = Math.sign(ly) || 1; nz = 0; depth = py + radius; }
+            else { nx = 0; ny = 0; nz = Math.sign(lz) || 1; depth = pz + radius; }
+          }
+          if (depth > best) {
+            // back to world: inverse pitch then inverse yaw
+            const wx0 = rot.cp * nx + rot.sp * nz, wz = -rot.sp * nx + rot.cp * nz;
+            const wx = rot.c * wx0 - rot.s * ny, wy = rot.s * wx0 + rot.c * ny;
+            best = depth; out.depth = depth; out.nx = wx; out.ny = wy; out.nz = wz; out.material = MATERIALS[pr.mat];
+          }
+        } else if (pr.kind === 'cyl') {
+          if (p.z < pr.c.z - radius || p.z > pr.c.z + pr.h + radius) continue;
+          const dx = p.x - pr.c.x, dy = p.y - pr.c.y;
+          const rr = Math.hypot(dx, dy);
+          const side = pr.r + radius - rr;
+          if (side <= 0) continue;
+          const top = pr.c.z + pr.h + radius - p.z;
+          if (top < side && p.z > pr.c.z + pr.h) {
+            if (top > best && rr < pr.r) { best = top; out.depth = top; out.nx = 0; out.ny = 0; out.nz = 1; out.material = MATERIALS[pr.mat]; }
+          } else if (side > best) {
+            best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = MATERIALS[pr.mat];
+          }
+        } else if (pr.kind === 'sphere') {
+          const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
+          const d = Math.hypot(dx, dy, dz);
+          const depth = pr.r + radius - d;
+          if (depth > best && d > 1e-6) { best = depth; out.depth = depth; out.nx = dx / d; out.ny = dy / d; out.nz = dz / d; out.material = MATERIALS[pr.mat]; }
         }
-        if (depth > best) {
-          // back to world: inverse pitch then inverse yaw
-          const wx0 = rot.cp * nx + rot.sp * nz, wz = -rot.sp * nx + rot.cp * nz;
-          const wx = rot.c * wx0 - rot.s * ny, wy = rot.s * wx0 + rot.c * ny;
-          best = depth; out.depth = depth; out.nx = wx; out.ny = wy; out.nz = wz; out.material = MATERIALS[pr.mat];
-        }
-      } else if (pr.kind === 'cyl') {
-        if (p.z < pr.c.z - radius || p.z > pr.c.z + pr.h + radius) continue;
-        const dx = p.x - pr.c.x, dy = p.y - pr.c.y;
-        const rr = Math.hypot(dx, dy);
-        const side = pr.r + radius - rr;
-        if (side <= 0) continue;
-        const top = pr.c.z + pr.h + radius - p.z;
-        if (top < side && p.z > pr.c.z + pr.h) {
-          if (top > best && rr < pr.r) { best = top; out.depth = top; out.nx = 0; out.ny = 0; out.nz = 1; out.material = MATERIALS[pr.mat]; }
-        } else if (side > best) {
-          best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = MATERIALS[pr.mat];
-        }
-      } else if (pr.kind === 'sphere') {
-        const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
-        const d = Math.hypot(dx, dy, dz);
-        const depth = pr.r + radius - d;
-        if (depth > best && d > 1e-6) { best = depth; out.depth = depth; out.nx = dx / d; out.ny = dy / d; out.nz = dz / d; out.material = MATERIALS[pr.mat]; }
       }
     }
     if (this.brushes.count) best = this.brushes.sphere(p, radius, out, best);
@@ -209,10 +262,14 @@ export class PrimitiveWorld implements CollisionWorld {
       const t = i / n;
       const x = a.x + dx * t, y = a.y + dy * t, z = a.z + dz * t;
       if (z < this.map.terrain(x, y)) loss += 1.2;
-      const l = this.grid.get(this.key(Math.floor(x / this.cell), Math.floor(y / this.cell)));
+      const key = this.key(Math.floor(x / this.cell), Math.floor(y / this.cell));
+      const cl = this.canopies.get(key);
+      if (cl) for (const pr of cl) if (!seen.has(pr) && this.inside(pr, x, y, z)) { seen.add(pr); loss += 4; }
+      const l = this.grid.get(key);
       if (!l) continue;
       for (const pr of l) {
         if (seen.has(pr)) continue;
+        if (pr.mat === 'wood' && pr.kind === 'sphere') continue; // canopy core: already counted as foliage
         if (this.inside(pr, x, y, z)) { seen.add(pr); loss += pr.mat === 'concrete' ? 14 : pr.mat === 'metal' ? 18 : pr.mat === 'foliage' ? 4 : 6; }
       }
     }

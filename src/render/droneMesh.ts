@@ -5,7 +5,19 @@
 import * as THREE from 'three';
 import type { DerivedInfo, DroneSpec } from '../builder/derive';
 
-export interface DroneModel { root: THREE.Group; props: THREE.Object3D[]; propDirs: number[]; blur: THREE.Mesh[]; dispose(): void }
+/** fpvHidden: parts hidden while rendering the FPV camera (the camera body around the lens) */
+export interface DroneModel { root: THREE.Group; props: THREE.Object3D[]; propDirs: number[]; blur: THREE.Mesh[]; fpvHidden: THREE.Object3D[]; dispose(): void }
+
+/**
+ * Height of the FPV lens above the frame's base plane (m). Normally mid-stack; on ducted whoops the
+ * camera sits in a canopy above the ducts, so they appear along the bottom of the picture.
+ */
+export function cameraMountZ(frame: { stackHeightMm: number; ducted?: boolean; ductHeightMm?: number }, motor: { bellHeightMm: number }): number {
+  const st = frame.stackHeightMm / 1000;
+  if (!frame.ducted) return st / 2;
+  const ductTop = 0.006 + motor.bellHeightMm / 1000 + 0.004 + (frame.ductHeightMm ?? 10) / 2000;
+  return Math.max(st / 2, ductTop + 0.005);
+}
 
 export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x: number; y: number; z: number; dir: number }[], cg: { x: number; y: number; z: number }): DroneModel {
   const root = new THREE.Group();
@@ -82,8 +94,9 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   const lens = new THREE.Mesh(T(new THREE.CylinderGeometry(0.006, 0.007, 0.01, 16)), black);
   lens.rotation.z = Math.PI / 2; lens.position.x = 0.013;
   cam.add(camBody, lens);
-  cam.position.copy(B(pl / 2 - 0.008, 0, st / 2));
+  cam.position.copy(B(pl / 2 - 0.008, 0, cameraMountZ(frame, motor)));
   cam.rotation.z = THREE.MathUtils.degToRad(spec.cameraUptiltDeg);
+  cam.userData.fpvHide = true; // the lens sits inside it; everything else (ducts, props) stays in view
   root.add(cam);
   // VTX antenna
   const ant = new THREE.Mesh(T(new THREE.CylinderGeometry(0.0015, 0.0015, 0.05, 6)), black);
@@ -91,9 +104,11 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   const antTip = new THREE.Mesh(T(new THREE.SphereGeometry(0.006, 10, 8)), tpu);
   antTip.position.copy(B(-pl / 2 - 0.016, 0, st + 0.042)); root.add(antTip);
   if (video.kind === 'digital') { const au = new THREE.Mesh(T(new THREE.BoxGeometry(0.03, 0.012, 0.03)), black); au.position.copy(B(-0.02, 0, st - 0.006)); root.add(au); }
-  if (spec.extraMassG > 40) { const gp = new THREE.Mesh(T(new THREE.BoxGeometry(0.03, 0.045, 0.06)), black); gp.position.copy(B(0.02, 0, (spec.extraMassZmm + 15) / 1000 + 0.04)); root.add(gp); }
+  if (spec.extraMassG > 40) { const gp = new THREE.Mesh(T(new THREE.BoxGeometry(0.03, 0.045, 0.06)), black); gp.position.copy(B(0.02, 0, (spec.extraMassZmm + 15) / 1000 + 0.04)); gp.userData.fpvHide = true; root.add(gp); }
   root.traverse((o) => { if ((o as THREE.Mesh).isMesh) { o.castShadow = true; } });
-  return { root, props, propDirs: dirs, blur, dispose() { for (const d of disp) d.dispose(); } };
+  const fpvHidden: THREE.Object3D[] = [];
+  root.traverse((o) => { if (o.userData.fpvHide) fpvHidden.push(o); });
+  return { root, props, propDirs: dirs, blur, fpvHidden, dispose() { for (const d of disp) d.dispose(); } };
 }
 
 /** Lofted blade from hub to tip along +X, chord along Z, slight pitch twist. */

@@ -3,12 +3,13 @@
 // directions, collider set, drag areas, structural modes, electrical parameters, and BEMT tables.
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO, byId, FrameSpec, MotorSpec, PropSpec, BatterySpec, EscSpec, FcSpec, VideoSpec } from '../data/catalog';
 import { batteryFromSpec } from '../sim/battery';
-import { buildBemtTable, BemtTable, DEFAULT_AIRFOIL, PropGeometry } from '../sim/bemt';
+import { airfoilAtRe, buildBemtTable, BemtTable, PropGeometry } from '../sim/bemt';
 import { ColliderSphere } from '../sim/contact';
 import { GYRO_CHIPS } from '../sim/imu';
 import { V3 } from '../sim/math';
 import { MotorParams } from '../sim/motor';
-import { QuadParams, RotorConfig } from '../sim/quad';
+import { QuadParams, RotorConfig, STRENGTH } from '../sim/quad';
+import { RotorAero, RotorAeroOut } from '../sim/rotor';
 
 export interface DroneSpec {
   name: string;
@@ -80,9 +81,14 @@ export interface DroneBuild { spec: DroneSpec; params: QuadParams; info: Derived
 const tableCache = new Map<string, BemtTable>();
 
 export function propGeometry(p: PropSpec, pitchOverride?: number): PropGeometry {
+  // section Reynolds number at 0.75R at the calibration (typical full-power) rpm
+  const R = (p.diameterIn * 0.0254) / 2, cf = p.chordFracs;
+  const u = ((0.75 - p.hubFrac) / (1 - p.hubFrac)) * (cf.length - 1), i0 = Math.min(cf.length - 2, Math.floor(u));
+  const c75 = (cf[i0] + (cf[i0 + 1] - cf[i0]) * (u - i0)) * R;
+  const re75 = ((p.calib.rpm * 2 * Math.PI) / 60) * 0.75 * R * c75 / 1.5e-5;
   return {
     diameterM: p.diameterIn * 0.0254, pitchM: (pitchOverride ?? p.pitchIn) * 0.0254, blades: p.blades,
-    hubRadiusFrac: p.hubFrac, chordFracs: p.chordFracs, washoutDeg: p.washoutDeg, airfoil: DEFAULT_AIRFOIL,
+    hubRadiusFrac: p.hubFrac, chordFracs: p.chordFracs, washoutDeg: p.washoutDeg, airfoil: airfoilAtRe(re75),
   };
 }
 
@@ -204,6 +210,13 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
       ductGain: ducted ? frame.ductGain ?? 0.12 : 0,
       // residual static imbalance scales with prop mass (2e-7 kg·m for a ~4.3 g 5" prop)
       imbalance: ov.propImbalance ?? 2e-7 * (prop.massG / 4.3),
+      // impact energy (J) at which a part fails half the time; strength ~ section ~ mass^(2/3), so small
+      // quads (energy ~ mass) shrug off crashes that wreck a 5"
+      strength: {
+        prop: STRENGTH.prop * Math.pow(prop.massG, 2 / 3) * (0.5 + prop.stiffness),
+        shaft: STRENGTH.shaft * Math.pow(motor.massG, 2 / 3),
+        arm: STRENGTH.arm * (frame.armWidthMm * frame.armThicknessMm ** 2) / 375,
+      },
     };
   });
 
@@ -213,7 +226,12 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
   const ductSide = ducted ? 4 * (2 * R0 + 0.003) * ductH * 0.6 : 0;
   const frontal = (bd[1] * bd[2]) / 1e6 + (frame.plateWidthMm * frame.stackHeightMm) / 1e6 + 4 * (motor.bellDiaMm * motor.bellHeightMm) / 1e6 * 0.6 + 4 * (frame.armWidthMm * frame.armThicknessMm) / 1e6 + 0.0008 * sz * sz + ductSide + (spec.extraMassG > 40 ? 0.0018 : 0);
   const side = (bd[0] * bd[2]) / 1e6 + (frame.plateLengthMm * frame.stackHeightMm) / 1e6 + 4 * (motor.bellDiaMm * motor.bellHeightMm) / 1e6 * 0.6 + 0.0006 * sz * sz + ductSide;
-  const top = (bd[0] * bd[1]) / 1e6 + (frame.plateLengthMm * frame.plateWidthMm) / 1e6 + 4 * (Math.hypot(mx, my) * 0.8 * frame.armWidthMm) / 1000;
+  // top view: battery, plates, arms, motor bells; ducted frames add the duct rims (wall + lip
+  // flange around the guard ring) and the motor-mount spokes across the duct exit, which sit in
+  // the through-flow once the craft is tilted far over at speed
+  const rimOut = 1.08 * R0 + Math.max(0.0015, 0.2 * ductH);
+  const ductTop = ducted ? 4 * (Math.PI * (rimOut * rimOut - R0 * R0) + 3 * R0 * (frame.armWidthMm / 1000) * 0.5) : 0;
+  const top = (bd[0] * bd[1]) / 1e6 + (frame.plateLengthMm * frame.plateWidthMm) / 1e6 + 4 * (Math.hypot(mx, my) * 0.8 * frame.armWidthMm) / 1000 + 4 * (Math.PI / 4) * (motor.bellDiaMm / 1000) ** 2 + ductTop;
   const cdA = { x: 1.05 * frontal * cdS, y: 1.1 * side * cdS, z: 1.2 * top * cdS };
   const dragCenter = { x: 0.004 * (wb / 0.225), y: 0, z: (batZ * 0.5 + 0.015 * sz * 0.5) - cg.z };
 
@@ -225,22 +243,30 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
   add(-frame.plateLengthMm / 2400, 0, frame.stackHeightMm / 2000, 0.014 * sz, 'frame');
   add(bd[0] / 3000, 0, batZ, bd[2] / 2000, 'battery');
   add(-bd[0] / 3000, 0, batZ, bd[2] / 2000, 'battery');
+  // Gaps between spheres must stay well under the thinnest obstacle (8 cm posts, 12 cm gate tubes):
+  // arm 3 spheres (≤ 1.5 cm gaps), prop disc an outer ring of 9 + inner ring of 4 (≤ 2.5 cm gaps).
+  const armR = frame.armThicknessMm / 1000 + 0.002;
   for (let k = 0; k < 4; k++) {
     const h = hubs[k];
     add(h.x, h.y, 0.0, motor.bellDiaMm / 2000, 'motor', k);       // motor bottom / arm tip
-    add(h.x * 0.5, h.y * 0.5, -0.002, frame.armThicknessMm / 1000 + 0.002, 'frame'); // arm mid
-    for (let j = 0; j < 6; j++) {
-      const a = (j / 6) * 2 * Math.PI;
+    for (const f of [0.3, 0.5, 0.72]) add(h.x * f, h.y * f, -0.002, armR, 'arm', k);
+    const nRing = ducted ? 8 : 9;
+    for (let j = 0; j < nRing; j++) {
+      const a = (j / nRing) * 2 * Math.PI;
       // ducted: the guard ring takes the hit (frame contact, no prop strike); open props can strike
       if (ducted) add(h.x + Math.cos(a) * R * 1.08, h.y + Math.sin(a) * R * 1.08, h.z, Math.max(0.003, ductH / 2), 'frame');
-      else add(h.x + Math.cos(a) * R * 0.92, h.y + Math.sin(a) * R * 0.92, h.z, 0.008 * sz, 'prop', k);
+      else add(h.x + Math.cos(a) * R * 0.9, h.y + Math.sin(a) * R * 0.9, h.z, 0.008 * sz, 'prop', k);
     }
+    if (!ducted) for (let j = 0; j < 4; j++) { const a = ((j + 0.5) / 4) * 2 * Math.PI; add(h.x + Math.cos(a) * R * 0.52, h.y + Math.sin(a) * R * 0.52, h.z, 0.008 * sz, 'prop', k); }
   }
 
   // ---------- structure / IMU ----------
   const fRP = ov.frameFreqHz ?? 160 * Math.pow(frame.armThicknessMm / 5, 1.5) * Math.pow(0.225 / wb, 1.5);
   const vib = ov.vibrationScale ?? 1;
-  const gainBase = 3e-4 / Math.max(1e-5, (Ixx + Iyy) / 2) * 40 * vib;
+  // gyro-board flex response to vibration torque; calibrated so the raw (unfiltered) gyro shows
+  // blackbox-typical levels: ~1-3 °/s RMS at hover and ~5-15 °/s at full throttle on a clean 5"
+  // (∝ I^-0.75: tiny frames respond more, but their vibration torques are also far smaller)
+  const gainBase = 11.5 / Math.pow(Math.max(1e-6, (Ixx + Iyy) / 2), 0.75) * vib;
   const chip = GYRO_CHIPS[fc.gyro];
 
   // ---------- battery ----------
@@ -298,6 +324,54 @@ export function staticOperatingPoint(mp: MotorParams, kT: number, kQ0: number, D
   }
 }
 
+/**
+ * Level-flight top speed at full throttle (m/s), quasi-steady with the same rotor model the sim
+ * flies: at each airspeed the pitch angle that holds altitude is found, and at that attitude each
+ * motor settles where its torque meets the prop's in-flight torque (props unload with advance
+ * ratio), with the ducts' ram drag / ring lift and the body-axis drag. Top speed is where the
+ * forward force runs out (bisection; assumes the excess falls monotonically with speed).
+ */
+function levelTopSpeed(p: QuadParams, busV: (iBus: number) => number, Vstatic: number): number {
+  // the props unload at speed, so the pack sags less than at static WOT: refine the bus voltage
+  let Vbus = Vstatic, v = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const r = levelTopSpeedAt(p, Vbus);
+    v = r.v; Vbus = 0.5 * Vbus + 0.5 * busV(r.iBus);
+  }
+  return v;
+}
+
+function levelTopSpeedAt(p: QuadParams, Vbus: number): { v: number; iBus: number } {
+  const rc = p.rotors[0], mp = rc.motor, rho = 1.225, W = p.mass * 9.80665, n = p.rotors.length;
+  let iBus = 0;
+  const ro = new RotorAero(rc.table, 1); ro.ductGain = rc.ductGain ?? 0;
+  const o: RotorAeroOut = { thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0 };
+  const ke = 60 / (2 * Math.PI * mp.kv) / mp.kvLoadFactor, Rw = mp.rmOhm + mp.escOhm, wRef = (mp.kv * 10 * 2 * Math.PI) / 60;
+  const motorTq = (w: number) => ke * Math.min(mp.escCurrentLimitA, (Vbus - ke * w) / Rw) - ke * mp.i0A * (0.35 + 0.65 * w / wRef);
+  // net world force (horizontal, vertical) at airspeed v and pitch th
+  const force = (v: number, th: number): [number, number] => {
+    const ux = v * Math.cos(th), uz = v * Math.sin(th); // body-frame airflow components (x fwd, z thrust axis)
+    let lo = 0, hi = Vbus / ke;
+    for (let i = 0; i < 30; i++) { const w = (lo + hi) / 2; ro.evaluate(w, uz, ux, rho, Infinity, 0, 1e-4, o); if (motorTq(w) > o.torque) lo = w; else hi = w; }
+    ro.evaluate(lo, uz, ux, rho, Infinity, 0, 1e-4, o);
+    iBus = (n * Math.min(mp.escCurrentLimitA, Math.max(0, (Vbus - ke * lo) / Rw))) / mp.escEfficiency;
+    const fz = n * o.thrust - 0.5 * rho * v * p.cdA.z * uz, fx = -n * o.hForce - 0.5 * rho * v * p.cdA.x * ux;
+    // body x = (cos th, -sin th), body z = (sin th, cos th) in world (forward, up)
+    return [fx * Math.cos(th) + fz * Math.sin(th), -fx * Math.sin(th) + fz * Math.cos(th) - W];
+  };
+  const excess = (v: number) => {
+    let lo = 0, hi = 1.55;
+    if (force(v, lo)[1] < 0) return -1; // cannot even hold altitude level at this speed
+    for (let i = 0; i < 26; i++) { const th = (lo + hi) / 2; if (force(v, th)[1] > 0) lo = th; else hi = th; }
+    return force(v, lo)[0];
+  };
+  let a = 0.5, b = 120;
+  if (excess(a) <= 0) return { v: 0, iBus: 0 };
+  for (let i = 0; i < 22; i++) { const m = (a + b) / 2; if (excess(m) > 0) a = m; else b = m; }
+  excess(a);
+  return { v: a, iBus };
+}
+
 function deriveInfo(spec: DroneSpec, p: QuadParams, components: DerivedInfo['components'], items: MassItem[], cg: V3, fRP: number): DerivedInfo {
   const mp = p.rotors[0].motor, t = p.rotors[0].table;
   const cells = p.battery.cellsSeries;
@@ -323,15 +397,7 @@ function deriveInfo(spec: DroneSpec, p: QuadParams, components: DerivedInfo['com
   const hoverD = (lo + hi) / 2;
   const hoverI = hov.current * 4 + p.auxPowerW / nominal;
   const capAh = p.battery.capacityAh * 0.8; // 80% usable
-  // top speed: balance of forward-tilted thrust vs drag (rough: use 90% of WOT thrust, body CdA at ~60° pitch)
-  const Tmax = wot.thrust * 4 * 0.75; // thrust loss with advance ratio at speed
-  let vTop = 0;
-  for (let v = 1; v < 120; v += 0.5) {
-    const thetaT = Math.acos(Math.min(1, W / Tmax));
-    const cdA = p.cdA.x * Math.cos(thetaT) ** 2 + p.cdA.z * Math.sin(thetaT) ** 2 + 0.006; // + rotor H drag
-    const drag = 0.5 * 1.225 * v * v * cdA;
-    if (drag > Tmax * Math.sin(thetaT)) { vTop = v; break; }
-  }
+  const vTop = levelTopSpeed(p, (I) => Math.max(cells * 2.5, cells * 4.1 - I * sagR), V);
   return {
     components, massItems: items, auwG: p.mass * 1000,
     cgMm: { x: cg.x * 1000, y: cg.y * 1000, z: cg.z * 1000 }, inertia: p.inertia,

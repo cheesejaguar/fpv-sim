@@ -17,7 +17,14 @@ const OCV_FN: Record<Chemistry, (soc: number) => number> = {
   LiHV: monotoneCubic(SOC, OCV_TABLES.LiHV),
   LiIon: monotoneCubic(SOC, OCV_TABLES.LiIon),
 };
-export const ocvPerCell = (chem: Chemistry, socFrac: number) => OCV_FN[chem](Math.max(0, Math.min(1, socFrac)) * 100);
+/** Past "0 %" a pack still delivers a little charge while its voltage collapses toward the cut-off. */
+export const OVERDISCHARGE = 0.1;
+const DEAD_CELL_V: Record<Chemistry, number> = { LiPo: 2.6, LiHV: 2.6, LiIon: 2.2 };
+export const ocvPerCell = (chem: Chemistry, socFrac: number) => {
+  if (socFrac >= 0) return OCV_FN[chem](Math.min(1, socFrac) * 100);
+  const v0 = OCV_FN[chem](0), x = Math.min(1, -socFrac / OVERDISCHARGE);
+  return v0 - (v0 - DEAD_CELL_V[chem]) * Math.pow(x, 1.5);
+};
 export const FULL_CELL_V: Record<Chemistry, number> = { LiPo: 4.2, LiHV: 4.35, LiIon: 4.2 };
 export const OCV_TABLE = { soc: SOC, ...OCV_TABLES };
 
@@ -38,7 +45,7 @@ export interface BatteryParams {
 }
 
 export interface BatteryState {
-  soc: number;        // 0..1
+  soc: number;        // 0..1 (down to -OVERDISCHARGE: an over-discharged, collapsing pack)
   v1: number; v2: number; // polarisation voltages per cell
   tempC: number;
   mAhDrawn: number;
@@ -66,7 +73,11 @@ export class Battery {
   rFactor(): number {
     const T = this.s.tempC + 273.15;
     const arr = Math.exp((this.p.activationEnergyJmol / RG) * (1 / T - 1 / 298.15));
-    const socRise = this.s.soc < 0.2 ? 1 + 1.0 * (0.2 - this.s.soc) / 0.2 : 1; // up to 2x at empty
+    // DCIR rises gradually below ~30 % and steeply once the pack is over-discharged: the voltage
+    // collapses under load, which is what forces a landing (or ends in a cut-out)
+    const low = Math.max(0, 0.3 - this.s.soc) / 0.3;
+    const over = Math.max(0, -this.s.soc) / OVERDISCHARGE;
+    const socRise = 1 + 1.2 * low * low + 6 * over * over;
     return arr * socRise * this.p.ageFactor;
   }
 
@@ -90,7 +101,7 @@ export class Battery {
     s.v2 = s.v2 * a2 + r2 * iCell * (1 - a2);
     const capAh = p.capacityAh / p.ageFactor;
     s.soc -= (I * dt) / 3600 / capAh;
-    if (s.soc < 0) s.soc = 0;
+    if (s.soc < -OVERDISCHARGE) s.soc = -OVERDISCHARGE;
     s.mAhDrawn += (I * dt) / 3.6;
     const { vth, rth } = this.thevenin();
     s.voltage = vth - rth * I;

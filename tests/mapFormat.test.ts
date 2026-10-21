@@ -65,6 +65,8 @@ describe('schema and loader agree', () => {
     ['URL asset', minimal({ primitives: [{ type: 'box', pos: [0, 0, 0], size: [1, 1, 1], texture: 'https://example.com/a.png' }] }), /not a URL/],
     ['dive gate without z', minimal({ gates: [{ kind: 'dive', pos: [0, 0] }] }), /dive gate needs \[x, y, z\]/],
     ['bad colour', minimal({ primitives: [{ type: 'sphere', pos: [0, 0, 1], radius: 1, color: 'red' }] }), /colour like/],
+    ['inverted indoor box', minimal({ indoor: [{ min: [0, 0, 5], max: [10, 10, 0] }] }), /indoor\[0\]: min must be below max/, false],
+    ['indoor wind above 1', minimal({ indoor: [{ min: [0, 0, 0], max: [10, 10, 5], windScale: 2 }] }), /indoor\[0\]\.windScale/],
     ['two base geometries', minimal({ geometry: [{ type: 'quake', src: 'a.map' }, { type: 'quake', src: 'b.map' }] }), /only one Quake or Doom/, false],
   ];
   test.each(bad)('rejects %s', async (_, doc, re, inSchema = true) => {
@@ -120,7 +122,7 @@ describe('Bando: JSON package is identical to bandoMap()', async () => {
   test('metadata, spawn, environment', () => {
     expect(js.name).toBe(ts.name); expect(js.size).toBe(ts.size); expect(js.groundMat).toBe(ts.groundMat);
     expect(js.sky).toBe(ts.sky); expect(js.sun).toEqual(ts.sun); expect(js.elevationM).toBe(ts.elevationM);
-    expect(js.spawn).toEqual(ts.spawn); expect(js.wakeZones).toEqual(ts.wakeZones); expect(js.trees).toEqual(ts.trees);
+    expect(js.spawn).toEqual(ts.spawn); expect(js.wakeZones).toEqual(ts.wakeZones); expect(js.indoor).toEqual(ts.indoor); expect(js.indoor?.length).toBe(2); expect(js.trees).toEqual(ts.trees);
     expect(js.gates).toEqual([]); expect(spawnGroundZ(js)).toBe(spawnGroundZ(ts));
   });
   test('terrain matches bit for bit', () => {
@@ -184,7 +186,8 @@ describe('example community map: quarry-loop', async () => {
     q.reset(from, yaw);
     q.s.vel = { x: v * Math.cos(yaw), y: v * Math.sin(yaw), z: 0 };
     const path: { x: number; y: number; z: number }[] = [];
-    for (let i = 0; i < 8000; i++) { q.command([1000, 1000, 1000, 1000], false); q.step(1 / 8000, env); path.push({ ...q.s.pos }); }
+    // the wake is advanced by the caller (as the sim worker does), else fresh puffs sit frozen in the air
+    for (let i = 0; i < 8000; i++) { q.command([1000, 1000, 1000, 1000], false); q.step(1 / 8000, env); env.wake.step(1 / 8000, { x: 0, y: 0, z: 0 }, 0); path.push({ ...q.s.pos }); }
     return path;
   };
   test('a quad flies through the arch untouched', () => {

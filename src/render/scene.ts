@@ -14,6 +14,9 @@ export interface SceneBundle {
   scene: THREE.Scene;
   sun: THREE.DirectionalLight;
   sunDir: THREE.Vector3;
+  /** sky ambient; its base intensity is scaled down where the sky is hidden (interiors) */
+  hemi: THREE.HemisphereLight;
+  hemiBase: number;
   gateMeshes: THREE.Object3D[];
   /** Light up gate index `next` (and, dimmer, the one after); on = false leaves every gate normal. t in s. */
   setGateHighlight(next: number, on: boolean, t: number): void;
@@ -358,6 +361,7 @@ export function buildScene(map: MapDef): SceneBundle {
   }
 
   return {
+    hemi, hemiBase: hemi.intensity,
     scene, sun, sunDir, gateMeshes, setGateHighlight,
     dispose() { disposed = true; for (const d of disposables) d.dispose(); sky.material.dispose(); sky.geometry.dispose(); },
   };

@@ -4,6 +4,7 @@ export class MotorAudio {
   private ctx: AudioContext | null = null;
   private voices: { osc: OscillatorNode; whine: OscillatorNode; g: GainNode; wg: GainNode; nf: BiquadFilterNode; ng: GainNode }[] = [];
   private master!: GainNode;
+  private noiseBuf: AudioBuffer | null = null;
   enabled = true;
   volume = 0.5;
 
@@ -30,6 +31,7 @@ export class MotorAudio {
     this.master = ctx.createGain(); this.master.gain.value = this.volume; this.master.connect(ctx.destination);
     const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
     const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    this.noiseBuf = noiseBuf;
     for (let k = 0; k < 4; k++) {
       const osc = ctx.createOscillator(); osc.type = 'sawtooth';
       const g = ctx.createGain(); g.gain.value = 0;
@@ -46,20 +48,44 @@ export class MotorAudio {
     }
   }
 
-  update(rpm: number[], loadA: number, blades: number, poles: number) {
+  /**
+   * distance: listener to quad (m) — the pilot hears the quad from where they stand, falling off
+   * ~1/d beyond a few metres. wash: prop-wash / VRS fraction 0..1 (buffeting).
+   */
+  update(rpm: number[], loadA: number, blades: number, poles: number, distance = 1, wash = 0) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    this.master.gain.setTargetAtTime(this.enabled ? this.volume : 0, t, 0.05);
+    const att = Math.max(0.04, Math.min(1, 4 / Math.max(0.1, distance)));
+    this.master.gain.setTargetAtTime(this.enabled ? this.volume * att : 0, t, 0.05);
     for (let k = 0; k < 4; k++) {
       const v = this.voices[k], r = Math.abs(rpm[k] ?? 0);
       const f = Math.max(20, (r / 60) * blades);
       v.osc.frequency.setTargetAtTime(f, t, 0.01);
-      v.whine.frequency.setTargetAtTime(Math.max(40, (r / 60) * (poles / 2) * 2), t, 0.01);
+      // electrical frequency: pole pairs × mechanical revolutions per second
+      v.whine.frequency.setTargetAtTime(Math.max(40, (r / 60) * (poles / 2)), t, 0.01);
       const a = Math.min(1, r / 30000);
       v.g.gain.setTargetAtTime(0.05 * a * a, t, 0.02);
       v.wg.gain.setTargetAtTime(0.004 * a, t, 0.02);
-      v.nf.frequency.setTargetAtTime(400 + f * 2, t, 0.02);
-      v.ng.gain.setTargetAtTime(0.06 * a * a + Math.min(0.08, loadA / 2500), t, 0.03);
+      // in prop wash the broadband noise drops in pitch and flutters (blades chopping their own wake)
+      const flutter = wash > 0.05 ? 1 + wash * (Math.random() - 0.5) * 1.6 : 1;
+      v.nf.frequency.setTargetAtTime((400 + f * 2) * (1 - 0.5 * wash), t, 0.02);
+      v.ng.gain.setTargetAtTime((0.06 * a * a + Math.min(0.08, loadA / 2500) + 0.05 * wash * a) * flutter, t, 0.012);
     }
+  }
+
+  /** Crash / prop strike: a low thud plus a plastic-and-carbon clatter, scaled by impact strength 0..1. */
+  impact(strength: number, distance = 1) {
+    const ctx = this.ctx;
+    if (!ctx || !this.noiseBuf || !this.enabled || strength <= 0) return;
+    const t = ctx.currentTime, k = Math.min(1, strength) * Math.max(0.05, Math.min(1, 4 / Math.max(0.1, distance)));
+    const burst = (freq: number, q: number, gain: number, decay: number) => {
+      const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; 
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+      const g = ctx.createGain(); g.gain.setValueAtTime(gain * k, t); g.gain.exponentialRampToValueAtTime(1e-4, t + decay);
+      n.connect(f).connect(g).connect(ctx.destination);
+      n.start(t, Math.random()); n.stop(t + decay + 0.05);
+    };
+    burst(140, 0.7, 0.9 * this.volume, 0.18);   // body thud
+    burst(2600, 1.2, 0.35 * this.volume, 0.09); // props / carbon clatter
   }
 }

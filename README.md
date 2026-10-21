@@ -180,14 +180,21 @@ ones. Sag directly reduces available thrust, and Betaflight sees it through its 
 - Vibration from prop imbalance and blade-pass ripple through lightly damped frame modes, so the
   RPM filter and dynamic notch have real work to do.
 
-**Wind** (`wind.ts`): log-law mean wind, Dryden turbulence (MIL-HDBK-1797), 1−cos gusts, and
-obstacle wake zones behind buildings.
+**Wind** (`wind.ts`): log-law mean wind over the ground or roof below, Dryden turbulence
+(MIL-HDBK-1797) driven by airspeed, rotor-scale gust gradients (frozen-field + roll gust) at each
+rotor hub, 1−cos gusts, directional obstacle wakes (shelter, lee downdraft, roof-edge updraft, local
+turbulence) and indoor volumes.
 
 **Contacts** (`contact.ts`, `quad.ts`):
-- Compliant spring-damper contacts, with damping from per-material restitution and friction.
+- Compliant contacts on ~70 collider spheres: Hunt–Crossley damping with speed-dependent restitution,
+  multi-contact damping kept inside the integrator's stability limit, and entry-plane normals so thin
+  gate tubes and posts cannot be tunnelled.
+- Friction plus snag / ploughing on soft ground (grass digs prop tips in and cartwheels the quad)
+  and rolling resistance; tree canopies are porous drag volumes around a solid core.
 - Prop-disc colliders include blade tip velocity, so a prop strike yanks the frame and brakes the
   rotor.
-- Energy-scaled stochastic prop damage: C_T loss, imbalance that feeds vibration, and broken blades.
+- Energy-based damage rolled once per impact: chipped / broken props, bent motor shafts (1×-rpm
+  imbalance into the vibration model) and bent arms (tilted thrust axis).
 
 **Video** (`render/fpvCamera.ts`, `videoLink.ts`):
 - Cube-map capture at the camera frame rate, with real cadence.

@@ -91,9 +91,15 @@ export function bandoMap(): MapDef {
   return {
     id: 'bando', name: 'Bando — Abandoned Industrial', size: 160, terrain, groundMat: 'dirt', prims, gates: [],
     spawn: { pos: { x: 0, y: -8, z: 0.25 }, yaw: 90 * deg }, sun: { azimuthDeg: 135, elevationDeg: 24 }, sky: 'overcast',
+    // wake zones = obstacle footprints (the wake is laid out downwind for the live wind direction)
     wakeZones: [
-      { x: BX, y: BY + D + 6, radius: 14, height: FLOORS * FH + 4, intensity: 1.5 },
-      { x: WX, y: WY, radius: 12, height: 8, intensity: 1.0 },
+      { x: BX, y: BY, radius: 14, height: roofZ, intensity: 1.5 },
+      { x: WX, y: WY, radius: 10, height: 6.2, intensity: 1.0 },
+    ],
+    // inside the main building the wind is all but gone (open windows); the warehouse has no roof
+    indoor: [
+      { min: { x: BX - W, y: BY - D, z: 0 }, max: { x: BX + W, y: BY + D, z: roofZ }, scale: 0.1 },
+      { min: { x: WX - 12, y: WY - 8, z: 0 }, max: { x: WX + 12, y: WY + 8, z: 6 }, scale: 0.35 },
     ],
     elevationM: 40, trees,
   };
