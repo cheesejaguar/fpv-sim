@@ -15,7 +15,7 @@ import { courseOf } from '../src/app/leaderboard';
 import { openingCentre } from '../src/maps/gates';
 import { loadMapPackage, PackageSource } from '../src/maps/mapFormat';
 import { MAP_LIST, MAPS } from '../src/maps/maps';
-import type { GateDef, MapDef } from '../src/maps/world';
+import { GateDef, MapDef, withCourse } from '../src/maps/world';
 
 const CLIENT = '0123456789abcdef0123456789abcdef';
 const splits = (n: number, lapMs: number) => Array.from({ length: n }, (_, i) => Math.round(((i + 1) * lapMs) / n));
@@ -151,8 +151,15 @@ describe('tracks match the maps', async () => {
     }
   });
 
-  test('the course a map flies by default is a board', () => {
-    for (const m of maps) if (m.gates.length) { const c = courseOf(m); expect(TRACKS[c ? `${m.id}:${c}` : m.id], m.id).toBeDefined(); }
+  test('the course a map flies (default, or picked in Simulation → Course) is a board', () => {
+    for (const m of maps) {
+      if (m.gates.length) { const c = courseOf(m); expect(TRACKS[c ? `${m.id}:${c}` : m.id], m.id).toBeDefined(); }
+      for (const c of courses(m)) {
+        const flown = withCourse(m, c.id);
+        expect(courseOf(flown), `${m.id}:${c.id}`).toBe(c.gates === m.gates ? courses(m).find((x) => x.gates === m.gates)!.id : c.id);
+        expect(TRACKS[`${m.id}:${courseOf(flown)}`], `${m.id}:${c.id}`).toBeDefined();
+      }
+    }
   });
 
   test('every board this build has a map for is that map’s', () => {
