@@ -1,0 +1,56 @@
+diff --git a/src/main/scheduler/scheduler.c b/src/main/scheduler/scheduler.c
+index 26a1135..928afd6 100644
+--- a/src/main/scheduler/scheduler.c
++++ b/src/main/scheduler/scheduler.c
+@@ -393,11 +393,20 @@ FAST_CODE timeDelta_t schedulerGetNextStateTime(void)
+     return currentTask->anticipatedExecutionTime >> TASK_EXEC_TIME_SHIFT;
+ }
+ 
++#if defined(WASM_BUILD)
++// Number of tasks executed so far; the lock-step driver uses it to tell
++// whether a scheduler() call did any work at the current virtual time.
++uint32_t schedulerExecutedTaskCount;
++#endif
++
+ FAST_CODE timeUs_t schedulerExecuteTask(task_t *selectedTask, timeUs_t currentTimeUs)
+ {
+     timeUs_t taskExecutionTimeUs = 0;
+ 
+     if (selectedTask) {
++#if defined(WASM_BUILD)
++        schedulerExecutedTaskCount++;
++#endif
+         currentTask = selectedTask;
+         ignoreCurrentTaskExecRate = false;
+         ignoreCurrentTaskExecTime = false;
+@@ -518,7 +527,9 @@ FAST_CODE void scheduler(void)
+             if (schedLoopStartCycles > schedLoopStartMinCycles) {
+                 schedLoopStartCycles -= schedLoopStartDeltaDownCycles;
+             }
+-#if !defined(UNIT_TEST)
++#if !defined(UNIT_TEST) && !defined(WASM_BUILD)
++            // WASM_BUILD: virtual time only advances between scheduler()
++            // calls, so busy-waiting here would never terminate.
+             while (schedLoopRemainingCycles > 0) {
+                 nowCycles = getCycleCounter();
+                 schedLoopRemainingCycles = cmpTimeCycles(nextTargetCycles, nowCycles);
+@@ -571,16 +582,16 @@ FAST_CODE void scheduler(void)
+                 // Total tasks run in last second
+                 DEBUG_SET(DEBUG_TIMING_ACCURACY, 3, taskCount);
+ 
+-                lateTaskPercentage = 1000 * (uint32_t)lateTaskCount / taskCount;
++                lateTaskPercentage = taskCount ? 1000 * (uint32_t)lateTaskCount / taskCount : 0;
+                 // 10ths % of tasks late in last second
+                 DEBUG_SET(DEBUG_TIMING_ACCURACY, 4, lateTaskPercentage);
+ 
+-                float gyroCyclesStdDev = sqrt(devSquared/gyroCyclesCount);
++                float gyroCyclesStdDev = gyroCyclesCount ? sqrt(devSquared/gyroCyclesCount) : 0.0f;
+                 int32_t gyroCyclesStdDev100thus = clockCyclesTo100thMicros((int32_t)gyroCyclesStdDev);
+                 DEBUG_SET(DEBUG_TIMING_ACCURACY, 7, gyroCyclesStdDev100thus);
+                 DEBUG_SET(DEBUG_SCHEDULER_DETERMINISM, 7, gyroCyclesStdDev100thus);
+ 
+-                gyroCyclesMean = gyroCyclesTotal/gyroCyclesCount;
++                gyroCyclesMean = gyroCyclesCount ? gyroCyclesTotal/gyroCyclesCount : 0;
+ 
+                 devSquared = 0.0f;
+                 gyroCyclesTotal = 0;

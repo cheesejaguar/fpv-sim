@@ -1,0 +1,13 @@
+diff --git a/src/main/target/common_post.h b/src/main/target/common_post.h
+index 0cba847..0873e77 100644
+--- a/src/main/target/common_post.h
++++ b/src/main/target/common_post.h
+@@ -501,7 +501,7 @@
+ #define USE_WS2811_SINGLE_COLOUR
+ #endif
+ 
+-#if defined(SIMULATOR_BUILD) || defined(UNIT_TEST)
++#if (defined(SIMULATOR_BUILD) && !defined(WASM_BUILD)) || defined(UNIT_TEST)
+ // This feature uses 'arm_math.h', which does not exist for x86.
+ #undef USE_DYN_NOTCH_FILTER
+ #endif

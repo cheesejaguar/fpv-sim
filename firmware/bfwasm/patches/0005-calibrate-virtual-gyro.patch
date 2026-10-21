@@ -1,0 +1,15 @@
+diff --git a/src/main/sensors/gyro.c b/src/main/sensors/gyro.c
+--- a/src/main/sensors/gyro.c
++++ b/src/main/sensors/gyro.c
+@@ -173,7 +173,10 @@ static bool isOnFirstGyroCalibrationCycle(const gyroCalibration_t *gyroCalibration)
+ 
+ static void gyroSetCalibrationCycles(gyroSensor_t *gyroSensor)
+ {
+-#if defined(USE_VIRTUAL_GYRO) && !defined(UNIT_TEST)
++// fpv-sim: the simulated IMU has real turn-on bias and noise, so calibrate the
++// virtual gyro exactly like a hardware one (upstream SITL skips it because its
++// gyro feed is ideal).
++#if defined(USE_VIRTUAL_GYRO) && !defined(UNIT_TEST) && !defined(__EMSCRIPTEN__)
+     if (gyroSensor->gyroDev.gyroHardware == GYRO_VIRTUAL) {
+         gyroSensor->calibration.cyclesRemaining = 0;
+         return;

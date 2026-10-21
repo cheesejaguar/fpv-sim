@@ -1,0 +1,22 @@
+diff --git a/src/main/fc/init.c b/src/main/fc/init.c
+index 78fa0c8..32ac415 100644
+--- a/src/main/fc/init.c
++++ b/src/main/fc/init.c
+@@ -893,11 +893,17 @@ void init(void)
+     if (featureIsEnabled(FEATURE_OSD)) {
+         osdDisplayPortDevice_e device;
+ 
++#if defined(WASM_BUILD)
++        // The simulator renders the OSD from an in-memory character buffer
++        // (MAX7456-style device) for both SD and HD canvases.
++        device = OSD_DISPLAYPORT_DEVICE_MAX7456;
++#else
+         if (vcdProfile()->video_system == VIDEO_SYSTEM_HD) {
+             device = OSD_DISPLAYPORT_DEVICE_MSP;
+         } else {
+             device = osdConfig()->displayPortDevice;
+         }
++#endif
+ 
+         switch(device) {
+ 

@@ -1,0 +1,25 @@
+diff --git a/src/main/pg/pg.h b/src/main/pg/pg.h
+index d7a2333..c129e3d 100644
+--- a/src/main/pg/pg.h
++++ b/src/main/pg/pg.h
+@@ -72,6 +72,20 @@ extern const pgRegistry_t __pg_registry_end[] __asm("section$end$__DATA$__pg_reg
+ extern const uint8_t __pg_resetdata_start[] __asm("section$start$__DATA$__pg_resetdata");
+ extern const uint8_t __pg_resetdata_end[] __asm("section$end$__DATA$__pg_resetdata");
+ #define PG_RESETDATA_ATTRIBUTES __attribute__ ((section("__DATA,__pg_resetdata"), used, aligned(2)))
++#elif defined(__EMSCRIPTEN__)
++// wasm-ld: section names must be C identifiers; the linker synthesises
++// __start_<name>/__stop_<name> for them (no linker script support).
++extern const pgRegistry_t __start_pg_registry[];
++extern const pgRegistry_t __stop_pg_registry[];
++#define __pg_registry_start __start_pg_registry
++#define __pg_registry_end __stop_pg_registry
++#define PG_REGISTER_ATTRIBUTES __attribute__ ((section("pg_registry"), used, aligned(4)))
++
++extern const uint8_t __start_pg_resetdata[];
++extern const uint8_t __stop_pg_resetdata[];
++#define __pg_resetdata_start __start_pg_resetdata
++#define __pg_resetdata_end __stop_pg_resetdata
++#define PG_RESETDATA_ATTRIBUTES __attribute__ ((section("pg_resetdata"), used, aligned(2)))
+ #else
+ extern const pgRegistry_t __pg_registry_start[];
+ extern const pgRegistry_t __pg_registry_end[];
