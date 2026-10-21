@@ -23,7 +23,7 @@ function frame(g: GateDef) {
 
 /** Upright gates: square / tower (opening above the ground on legs), arch, hurdle, ladder. */
 function uprightGate(g: GateDef, prims: Prim[], gz: number) {
-  const T = GATE_T, w = g.width, h = g.height;
+  const T = g.tube ?? GATE_T, w = g.width, h = g.height;
   const { at, base } = frame(g);
   const z0 = g.c.z, top = z0 + h;
   const post = (lx: number, zb: number, zt: number) => prims.push({ ...base, c: at(lx, 0, (zb + zt) / 2), half: { x: T, y: T, z: (zt - zb) / 2 } });
@@ -51,19 +51,19 @@ function uprightGate(g: GateDef, prims: Prim[], gz: number) {
   }
   if (g.onTop) return;
   if (bottom - gz > 0.12) bar(bottom - T);
-  else prims.push({ ...base, visual: 'metal', mat: 'metal', c: at(0, 0, gz + 0.02), half: { x: w / 2 + 2 * T, y: 0.25, z: 0.02 } }); // weighted base plate
+  else prims.push({ ...base, visual: 'metal', mat: 'metal', c: at(0, 0, gz + 0.02), half: { x: w / 2 + 2 * T, y: g.tube === undefined ? 0.25 : 6 * T, z: 0.02 } }); // weighted base plate
 }
 
 function diveGate(g: GateDef, prims: Prim[], gz: number) {
   // horizontal square frame on four legs: fly down through it
-  const T = GATE_T, w = g.width, z = g.c.z;
+  const T = g.tube ?? GATE_T, w = g.width, z = g.c.z;
   const { at, base } = frame(g);
   const e = w / 2 + T;
   prims.push({ ...base, c: at(0, -e, z), half: { x: e + T, y: T, z: T } });
   prims.push({ ...base, c: at(0, e, z), half: { x: e + T, y: T, z: T } });
   prims.push({ ...base, c: at(-e, 0, z), half: { x: T, y: w / 2, z: T } });
   prims.push({ ...base, c: at(e, 0, z), half: { x: T, y: w / 2, z: T } });
-  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) prims.push({ kind: 'cyl', c: at(sx * e, sy * e, gz), r: 0.04, h: z - T - gz, mat: 'metal', tag: `gate${g.id}` });
+  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) prims.push({ kind: 'cyl', c: at(sx * e, sy * e, gz), r: Math.min(0.04, T * 0.8), h: z - T - gz, mat: 'metal', tag: `gate${g.id}` });
 }
 
 function flag(g: GateDef, prims: Prim[], gz: number) {

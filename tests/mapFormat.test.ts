@@ -68,6 +68,10 @@ describe('schema and loader agree', () => {
     ['inverted indoor box', minimal({ indoor: [{ min: [0, 0, 5], max: [10, 10, 0] }] }), /indoor\[0\]: min must be below max/, false],
     ['indoor wind above 1', minimal({ indoor: [{ min: [0, 0, 0], max: [10, 10, 5], windScale: 2 }] }), /indoor\[0\]\.windScale/],
     ['two base geometries', minimal({ geometry: [{ type: 'quake', src: 'a.map' }, { type: 'quake', src: 'b.map' }] }), /only one Quake or Doom/, false],
+    ['unknown sky', minimal({ environment: { sky: 'midnight' } }), /environment\.sky: must be one of "clear", "overcast", "dusk", "night"/],
+    ['too many lights', minimal({ lights: Array.from({ length: 9 }, () => ({ pos: [0, 0, 5], intensity: 10, range: 10 })) }), /lights: has 9 entries; the budget is 8/],
+    ['light without range', minimal({ lights: [{ pos: [0, 0, 5], intensity: 10 }] }), /lights\[0\]\.range: is required/],
+    ['bad light colour', minimal({ lights: [{ pos: [0, 0, 5], color: 'warm', intensity: 10, range: 10 }] }), /lights\[0\]\.color: must be a colour/],
   ];
   test.each(bad)('rejects %s', async (_, doc, re, inSchema = true) => {
     const clean = JSON.parse(JSON.stringify(doc));
@@ -75,6 +79,15 @@ describe('schema and loader agree', () => {
     const errs = await errorsOf(pkg(clean));
     expect(errs.join('\n')).toMatch(re);
   });
+});
+
+test('night sky and lights load from a package', async () => {
+  const doc = minimal({ environment: { sky: 'night', sun: { azimuthDeg: 140, elevationDeg: 28 } }, lights: [{ pos: [0, 0, 5.5], color: '#fff1dc', intensity: 18, range: 18 }, { pos: [10, 0, 5.5], intensity: 18, range: 18 }] });
+  expect(schemaCheck(doc), JSON.stringify(schemaCheck.errors)).toBe(true);
+  const m = (await loadMapPackage(pkg(doc), { strict: true, checkAssets: true })).build();
+  expect(m.sky).toBe('night');
+  expect(m.lights).toEqual([{ pos: { x: 0, y: 0, z: 5.5 }, color: 0xfff1dc, intensity: 18, range: 18 }, { pos: { x: 10, y: 0, z: 5.5 }, color: 0xffffff, intensity: 18, range: 18 }]);
+  expect((await loadMapPackage(pkg(minimal()), { strict: true })).build().lights).toBeUndefined();
 });
 
 describe('budgets and licence rules', () => {

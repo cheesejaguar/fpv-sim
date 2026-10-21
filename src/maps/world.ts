@@ -28,7 +28,25 @@ export interface GateDef {
   id: number; c: V3; yaw: number; width: number; height: number;
   kind: 'square' | 'arch' | 'flag' | 'dive' | 'hurdle' | 'ladder';
   stack?: number; onTop?: boolean;
+  /** Frame tube half thickness (m), default GATE_T (12 cm tube); tiny-whoop gates use a thin one. */
+  tube?: number;
 }
+
+/**
+ * A light source in the map (interior fixtures, floodlights), drawn as a point light. At most
+ * MAX_MAP_LIGHTS per map. intensity: three.js PointLight intensity with physical decay 2, in the
+ * renderer's light units (the sun is ~4.5), so the illuminance at distance d is ~intensity / d².
+ * range: cut-off distance (m), PointLight.distance.
+ */
+export interface MapLight { pos: V3; color: number; intensity: number; range: number }
+export const MAX_MAP_LIGHTS = 8;
+
+/**
+ * A separately timed gate sequence on the same map (a drill area: slalom, figure-8 ...), flown
+ * instead of `gates` when selected (withCourse). Gate ids are unique across the whole map, so the
+ * renderer draws every course's gates and lights up the selected course's next gate.
+ */
+export interface CourseDef { id: string; name: string; gates: GateDef[]; spawn?: MapDef['spawn'] }
 
 export interface MapDef {
   id: string; name: string;
@@ -38,8 +56,8 @@ export interface MapDef {
   prims: Prim[];
   gates: GateDef[];
   spawn: { pos: V3; yaw: number; groundZ?: number }; // groundZ: floor height at spawn (default: terrain)
-  sun: { azimuthDeg: number; elevationDeg: number };
-  sky: 'clear' | 'overcast' | 'dusk';
+  sun: { azimuthDeg: number; elevationDeg: number }; // sky 'night': the moon
+  sky: 'clear' | 'overcast' | 'dusk' | 'night';
   wakeZones: WakeZone[];               // obstacle footprints (building / tree line): wake laid out downwind
   elevationM: number;
   trees: { x: number; y: number; h: number; r: number; type: 'pine' | 'oak' }[];
@@ -52,10 +70,19 @@ export interface MapDef {
   fog?: { color: number; density: number }; // FogExp2 override (default: from sky)
   groundTexture?: string;             // image URL for the terrain (default: from groundMat)
   meshes?: MeshInstance[];            // glTF meshes to draw (their collision, if any, is in prims)
+  lights?: MapLight[];                // point lights (<= MAX_MAP_LIGHTS): interior fixtures, floodlights
+  courses?: CourseDef[];              // drill areas timed on their own (gates = the default course)
+  collisionCell?: number;             // collision grid cell size (m), default 8; dense interiors use a finer grid
 }
 
 /** A .glb drawn by the renderer: placed at pos (ENU), rotated by yaw about +z, uniformly scaled. */
 export interface MeshInstance { url: string; pos: V3; yaw: number; scale: number }
+
+/** The map flying course `courseId` (its gates and start), or the map itself for the default course / an unknown id. */
+export function withCourse(m: MapDef, courseId?: string): MapDef {
+  const c = courseId ? m.courses?.find((x) => x.id === courseId) : undefined;
+  return c ? { ...m, gates: c.gates, spawn: c.spawn ?? m.spawn } : m;
+}
 
 /** Floor height under the spawn point. */
 export const spawnGroundZ = (m: MapDef) => m.spawn.groundZ ?? m.terrain(m.spawn.pos.x, m.spawn.pos.y);
@@ -69,7 +96,7 @@ export function pilotPos(m: MapDef, o: V3): V3 {
 // ---------------------------------------------------------------------------------------------
 
 export class PrimitiveWorld implements CollisionWorld {
-  private cell = 8;
+  private cell: number;
   private grid = new Map<number, Prim[]>();
   private boxRot = new Map<BoxPrim, { c: number; s: number; cp: number; sp: number }>();
   readonly brushes = new BrushGrid();
@@ -78,6 +105,7 @@ export class PrimitiveWorld implements CollisionWorld {
   private tGrad = { x: Infinity, y: Infinity, nx: 0, ny: 0, nz: 1 };
   private hasCanopy = false;
   constructor(public map: MapDef) {
+    this.cell = map.collisionCell ?? 8;
     for (const p of map.prims) {
       // foliage spheres and thick foliage boxes are volumes; thin ones (safety nets, flags) stay solid
       if (p.mat === 'foliage' && (p.kind === 'sphere' || (p.kind === 'box' && Math.min(p.half.x, p.half.y, p.half.z) > 0.25))) this.insertCanopy(p);
