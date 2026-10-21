@@ -255,8 +255,10 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
   add(0, 0, frame.stackHeightMm / 2000, Math.min(frame.plateWidthMm, frame.stackHeightMm * 1.4) / 2000, 'frame');
   add(frame.plateLengthMm / 2200, 0, frame.stackHeightMm / 2000, 0.016 * sz, 'camera');
   add(-frame.plateLengthMm / 2400, 0, frame.stackHeightMm / 2000, 0.014 * sz, 'frame');
-  add(bd[0] / 3000, 0, batZ, bd[2] / 2000, 'battery');
-  add(-bd[0] / 3000, 0, batZ, bd[2] / 2000, 'battery');
+  // the pack as a box: four spheres of its half-thickness along its long edges, so a pack under the
+  // frame is a flat face to stand on (two on the centre line were a knife edge the quad fell off)
+  const batR = Math.min(bd[1], bd[2]) / 2000, batY = Math.max(0, bd[1] / 2000 - batR);
+  for (const sx of [1, -1]) for (const sy of [1, -1]) add(sx * bd[0] / 3000, sy * batY, batZ, batR, 'battery');
   // Gaps between spheres must stay well under the thinnest obstacle (8 cm posts, 12 cm gate tubes):
   // arm 3 spheres (≤ 1.5 cm gaps), prop disc an outer ring of 9 + inner ring of 4 (≤ 2.5 cm gaps).
   const armR = frame.armThicknessMm / 1000 + 0.002;
@@ -272,6 +274,17 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
       else add(h.x + Math.cos(a) * R * 0.9, h.y + Math.sin(a) * R * 0.9, h.z, 0.008 * sz, 'prop', k);
     }
     if (!ducted) for (let j = 0; j < 4; j++) { const a = ((j + 0.5) / 4) * 2 * Math.PI; add(h.x + Math.cos(a) * R * 0.52, h.y + Math.sin(a) * R * 0.52, h.z, 0.008 * sz, 'prop', k); }
+  }
+  // Whoops stand on their duct rims: the moulded guards run down past the battery cradle, so the pack
+  // sits between the ducts, 1 mm off the floor. (A pack hanging below on its two centre-line spheres
+  // made the quad fall over onto one duct: 13° of roll on the pad, and Angle mode learnt it as level.)
+  if (ducted) {
+    const low = Math.min(...colliders.map((c) => c.pos.z - c.radius)) + cg.z; // lowest body point, frame z
+    const rr = Math.max(0.002, ductH / 4);
+    for (let k = 0; k < 4; k++) {
+      const h = hubs[k];
+      for (let j = 0; j < 6; j++) { const a = ((j + 0.5) / 6) * 2 * Math.PI; add(h.x + Math.cos(a) * R * 1.08, h.y + Math.sin(a) * R * 1.08, low - 0.001 + rr, rr, 'frame'); }
+    }
   }
 
   // ---------- structure / IMU ----------
