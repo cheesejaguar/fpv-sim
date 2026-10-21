@@ -24,6 +24,9 @@ export const CHAPTERS: Chapter[] = [
     id: 'arming', title: 'Arming & the switches', minutes: 3,
     html: `<p>A quad's motors only spin once it is <b>armed</b>. Betaflight arms when the <b>ARM</b> mode switch (AUX1 here) goes high, as long as no safety check is blocking it.</p>
       <table class="gm-table-lite"><thead><tr><th>Action</th><th>Xbox / Steam</th><th>PlayStation</th><th>Keyboard</th></tr></thead><tbody>
+      <tr><td>Throttle (up / down)</td><td>Left stick ↕</td><td>Left stick ↕</td><td>W / S</td></tr>
+      <tr><td>Yaw (turn left / right)</td><td>Left stick ↔</td><td>Left stick ↔</td><td>A / D</td></tr>
+      <tr><td>Pitch / roll</td><td>Right stick</td><td>Right stick</td><td>Arrow keys</td></tr>
       <tr><td>Arm / disarm (AUX1)</td><td>RB</td><td>R1</td><td>Space</td></tr>
       <tr><td>Flight mode, Acro → Horizon → Angle (AUX2)</td><td>LB</td><td>L1</td><td>1 / 2 / 3</td></tr>
       <tr><td>Turtle mode (AUX3)</td><td>X</td><td>□</td><td>T</td></tr>
@@ -35,23 +38,25 @@ export const CHAPTERS: Chapter[] = [
       <tr><td>Hover drill / noise spectrum</td><td>D-pad ← / →</td><td>D-pad ← / →</td><td>G / F</td></tr>
       <tr><td>Pause menu</td><td>Menu / Start</td><td>Options</td><td>Esc</td></tr>
       </tbody></table>
-      <p>Sticks are <b>Mode 2</b>: left stick is throttle (up/down) and yaw (left/right), right stick is pitch and roll. Radios and other controllers can be remapped in <b>Settings → Controller</b>.</p>
+      <p>Sticks are <b>Mode 2</b>: left stick is throttle (up/down) and yaw (left/right), right stick is pitch and roll. Radios and other controllers can be remapped in <b>Settings → Controller</b>. On the keyboard the throttle stays where you leave it: hold <kbd>W</kbd> to add, <kbd>S</kbd> to take it off.</p>
       <h4>When it won't arm</h4>
       <p>Betaflight lists the reasons in the <b>arming disabled flags</b>. The telemetry overlay (H) shows them after <code>blocked:</code>. The common ones:</p>
+      <p>While the quad is disarmed, a coach card in flight says what is blocking and how to fix it.</p>
       <ul><li><code>THROTTLE</code>: throttle isn't at the bottom. Pull the left stick fully down and arm again.</li>
       <li><code>RXLOSS</code> / <code>FAILSAFE</code>: no RC link. Check that the controller is detected.</li>
       <li><code>CLI</code> / <code>MSP</code>: a configurator or the CLI is connected. Leave the CLI with <code>exit</code>.</li>
       <li><code>BOOTGRACE</code> / <code>CALIB</code>: the FC just rebooted and is still calibrating the gyro. Wait a second.</li>
-      <li><code>ARMSWITCH</code>: the arm switch was already on when the FC booted. Flip it off, then on.</li></ul>
+      <li><code>ARMSWITCH</code>: the arm switch was already on when the FC booted. Flip it off, then on.</li>
+      <li><code>ANGLE</code>: the quad is tilted too far to arm. Respawn to put it level on the pad.</li></ul>
       ${warn('Treat every armed quad as live. On a real one, never arm with props on while it is close to you or on the bench.')}`,
     actions: [{ label: 'Controller setup', go: 'controller' }],
   },
   {
     id: 'modes', title: 'Flight modes', minutes: 3,
     html: `<table class="gm-table-lite"><thead><tr><th>Mode</th><th>What the sticks do</th><th>Use it for</th></tr></thead><tbody>
-      <tr><td><b>Acro</b> (rate)</td><td>The right stick commands <i>rotation speed</i>. Centre the stick and the quad holds whatever angle it is at. It never levels itself.</td><td>Real FPV flying, racing and freestyle. Every pilot ends up here.</td></tr>
+      <tr><td><b>Acro</b> (rate)</td><td>The right stick commands <i>rotation speed</i>. Center the stick and the quad holds whatever angle it is at. It never levels itself.</td><td>Real FPV flying, racing and freestyle. Every pilot ends up here.</td></tr>
       <tr><td><b>Angle</b></td><td>The right stick commands <i>tilt angle</i> (limited, around 55°). Let go and it levels.</td><td>The first hover practice and line-of-sight flying.</td></tr>
-      <tr><td><b>Horizon</b></td><td>Self-levels near centre stick and flips at full stick.</td><td>A bridge between Angle and Acro.</td></tr>
+      <tr><td><b>Horizon</b></td><td>Self-levels near center stick and flips at full stick.</td><td>A bridge between Angle and Acro.</td></tr>
       <tr><td><b>Turtle</b> (crash flip)</td><td>Disarmed, upside down: arm with Turtle on, and the stick spins pairs of motors backwards to flip the quad over.</td><td>Getting back in the air after a crash without walking over.</td></tr>
       </tbody></table>
       ${tip('Learn in Acro early. Use the hover drill (New Game → Hover drill, or the G key) to build throttle control first, then do slow figure-eights in Acro.')}
@@ -61,15 +66,15 @@ export const CHAPTERS: Chapter[] = [
   {
     id: 'rates', title: 'Rates', minutes: 4,
     html: `<p><b>Rates</b> turn stick deflection into a rotation speed in degrees per second. Betaflight 4.5 uses <b>Actual rates</b>, which have three numbers per axis:</p>
-      <ul><li><b>Center sensitivity</b> (<code>roll_rc_rate</code> ×10 °/s): how fast the quad turns for small stick moves near the centre. Lower values give finer control.</li>
-      <li><b>Max rate</b> (<code>roll_srate</code> ×10 °/s): the rotation speed at full stick. 600–800 °/s is typical freestyle, 400–600 °/s is calmer.</li>
-      <li><b>Expo</b> (<code>roll_expo</code>): bends the curve, so the area around centre stays soft while the maximum stays the same.</li></ul>
-      <p>Drag the sliders and watch the curve. The default is 70 / 670 / 0.</p>`,
+      <ul><li><b>Center sensitivity</b> (<code>roll_rc_rate</code>, stored in the CLI in steps of 10 °/s): how fast the quad turns for small stick moves near the center. Lower values give finer control.</li>
+      <li><b>Max rate</b> (<code>roll_srate</code>, also in steps of 10 °/s): the rotation speed at full stick. 600–800 °/s is typical freestyle, 400–600 °/s is calmer.</li>
+      <li><b>Expo</b> (<code>roll_expo</code>): bends the curve, so the area around center stays soft while the maximum stays the same.</li></ul>
+      <p>Drag the sliders and watch the curve. The default is 70 / 670 / 0. The Betaflight tab shows the same values in °/s.</p>`,
     figure: rateExplorer,
     actions: [{ label: 'Open rates in Betaflight', go: 'bf' }],
   },
   {
-    id: 'pids', title: 'PIDs, without the maths', minutes: 4,
+    id: 'pids', title: 'PIDs, without the math', minutes: 4,
     html: `<p>Every gyro sample, Betaflight's PID controller computes the error, meaning how far the measured rotation is from the requested one, and corrects it with these terms:</p>
       <table class="gm-table-lite"><thead><tr><th>Term</th><th>Job</th><th>Too low</th><th>Too high</th></tr></thead><tbody>
       <tr><td><b>P</b></td><td>Pushes against the error now</td><td>Mushy, floaty, drifts in wind</td><td>Fast oscillation, buzzy after flips</td></tr>
@@ -99,9 +104,10 @@ export const CHAPTERS: Chapter[] = [
       <tr><td><b>LQ</b></td><td>Link quality: the percentage of RC packets that arrive. The sim's ELRS-style link drops packets with distance and obstructions. Below about 70 % control gets stuttery. At 0 Betaflight goes into failsafe.</td></tr>
       <tr><td><b>RSSI dBm</b></td><td>Received signal strength. Around −50 dBm is close and strong. Near the receiver's sensitivity limit (about −105 to −110 dBm at 250 Hz) packets start dropping.</td></tr>
       <tr><td>Flight mode / timers</td><td>Active mode, armed time and on time.</td></tr>
-      <tr><td>Warnings</td><td>Messages such as <code>RXLOSS</code>, <code>LOW BATTERY</code> and <code>CRASH FLIP</code> blink in the centre.</td></tr>
+      <tr><td>Warnings</td><td>Messages such as <code>RXLOSS</code>, <code>LOW BATTERY</code> and <code>CRASH FLIP</code> blink in the center.</td></tr>
       </tbody></table>
       ${tip('Higher RC transmitter power (Settings → Simulation → RC transmitter power) extends range. A lower packet rate also adds range, at the cost of latency.')}
+      ${warn('<b>Photosensitivity:</b> the simulated video link flickers. Analog snow and static, digital break-up and 1S brownouts (the picture drops out for a second on a hard punch) can flash rapidly. If flashing images affect you, turn off <b>Settings → Simulation → Video link degradation</b>.')}
       <p>Move OSD elements with the CLI using <code>set osd_&lt;element&gt;_pos</code>, or import a layout from your own quad's <code>diff all</code>.</p>`,
     actions: [{ label: 'Simulation settings', go: 'sim' }],
   },
@@ -118,18 +124,19 @@ exit                   # leave without saving</pre>
       <li>Here, open <b>Settings → Betaflight → Bring your real quad</b>, paste it and select <b>Preview</b>.</li>
       <li>Rates, PIDs, filters, modes and OSD layout are applied to the simulated FC. Hardware lines that would break the sim (resources, serial pins, the board's own motor protocol) are skipped and listed so you can see what was skipped.</li></ol>
       ${warn('<code>save</code> reboots the flight controller and disarms it. The simulated FC reboots just like a real one, so land first.')}
-      <p>You can also go the other way: <b>Export sim diff all</b> gives you a tune you have dialled in here, to paste into a real quad.</p>`,
+      <p>Importing backs up the simulated FC's own setup first: <b>Restore backup</b> undoes it, and <b>Restore sim defaults</b> starts over from the simulator's first-boot configuration.</p>
+      <p>You can also go the other way: <b>Export sim diff all</b> gives you a tune you have dialed in here, to paste into a real quad.</p>`,
     actions: [{ label: 'Open the CLI', go: 'bf' }],
   },
   {
     id: 'first', title: 'Your first flight', minutes: 2,
     html: `<ol>
       <li><b>Pick a build.</b> A tiny whoop (New Game → Drone) is slow and forgiving. A 5" quad is the standard freestyle and racing class.</li>
-      <li><b>Check the controller.</b> Move the sticks and confirm the stick preview (H) follows them. Throttle should rest at the bottom.</li>
-      <li><b>Arm in Angle.</b> Press LB until the OSD shows <code>ANGL</code>, then arm with RB.</li>
-      <li><b>Hover.</b> Add throttle slowly until the quad lifts, and hold it about a metre up. The hover drill scores this.</li>
+      <li><b>Check the controller.</b> Move the sticks and confirm the stick preview (H) follows them. Throttle should rest at the bottom. No controller? The keyboard works for a first try: <kbd>W</kbd> / <kbd>S</kbd> throttle, <kbd>A</kbd> / <kbd>D</kbd> yaw, the arrow keys pitch and roll.</li>
+      <li><b>Arm in Angle.</b> Press LB (or 3 on the keyboard) until the OSD shows <code>ANGL</code>, then arm with RB (Space).</li>
+      <li><b>Hover.</b> Add throttle slowly until the quad lifts, and hold it about a meter up. The hover drill scores this.</li>
       <li><b>Switch to Acro</b> once hovering feels easy. Fly slow laps of the stadium and keep the horizon level with gentle inputs.</li>
-      <li><b>Crash, respawn, repeat.</b> A (✕) respawns. Menu / Options or Esc opens the pause menu.</li></ol>
+      <li><b>Crash, respawn, repeat.</b> A (✕) or R respawns. Menu / Options or Esc opens the pause menu.</li></ol>
       ${tip('Ten minutes a day beats an hour a week. The sim models the hard parts honestly: battery sag, prop wash, video latency and link loss. Skills you build here carry over to a real quad.')}`,
     actions: [{ label: 'Fly now', go: 'fly' }],
   },

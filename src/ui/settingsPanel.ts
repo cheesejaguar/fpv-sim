@@ -3,7 +3,7 @@ import { filesFromDrop, filesFromList, loadLocalMap } from '../maps/localMaps';
 import { MapFormatError } from '../maps/mapFormat';
 import { MAP_LIST, MapEntry } from '../maps/maps';
 import { SimSettings } from '../worker/shared';
-import { checkbox, el, section, select, slider } from './dom';
+import { checkbox, el, onUnmount, section, select, slider } from './dom';
 
 export interface ViewSettings {
   osdFont: string;
@@ -20,11 +20,27 @@ export interface ViewSettings {
   highlightGate: boolean;  // make the next race gate glow
 }
 
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: true, osd: true, view: 'fpv', linkEffects: true, highlightGate: true };
+// the training telemetry overlay is opt-in (H / D-pad down): new pilots see the OSD, not a wall of numbers
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true };
 
-export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void): HTMLElement {
+/** What the latency readout needs from the running app (optional: falls back to the debug handle). */
+export interface LatencySource {
+  /** the selected drone's video system */
+  video(): { name: string; latencyMs: number };
+  /** glass-to-glass latency the frame loop actually emulates, when the camera exposes it */
+  effectiveLatencyMs?(): number | undefined;
+}
+
+/** The emulated delay on top of what the display adds, and what the pilot ends up seeing (ms). */
+export function glassToGlass(targetMs: number, displayMs: number): { addedMs: number; effectiveMs: number; displayBound: boolean } {
+  const addedMs = Math.max(0, targetMs - displayMs);
+  return { addedMs, effectiveMs: addedMs + displayMs, displayBound: displayMs > targetMs };
+}
+
+export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void, latency?: LatencySource): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
-  const pushS = () => onSim(structuredClone(s)), pushV = () => onView(structuredClone(v));
+  const lat = latencyReadout(v, latency);
+  const pushS = () => onSim(structuredClone(s)), pushV = () => { onView(structuredClone(v)); lat.update(); };
   const credit = el('p', { class: 'note' }, MAP_LIST[s.mapId]?.credit ?? '');
   const mapLabel = (m: MapEntry) => (m.community ? `${m.name} — ${m.community.local ? 'from disk' : `${m.community.author}, ${m.community.license}`}` : m.name);
   const mapSelect = () => select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: mapLabel(m) })), s.mapId, (x) => { s.mapId = x; credit.textContent = MAP_LIST[x]?.credit ?? ''; pushS(); });
@@ -60,12 +76,14 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
           select('OSD font', ['betaflight', 'default', 'bold', 'clarity', 'digital', 'impact', 'large', 'vision'].map((f) => ({ value: f, label: f })), v.osdFont, (x) => { v.osdFont = x; pushV(); }),
           checkbox('Show OSD', v.osd, (x) => { v.osd = x; pushV(); }),
           checkbox('Video link degradation (range, walls, multipath)', v.linkEffects, (x) => { v.linkEffects = x; pushV(); }),
+          el('p', { class: 'note photo' }, '⚠ Photosensitivity: analog snow, static and 1S brownout dropouts flicker rapidly. If flashing images affect you, turn video link degradation off.'),
           slider({ label: 'Render scale', min: 0.5, max: 2, step: 0.25, value: v.renderScale, onInput: (x) => { v.renderScale = x; pushV(); } }).row,
           select('Cube map resolution', [{ value: '512', label: '512' }, { value: '768', label: '768' }, { value: '1024', label: '1024' }, { value: '1536', label: '1536' }], String(v.cubeSize), (x) => { v.cubeSize = +x; pushV(); }),
+          lat.el,
           slider({ label: 'Latency override (0 = system)', min: 0, max: 150, step: 1, value: v.latencyOverrideMs, unit: 'ms', onInput: (x) => { v.latencyOverrideMs = x; pushV(); } }).row,
           checkbox('Auto-measure display latency', v.displayCompAuto, (x) => { v.displayCompAuto = x; pushV(); }),
-          slider({ label: 'Display pipeline compensation', min: 0, max: 50, step: 1, value: v.displayCompMs, unit: 'ms', hint: 'Your monitor + browser already add latency; it is subtracted from the emulated glass-to-glass delay (used when auto-measure is off)', onInput: (x) => { v.displayCompMs = x; pushV(); } }).row,
-          el('p', { class: 'note' }, 'A 60 Hz monitor and browser add ~30-45 ms by themselves, as much as an analog or HDZero system: for the true feel of those, use a 144 Hz+ display.'),
+          slider({ label: 'Display pipeline compensation', min: 0, max: 50, step: 1, value: v.displayCompMs, unit: 'ms', hint: 'Your monitor and browser already add latency. It is subtracted from the emulated glass-to-glass delay (used when auto-measure is off).', onInput: (x) => { v.displayCompMs = x; pushV(); } }).row,
+          el('p', { class: 'note' }, 'A 60 Hz monitor and browser add about 30–45 ms by themselves, as much as a whole analog or HDZero system. For the true feel of those, use a 120 Hz or faster display.'),
         ),
         section('Audio / HUD',
           checkbox('Motor sound', v.audio, (x) => { v.audio = x; pushV(); }),
@@ -77,6 +95,48 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
       ),
     ),
   );
+}
+
+/**
+ * Effective glass-to-glass latency of the selected video system: the system's own delay (or the
+ * override), what this display adds (measured frame interval, as the frame loop estimates it, or
+ * the manual compensation) and the result. Refreshes twice a second while the panel is shown.
+ */
+function latencyReadout(v: ViewSettings, src?: LatencySource): { el: HTMLElement; update(): void } {
+  const box = el('div', { class: 'latency', role: 'status' });
+  // fallback until the app passes a LatencySource: the running app's debug handle
+  const app = () => (window as any).__fpv?.ctx;
+  const video = () => src?.video() ?? app()?.build?.info?.components?.video as { name: string; latencyMs: number } | undefined;
+  const measured = () => src?.effectiveLatencyMs?.() ?? (app()?.fpv as { effectiveLatencyMs?: number } | undefined)?.effectiveLatencyMs;
+  let frameMs = 16.7, last = 0, raf = 0, seen = false;
+  const tick = (t: number) => {
+    if (last) { const d = t - last; if (d > 2 && d < 100) frameMs += (d - frameMs) * 0.1; }
+    last = t;
+    seen ||= box.isConnected;
+    if (box.isConnected || !seen) raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+  const update = () => {
+    const vs = video();
+    if (!vs) { box.replaceChildren(); return; }
+    const target = v.latencyOverrideMs || vs.latencyMs;
+    const display = v.displayCompAuto ? Math.min(50, 1.5 * frameMs + 6) : v.displayCompMs;
+    const g = glassToGlass(target, display);
+    const eff = measured() ?? g.effectiveMs;
+    const hz = Math.round(1000 / frameMs);
+    box.classList.toggle('warn', g.displayBound || hz < 100);
+    const kids: HTMLElement[] = [
+      el('div', {}, el('b', {}, `${Math.round(eff)} ms`), 'effective glass-to-glass'),
+      el('p', {}, `${vs.name.replace(/\s*\([^)]*\)/g, '')}: ${Math.round(target)} ms ${v.latencyOverrideMs ? '(override)' : 'in real goggles'}. Your ${hz} Hz display adds about ${Math.round(display)} ms${g.displayBound ? ', more than the whole system, so the sim adds nothing.' : `, and the sim adds the other ${Math.round(g.addedMs)} ms.`}`),
+    ];
+    if (hz < 100) kids.push(el('p', {}, 'Use a 120 Hz or faster display for the true feel of low-latency video.'));
+    box.replaceChildren(...kids);
+  };
+  const timer = window.setInterval(() => { if (!box.isConnected && seen) { cancel(); return; } update(); }, 500);
+  const cancel = () => { clearInterval(timer); cancelAnimationFrame(raf); };
+  onUnmount(box, cancel);
+  update();
+  return { el: box, update };
 }
 
 /** "Load map from disk": a map package (.zip, folder or files) picked or dropped, validated and selected. */
