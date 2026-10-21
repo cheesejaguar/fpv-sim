@@ -22,6 +22,7 @@ import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { builderPanel } from './ui/builderPanel';
 import { el } from './ui/dom';
 import { inputPanel } from './ui/inputPanel';
+import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
 import { DEFAULT_VIEW, settingsPanel, ViewSettings } from './ui/settingsPanel';
 import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, newestTime, R, REC, sampleRing, SimSettings, Telemetry, ToWorker } from './worker/shared';
 
@@ -29,7 +30,8 @@ import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, newestTime, R
 const load = <T,>(k: string, d: T): T => { try { const s = localStorage.getItem(k); return s ? { ...d, ...JSON.parse(s) } : d; } catch { return d; } };
 const store = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 
-let spec: DroneSpec = load('fpv-spec', DEFAULT_SPEC);
+// first run starts on the easiest quad (65 mm tiny whoop); after that, whatever the pilot flew last
+let spec: DroneSpec = load('fpv-spec', EASY_SPEC);
 let simSettings: SimSettings = load('fpv-sim-settings', DEFAULT_SETTINGS);
 let view: ViewSettings = load('fpv-view', DEFAULT_VIEW);
 
@@ -96,7 +98,7 @@ renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 app.append(renderer.domElement);
-window.addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); chaseCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); });
+window.addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); chaseCam.aspect = orbitCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); orbitCam.updateProjectionMatrix(); });
 
 if (!MAPS[simSettings.mapId]) simSettings.mapId = 'field';
 await preloadMap(simSettings.mapId).catch((e) => { console.warn(e); simSettings.mapId = 'field'; });
@@ -115,7 +117,7 @@ const link = new VideoLink();
 const audio = new MotorAudio();
 const input = new InputManager();
 input.onReset = () => { onRespawn(); send({ type: 'reset', repair: true }); };
-input.onMenu = () => toggleMenu();
+input.onMenu = () => gameMenu.toggle();
 const blackbox = new Blackbox();
 // Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
 const mp = new MultiplayerClient();
@@ -129,13 +131,16 @@ mp.onMap = (m) => {
   applyingRoomMap = false;
   log(`Room switched the map to ${MAPS[m]().name}`);
 };
-function joinRoom(code: string) {
+/** room: name / visibility, used if we are the first pilot in (the host) */
+function joinRoom(code: string, room?: { name: string; public: boolean }) {
   const p = loadPilot();
-  mp.join(code, { name: p.name, color: p.color, frame: build.info.components.frame.sizeClass, map: simSettings.mapId });
+  mp.join(code, { name: p.name, color: p.color, frame: build.info.components.frame.sizeClass, map: simSettings.mapId, room });
   history.replaceState(null, '', inviteLink(code));
 }
 const drillMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 16), new THREE.MeshBasicMaterial({ color: 0x39b6ff, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
 const chaseCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 3000);
+// title-screen backdrop: a slow orbit around the quad sitting on the pad
+const orbitCam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 3000);
 
 function makeDroneModel(b: DroneBuild) {
   const cgMm = b.info.cgMm;
@@ -187,7 +192,8 @@ function applyView(v: ViewSettings) {
 setInterval(() => { const ch = input.poll(); sh.rc.set(ch); Atomics.add(sh.ctrl, 0, 1); }, 4);
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
-  if (e.code === 'Escape') toggleMenu();
+  if (menuOpen) return; // the menu handles its own keys
+  if (e.code === 'Escape') gameMenu.toggle();
   if (e.code === 'KeyR') sendReset();
   if (e.code === 'KeyC') { const order: ViewSettings['view'][] = ['fpv', 'chase', 'los']; applyView({ ...view, view: order[(order.indexOf(view.view) + 1) % 3] }); }
   if (e.code === 'KeyH') applyView({ ...view, telemetry: !view.telemetry });
@@ -310,6 +316,8 @@ function drawSpectrum() {
 const rec = new Float64Array(REC);
 let lastCrash: string | null = null;
 function updateHud() {
+  hud.style.display = menuOpen ? 'none' : '';
+  if (menuOpen) return;
   status.textContent = fwStatus;
   status.style.display = fwStatus ? 'block' : 'none';
   padBox.style.display = input.active ? 'none' : 'block';
@@ -371,45 +379,54 @@ function updateHud() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Menu
+// Menu (title screen, new game, server browser, settings, Betaflight guide, pause)
 let menuOpen = false;
 const pauseInMenu = true;
-const menu = el('div', { class: 'menu hidden' });
-const tabs = el('nav', { class: 'tabs' });
-const body = el('div', { class: 'menu-body' });
-menu.append(el('header', {}, el('h1', {}, 'FPV Sim'), el('span', { class: 'sub' }, 'Betaflight-in-the-loop FPV trainer · ', el('a', { href: 'https://github.com/cheesejaguar/fpv-sim', target: '_blank', rel: 'noopener' }, 'source (GPL-3.0)')), tabs, el('button', { class: 'close', onclick: () => toggleMenu() }, 'Fly ▶')), body);
-app.append(menu);
 const bfBridge = {
   cliBatch: (lines: string[]) => new Promise<string>((res) => { const id = batchId++; batchWaiters.set(id, res); send({ type: 'cliBatch', lines, id }); }),
   cliSend: (text: string) => send({ type: 'cli', text }),
   onCliOut: (cb: (t: string) => void) => { cliListeners.push(cb); },
 };
-const TABS: [string, () => HTMLElement][] = [
-  ['Drone builder', () => builderPanel(() => spec, (s) => { applySpec(s); toggleMenu(); })],
-  ['Betaflight', () => bfPanel(bfBridge, {
-    hardwareCli: (keepOsdLayout, propsOut) => simHardwareCli(build, { keepOsdLayout, propsOut }),
-    propsOut: () => spec.propDirection === 'props-out',
-    setPropsOut: (out) => applySpec({ ...spec, propDirection: out ? 'props-out' : 'props-in' }),
-  })],
-  ['Controller', () => inputPanel(input)],
-  ['Simulation', () => settingsPanel(simSettings, view, applySim, applyView)],
-  ['Multiplayer', () => multiplayerPanel(mp, joinRoom)],
-  ['Blackbox', () => el('div', { class: 'panel' }, el('section', { class: 'sec' }, el('h3', {}, 'Blackbox-lite recorder'),
+function blackboxPanel(): HTMLElement {
+  const root = el('div', { class: 'panel' });
+  const render = () => root.replaceChildren(el('section', { class: 'sec' }, el('h3', {}, 'Blackbox-lite recorder'),
     el('p', {}, `Records the 1 kHz true state, raw gyro, motor DShot outputs and RPM, battery and your RC sticks whenever the quad is armed (last 5 minutes kept). ${blackbox.length} samples recorded.`),
-    el('div', { class: 'actions' }, el('button', { class: 'primary', onclick: () => blackbox.download() }, 'Download CSV'), el('button', { onclick: () => { blackbox.clear(); renderTabs(); } }, 'Clear')))),
+    el('div', { class: 'actions' }, el('button', { class: 'primary', onclick: () => blackbox.download() }, 'Download CSV'), el('button', { onclick: () => { blackbox.clear(); render(); } }, 'Clear'))));
+  render();
+  return root;
+}
+/** New game / respawn from the menu: repaired quad, fresh battery, the chosen mode. */
+function startFlight(mode: GameMode) {
+  drill.on = mode === 'drill'; drill.t0 = -1; drill.inside = 0;
+  bestLap = Infinity; lastLap = 0; lapCount = 0;
+  sendReset(true);
+}
+const gameMenu = new GameMenu({
+  input, mp,
+  spec: () => spec, applySpec,
+  sim: () => simSettings, applySim: (s) => applySim(s),
+  build: () => build,
+  fwStatus: () => fwStatus,
+  settingsTabs: [
+    { id: 'sim', label: 'Simulation', icon: 'sliders', render: () => settingsPanel(simSettings, view, applySim, applyView) },
+    { id: 'controller', label: 'Controller', icon: 'gamepad', render: () => inputPanel(input) },
+    { id: 'bf', label: 'Betaflight', icon: 'cpu', render: () => bfPanel(bfBridge, {
+      hardwareCli: (keepOsdLayout, propsOut) => simHardwareCli(build, { keepOsdLayout, propsOut }),
+      propsOut: () => spec.propDirection === 'props-out',
+      setPropsOut: (out) => applySpec({ ...spec, propDirection: out ? 'props-out' : 'props-in' }),
+    }) },
+    { id: 'builder', label: 'Drone builder', icon: 'wrench', render: () => builderPanel(() => spec, (s) => { applySpec(s); gameMenu.resume(); }) },
+    { id: 'mp', label: 'Multiplayer', icon: 'users', render: () => multiplayerPanel(mp, joinRoom) },
+    { id: 'blackbox', label: 'Blackbox', icon: 'database', render: blackboxPanel },
   ],
-];
-let tabIdx = 0;
-function renderTabs() {
-  tabs.replaceChildren(...TABS.map(([n], i) => el('button', { class: i === tabIdx ? 'on' : '', onclick: () => { tabIdx = i; renderTabs(); } }, n)));
-  body.replaceChildren(TABS[tabIdx][1]());
-}
-function toggleMenu() {
-  menuOpen = !menuOpen;
-  menu.classList.toggle('hidden', !menuOpen);
-  if (menuOpen) { input.disarm(); renderTabs(); }
-  send({ type: 'settings', settings: { ...simSettings, paused: menuOpen && pauseInMenu } });
-}
+  startFlight, joinRoom,
+  onOpenChange: (open) => {
+    menuOpen = open;
+    input.suspended = open; // menu buttons must not arm / switch modes / respawn
+    send({ type: 'settings', settings: { ...simSettings, paused: open && pauseInMenu } });
+  },
+});
+app.append(gameMenu.root);
 
 // ---------------------------------------------------------------------------------------------
 // Frame loop
@@ -447,7 +464,20 @@ function animate(now: number) {
   // props spin visual
   const rpmNow = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]];
   sceneB.setGateHighlight(nextGate, view.highlightGate, now / 1000);
-  if (view.view === 'fpv') {
+  if (gameMenu.backdrop) {
+    if (poseAt(head)) {
+      const p = drone.root.position;
+      const r = Math.max(0.28, build.info.components.frame.wheelbaseMm / 225 * 0.85);
+      const a = matchMedia('(prefers-reduced-motion: reduce)').matches ? 2.2 : now * 0.00016 + 2.2;
+      orbitCam.position.set(p.x + Math.cos(a) * r, p.y + 0.32 * r + 0.04, p.z + Math.sin(a) * r);
+      orbitCam.lookAt(p.x, p.y + 0.02, p.z);
+      sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(p);
+      sceneB.sun.target.position.copy(p);
+      renderer.shadowMap.needsUpdate = true;
+      renderer.setRenderTarget(null);
+      renderer.render(sceneB.scene, orbitCam);
+    }
+  } else if (view.view === 'fpv') {
     if (tCap !== lastCap && poseAt(tCap)) {
       const dtw = (now - lastCapWall) / 1000; lastCapWall = now;
       lastCap = tCap;
@@ -518,6 +548,7 @@ requestAnimationFrame(animate);
   const code = new URLSearchParams(location.search).get('room')?.toUpperCase();
   if (code && /^[A-Z0-9]{4,8}$/.test(code)) joinRoom(code);
 }
+gameMenu.open('title');
 
 // debugging handle (inspect from devtools)
-(window as any).__fpv = { mp, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };
+(window as any).__fpv = { mp, menu: gameMenu, get scene() { return sceneB.scene; }, sh, R, REC, sampleRing, newestTime, get tel() { return tel; }, get spectrum() { return specView; }, input, link, cli: (lines: string[]) => bfBridge.cliBatch(lines) };

@@ -18,6 +18,8 @@
     "map:validate": "node scripts/validate-map.mjs"
   },
   "dependencies": {
+    "@fontsource/chakra-petch": "^5.3.0",
+    "@fontsource/russo-one": "^5.3.0",
     "three": "^0.186.1",
     "three-mesh-bvh": "^0.9.16"
   },

@@ -93,6 +93,28 @@ Keyboard fallback, for testing only:
 | F | Gyro noise spectrum |
 | Esc | Menu |
 
+## Menus
+
+The sim opens on a title screen, with your quad orbiting on the launch pad behind it:
+- **Quick fly**: fly straight away with the current map and drone.
+- **New game**: *Local* (pick a mode, map and drone) or *Multiplayer* (host or join a room).
+  Modes are free flight, race and hover drill.
+- **Server browser**: public rooms.
+- **Settings**: Simulation, Controller, Betaflight (tuning, CLI, `diff all` import), Drone builder,
+  Multiplayer relay and Blackbox.
+- **Betaflight quick start**: a nine-chapter guide covering arming, flight modes, rates (with a
+  live rate-curve explorer), PIDs, filters, OSD / LQ / RSSI, the CLI and your first flight.
+
+Controllers navigate all of it:
+- D-pad or left stick moves, **A** selects and **B** goes back.
+- **LB / RB** switch tabs, and the right stick scrolls.
+- **Start** pauses and resumes.
+
+Keyboard: arrow keys, Enter, Esc, and Q / E for tabs. While a menu is open its buttons never arm
+the quad or change the flight mode. The design follows a system generated with
+[UI UX Pro Max](https://uupm.cc/): "3D & Hyperrealism", Russo One and Chakra Petch (OFL), and
+`prefers-reduced-motion` is respected.
+
 ## What is simulated
 
 **Flight controller.** Betaflight 4.5.5's own code runs everything:
@@ -247,7 +269,7 @@ thrust-stand data; they are flagged in `src/data/catalog.ts`.
 
 ## Bring your real quad (Betaflight `diff all` import)
 
-Menu → **Betaflight** → *Bring your real quad*:
+Settings → **Betaflight** → *Bring your real quad*:
 1. In Betaflight Configurator's CLI on your real quad, run `diff all`.
 2. Paste the output and click **Preview**. It shows the Betaflight version and board, and what will
    be kept or skipped, with a reason for each skipped line.
@@ -270,7 +292,9 @@ Any line Betaflight 4.5.5 rejects, such as a setting renamed in another version,
 
 ## Multiplayer (live rooms)
 
-Menu → **Multiplayer**: create a room, then share the invite link (`?room=CODE`), or join by code.
+New game → **Multiplayer**: host a room (name it, and make it public to list it in the server
+browser), share the invite link (`?room=CODE`), or join by code. **Server browser** on the title
+screen lists every public room with its map and pilot count; it refreshes every 10 seconds.
 
 - Up to 8 pilots per room.
 - Each pilot runs their own full simulation, physics and Betaflight; the room relay only shares
@@ -281,7 +305,10 @@ Menu → **Multiplayer**: create a room, then share the invite link (`?room=CODE
 - On the race course, a live leaderboard shows each pilot's laps and best lap.
 
 **Relay server.** The relay is a Cloudflare Worker with one Durable Object per room, in `server/`.
-`server/src/roomCore.ts` holds the logic, unit-tested in `tests/roomCore.test.ts`. It has:
+Public rooms report to a single `Lobby` Durable Object, which serves the server browser at
+`GET /rooms`. A room reports when pilots join or leave and every 20 s while occupied, so entries
+that stop reporting expire after 60 s. `server/src/roomCore.ts` and `server/src/lobbyCore.ts` hold
+the logic, unit-tested in `tests/roomCore.test.ts` and `tests/lobby.test.ts`. It has:
 - message validation;
 - a 1 KB message limit;
 - a 40 messages/s per-pilot rate limit;

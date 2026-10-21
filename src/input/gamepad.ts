@@ -174,6 +174,9 @@ export class InputManager {
   onReset: (() => void) | null = null;
   onMenu: (() => void) | null = null;
   keyboard = new KeyboardInput();
+  /** While a menu is open its buttons navigate it: no arming, mode / turtle changes or respawns. */
+  get suspended() { return this.keyboard.suspended; }
+  set suspended(on: boolean) { this.keyboard.suspended = on; if (on) this.disarm(); this.turtle = false; this.keyboard.turtle = false; }
   lastRaw: { axes: number[]; buttons: number[] } = { axes: [], buttons: [] };
 
   constructor() {
@@ -238,6 +241,11 @@ export class InputManager {
       return { on, rise };
     };
     const arm = act('arm', p.arm), mode = act('mode', p.mode), turtle = act('turtle', p.turtle), beep = act('beeper', p.beeper);
+    if (this.suspended) {
+      if (edge(p.menu)) this.onMenu?.();
+      this.prevButtons = pressed;
+      return;
+    }
     if (p.arm) { if (p.arm.mode === 'toggle') { if (arm.rise) this.armed = !this.armed; } else this.armed = arm.on; }
     if (p.mode) {
       if (p.mode.mode === 'switch3' && p.mode.src === 'axis') {
@@ -269,10 +277,12 @@ export class InputManager {
 export class KeyboardInput {
   private keys = new Set<string>();
   thr = 0; armed = false; modeIdx = 0; turtle = false;
+  suspended = false;
   private last = performance.now();
   constructor() {
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+      if (this.suspended) return;
       this.keys.add(e.code);
       if (e.code === 'Space') { this.armed = !this.armed; e.preventDefault(); }
       if (e.code === 'Digit1') this.modeIdx = 0; if (e.code === 'Digit2') this.modeIdx = 1; if (e.code === 'Digit3') this.modeIdx = 2;

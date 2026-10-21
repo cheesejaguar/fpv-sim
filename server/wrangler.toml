@@ -10,6 +10,15 @@ ALLOWED_ORIGINS = "https://fpv-sim-gamma.vercel.app,https://*.vercel.app,http://
 name = "ROOMS"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+# v2: public room directory for the server browser
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Lobby"]

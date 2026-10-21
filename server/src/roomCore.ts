@@ -9,6 +9,14 @@ export const NAME_MAX = 20;
 
 export interface PlayerInfo { id: number; name: string; color: string; frame: string }
 
+/** Set by the room's first pilot (the host): display name and whether it is listed in the browser. */
+export interface RoomMeta { name: string; public: boolean; host: string }
+const ROOM_NAME_MAX = 32;
+function sanitizeRoomName(s: unknown): string {
+  const t = typeof s === 'string' ? s : '';
+  return t.replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, ROOM_NAME_MAX);
+}
+
 /** Minimal socket surface the core needs (a Cloudflare WebSocket satisfies it). */
 export interface Sock { send(data: string): void; close(code?: number, reason?: string): void }
 
@@ -32,9 +40,17 @@ export class RoomCore {
   private conns = new Map<Sock, Conn>();
   private nextId = 1;
   map: string | null = null;
+  meta: RoomMeta | null = null;
   constructor(private now: () => number = () => Date.now(), initialMap: string | null = null) { this.map = initialMap; }
 
   get size() { return this.conns.size; }
+
+  /** Directory entry for the server browser, or null if the room is private or empty. */
+  listing(code: string): { code: string; name: string; map: string | null; players: number; max: number; host: string } | null {
+    const n = this.players().length;
+    if (!this.meta?.public || n === 0) return null;
+    return { code, name: this.meta.name, map: this.map, players: n, max: MAX_PLAYERS, host: this.meta.host };
+  }
   players(): PlayerInfo[] { return [...this.conns.values()].flatMap((c) => (c.info ? [c.info] : [])); }
 
   /** A socket connected. Returns false (and closes it) if the room is full. */
@@ -76,6 +92,10 @@ export class RoomCore {
       };
       let changed: string | null = null;
       if (!this.map && typeof m.map === 'string' && MAP_RE.test(m.map)) { this.map = m.map; changed = this.map; }
+      // the first pilot to describe the room (normally its creator) names it and picks visibility
+      if (!this.meta && m.room && typeof m.room === 'object') {
+        this.meta = { name: sanitizeRoomName(m.room.name) || `${info.name}'s room`, public: m.room.public === true, host: info.name };
+      }
       c.info = info;
       this.send(sock, { t: 'welcome', id: info.id, map: this.map, players: this.players().filter((p) => p.id !== info.id) });
       this.broadcast({ t: 'join', player: info }, sock);

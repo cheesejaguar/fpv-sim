@@ -39,7 +39,8 @@ export class MultiplayerClient {
 
   get connected() { return this.status === 'connected'; }
 
-  join(code: string, me: { name: string; color: string; frame: string; map: string }): void {
+  /** room: optional description, applied only if we are the first pilot in (the host). */
+  join(code: string, me: { name: string; color: string; frame: string; map: string; room?: { name: string; public: boolean } }): void {
     this.leave();
     const base = multiplayerUrl();
     if (!base) { this.status = 'error'; this.error = 'No multiplayer server configured for this site.'; this.changed(); return; }

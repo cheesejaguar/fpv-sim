@@ -18,7 +18,18 @@ const isolation = {
   'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
+// Vite's `server.headers` are missing from its 304 Not Modified replies. WebKit then refuses a
+// worker's import of a module the page already has cached ("blocked by Cross-Origin-Embedder-
+// Policy"), so set the headers on every dev response, revalidations included.
+const isolateAll = {
+  name: 'isolate-all-responses',
+  configureServer(server: { middlewares: { use(fn: (req: unknown, res: { setHeader(k: string, v: string): void }, next: () => void) => void): void } }) {
+    server.middlewares.use((_req, res, next) => { for (const [k, v] of Object.entries(isolation)) res.setHeader(k, v); next(); });
+  },
+};
+
 export default defineConfig({
+  plugins: [isolateAll],
   server: { headers: isolation, port: 5173 },
   preview: { headers: isolation },
   define: { __FW_VERSION__: JSON.stringify(fwVersion) },
