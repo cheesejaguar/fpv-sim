@@ -43,6 +43,7 @@ const rcBuf = new Float32Array(16).fill(1500);
 let armed = false;
 let crashMsg: string | null = null;
 let crashMsgUntil = 0;
+let impactPeak = 0, impactLastT = -1;
 let stepCostUs = 0;
 let simRate = 1;
 let lastPos = { x: 0, y: 0, z: 0 };
@@ -242,10 +243,17 @@ function physicsStep(dt: number) {
   if (ringAcc >= RING_DT) { ringAcc -= RING_DT; writeRing(); detectGates(); }
 
   // crash events
+  // An impact spans many physics steps while the contact decelerates the quad; report the peak
+  // approach speed of the event (the first steps), not whichever step happened to be last.
   if (quad.s.maxImpact > 0) {
     const v = quad.s.maxImpact;
     quad.s.maxImpact = 0;
-    if (v > 6) { crashMsg = `Impact ${v.toFixed(1)} m/s`; crashMsgUntil = simT + 2; }
+    if (simT - impactLastT > 0.15) impactPeak = 0; // a new impact event
+    impactLastT = simT;
+    if (v > impactPeak) {
+      impactPeak = v;
+      if (v > 6) { crashMsg = `Impact ${v.toFixed(1)} m/s`; crashMsgUntil = simT + 2; }
+    }
   }
 }
 
