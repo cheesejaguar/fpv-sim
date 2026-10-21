@@ -25,7 +25,7 @@ interface Conn { sock: Sock; info: PlayerInfo | null; tokens: number; lastRefill
 // ---------- message validation ----------
 const num = (v: unknown, lim = 1e7): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= lim;
 const vec = (v: unknown, n: number, lim = 1e7): v is number[] => Array.isArray(v) && v.length === n && v.every((x) => num(x, lim));
-export const MAP_RE = /^[a-z0-9_-]{1,24}$/;
+export const MAP_RE = /^(?!(?:__proto__|constructor|prototype)$)[a-z0-9_-]{1,24}$/; // never JS prototype member names
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const FRAME_RE = /^[a-z0-9_-]{1,12}$/i;
 

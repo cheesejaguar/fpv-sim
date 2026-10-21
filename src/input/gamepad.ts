@@ -206,6 +206,9 @@ export class InputManager {
   profileFor(pad: Gamepad): InputProfile {
     let p = this.profiles[pad.id];
     if (!p) { p = guessProfile(pad); this.profiles[pad.id] = p; this.save(); }
+    // profiles saved before `kind` existed: identify the family now, so button names (A / B / RB …)
+    // show instead of raw indices
+    else if (!p.kind) { const k = controllerKind(pad); if (k !== 'generic') { p.kind = k; this.save(); } }
     return p;
   }
   setProfile(pad: Gamepad, p: InputProfile) { this.profiles[pad.id] = { ...p, id: pad.id }; this.save(); }

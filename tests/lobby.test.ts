@@ -54,3 +54,16 @@ test('the directory survives a snapshot / restore (object evicted between heartb
   expect(a.remove('ABCD')).toBe(true);
   expect(a.remove('ABCD')).toBe(false);
 });
+
+test('prototype member names are never accepted as map ids (relay + directory)', () => {
+  const room = new RoomCore(), s = sock();
+  room.open(s);
+  room.message(s, JSON.stringify({ t: 'hello', name: 'Eve', color: '#ff0000', frame: '5in', map: 'constructor' }));
+  expect(room.map).toBeNull();
+  for (const bad of ['__proto__', 'constructor', 'prototype']) {
+    expect(room.message(s, JSON.stringify({ t: 'map', map: bad }))).toBeNull();
+  }
+  const l = new LobbyCore(() => 1);
+  l.upsert({ code: 'ABCD', name: 'x', map: '__proto__', players: 1, max: 8, host: 'Eve' });
+  expect(l.list()[0].map).toBeNull();
+});

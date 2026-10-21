@@ -19,7 +19,7 @@ export interface RoomListing {
 }
 
 const CODE_RE = /^[A-Z0-9]{4,8}$/;
-const MAP_RE = /^[a-z0-9_-]{1,24}$/;
+const MAP_RE = /^(?!(?:__proto__|constructor|prototype)$)[a-z0-9_-]{1,24}$/; // never JS prototype member names
 
 export function sanitizeRoomName(s: unknown): string {
   const t = typeof s === 'string' ? s : '';

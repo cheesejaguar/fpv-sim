@@ -140,6 +140,9 @@ export const MAP_LIST: Record<string, MapEntry> = {
     build: (src) => doomMapDef(src!, { id: 'freedoom-map01', name: 'Freedoom MAP01 — Hydroelectric Plant', textures: freedoomTextures, textureBase: 'maps/freedoom/textures/' }),
   },
 };
+// Map ids arrive from other pilots (room map changes) and from storage: with no prototype, ids such
+// as `constructor` or `__proto__` are simply unknown, instead of resolving to Object.prototype members.
+Object.setPrototypeOf(MAP_LIST, null);
 
 function publicBase() { return (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'; }
 
@@ -192,4 +195,6 @@ function buildMap(id: string): MapDef {
   return m;
 }
 
-export const MAPS: Record<string, () => MapDef> = Object.fromEntries(Object.keys(MAP_LIST).map((id) => [id, () => buildMap(id)]));
+export const MAPS: Record<string, () => MapDef> = Object.assign(Object.create(null) as Record<string, () => MapDef>, Object.fromEntries(Object.keys(MAP_LIST).map((id) => [id, () => buildMap(id)])));
+/** True only for a map this build knows (own property; never inherited names). */
+export const hasMap = (id: unknown): id is string => typeof id === 'string' && Object.prototype.hasOwnProperty.call(MAPS, id);

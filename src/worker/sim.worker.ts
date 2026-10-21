@@ -9,7 +9,7 @@ import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { defaultCli, osdGrid, osdLayout, batteryCli } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
 import { packageEntry, urlTableSource } from '../maps/mapFormat';
-import { MAPS, preloadMap, registerMap } from '../maps/maps';
+import { hasMap, MAPS, preloadMap, registerMap } from '../maps/maps';
 import { gatePassed } from '../maps/gates';
 import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from '../maps/world';
 import { RcLink } from '../sim/rcLink';
@@ -100,7 +100,7 @@ function makeEnv(): QuadEnv {
 
 async function loadMap(id: string) {
   const want = id;
-  if (!MAPS[id]) id = 'field';
+  if (!hasMap(id)) id = 'field';
   await preloadMap(id).catch((e) => { console.warn(e); id = 'field'; });
   if (map && want !== settings.mapId) return; // superseded by a newer map change while loading
   map = MAPS[id]();

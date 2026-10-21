@@ -4,7 +4,7 @@ import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from './builder/deriv
 import { buttonName, InputManager, SimAction } from './input/gamepad';
 import { webHidSupported } from './input/steamHid';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
-import { MAPS, preloadMap } from './maps/maps';
+import { hasMap, MAPS, preloadMap } from './maps/maps';
 import { MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from './maps/world';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat, enuToThree, quatEnuToThree } from './render/coords';
@@ -101,7 +101,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 app.append(renderer.domElement);
 window.addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); chaseCam.aspect = orbitCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); orbitCam.updateProjectionMatrix(); });
 
-if (!MAPS[simSettings.mapId]) simSettings.mapId = 'field';
+if (!hasMap(simSettings.mapId)) simSettings.mapId = 'field';
 await preloadMap(simSettings.mapId).catch((e) => { console.warn(e); simSettings.mapId = 'field'; });
 let map: MapDef = MAPS[simSettings.mapId]();
 let world = new PrimitiveWorld(map);
@@ -135,7 +135,7 @@ const remotes = new RemoteQuads();
 const mpRec = new Float64Array(REC);
 let applyingRoomMap = false;
 mp.onMap = (m) => {
-  if (!MAPS[m] || m === simSettings.mapId) return;
+  if (!hasMap(m) || m === simSettings.mapId) return;
   applyingRoomMap = true;
   applySim({ ...simSettings, mapId: m });
   applyingRoomMap = false;
