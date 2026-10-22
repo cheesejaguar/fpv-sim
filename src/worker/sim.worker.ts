@@ -12,7 +12,7 @@
 // at a time; any uncaught error posts { type: 'fatal' } (the bridge restarts the worker once).
 import { Betaflight, BF_PORT, armingFlagNames } from '../bf/bfModule';
 import { batteryCli, defaultCli, loopCli, osdGrid, osdLayout } from '../bf/defaults';
-import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
+import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec, preloadPropTable } from '../builder/derive';
 import { hasMap, MapEntry, MAPS, preloadMap, registerMap } from '../maps/maps';
 import { gatePassed } from '../maps/gates';
 import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ, withCourse } from '../maps/world';
@@ -721,7 +721,8 @@ async function init(m: Extract<ToWorker, { type: 'init' }>) {
   settings = m.settings;
   spec = (m.spec as DroneSpec) ?? DEFAULT_SPEC;
   simT = m.t0 ?? 0;
-  await loadMap(settings.mapId);
+  // the prop's precomputed BEMT table comes in alongside the map (else buildQuad spends ~1.2 s on it)
+  await Promise.all([loadMap(settings.mapId), preloadPropTable(spec.prop)]);
   buildQuad();
   resyncClock();
   await bootFirmware();
@@ -735,6 +736,7 @@ async function init(m: Extract<ToWorker, { type: 'init' }>) {
 async function firmwareOp(m: ToWorker) {
   switch (m.type) {
     case 'spec': {
+      await preloadPropTable((m.spec as DroneSpec).prop);
       const old = spec;
       spec = m.spec as DroneSpec;
       buildQuad();

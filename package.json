@@ -5,9 +5,9 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "scripts": {
-    "predev": "node scripts/build-map-index.mjs",
+    "predev": "node scripts/build-map-index.mjs && node scripts/build-bemt-tables.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/build-map-index.mjs && node scripts/build-licenses.mjs",
+    "prebuild": "node scripts/build-map-index.mjs && node scripts/build-licenses.mjs && node scripts/build-bemt-tables.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -15,6 +15,7 @@
     "fonts": "node scripts/fetch-fonts.mjs",
     "firmware": "bash scripts/build-firmware.sh",
     "map:index": "node scripts/build-map-index.mjs",
+    "bemt": "node scripts/build-bemt-tables.mjs",
     "map:validate": "node scripts/validate-map.mjs",
     "licenses": "node scripts/build-licenses.mjs",
     "check:bundle": "node scripts/check-bundle-size.mjs"

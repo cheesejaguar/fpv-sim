@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+import { currentBemtManifest, isBemtInput } from './scripts/lib/bemt-inputs.mjs';
 
 // paths relative to this file, not the working directory (scripts load the config from elsewhere)
 const root = (p: string) => fileURLToPath(new URL(p, import.meta.url));
@@ -27,6 +28,27 @@ const commit = (() => {
 const pkgVersion = (JSON.parse(readFileSync(root('package.json'), 'utf8')) as { version: string }).version;
 const appVersion = commit ? `${pkgVersion}+${commit.slice(0, 7)}` : pkgVersion;
 
+// Precomputed propeller BEMT tables + preset card numbers (scripts/build-bemt-tables.mjs, run by
+// prebuild / predev into public/bemt/): used only if made from the current physics sources.
+// Without them the app computes the tables at run time, as before.
+const bemt = currentBemtManifest(root('.'));
+
+/** Dev server: a physics source changed, so the precomputed tables no longer match: restart without them. */
+const bemtDevGuard = {
+  name: 'bemt-tables-dev-guard',
+  apply: 'serve' as const,
+  configureServer(server: { watcher: { on(ev: string, fn: (file: string) => void): void }; restart(): Promise<void>; config: { logger: { info(m: string): void } } }) {
+    if (!bemt) return;
+    let restarting = false;
+    server.watcher.on('change', (file) => {
+      if (restarting || !isBemtInput(root('.'), file)) return;
+      restarting = true;
+      server.config.logger.info('physics sources changed: restarting without the precomputed BEMT tables (npm run dev rebuilds them)');
+      void server.restart();
+    });
+  },
+};
+
 // SharedArrayBuffer requires cross-origin isolation.
 const isolation = {
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -44,12 +66,14 @@ const isolateAll = {
 };
 
 export default defineConfig({
-  plugins: [isolateAll],
+  plugins: [isolateAll, bemtDevGuard],
   // agent worktrees live under .claude/: their edits must not reload this checkout's dev server
   server: { headers: isolation, port: 5173, watch: { ignored: ['**/.claude/**'] } },
   preview: { headers: isolation },
   define: {
     __FW_VERSION__: JSON.stringify(fwVersion),
+    __BEMT_TABLES__: JSON.stringify(bemt ? { base: 'bemt/', tables: bemt.tables } : null),
+    __DRONE_STATS__: JSON.stringify(bemt?.stats ?? null),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     'import.meta.env.VITE_APP_COMMIT': JSON.stringify(commit),
   },

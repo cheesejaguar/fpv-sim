@@ -4,6 +4,7 @@
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO, byId, FrameSpec, MotorSpec, PropSpec, BatterySpec, EscSpec, FcSpec, VideoSpec } from '../data/catalog';
 import { batteryFromSpec } from '../sim/battery';
 import { airfoilAtRe, buildBemtTable, BemtTable, PropGeometry } from '../sim/bemt';
+import { bemtManifest, decodeTable } from './bemtTables';
 import { ColliderSphere } from '../sim/contact';
 import { GYRO_CHIPS } from '../sim/imu';
 import { V3 } from '../sim/math';
@@ -102,12 +103,14 @@ export function propGeometry(p: PropSpec, pitchOverride?: number): PropGeometry 
   };
 }
 
+const tableKey = (p: PropSpec, pitch = p.pitchIn) => `${p.id}:${pitch}`;
+
 export function propTable(p: PropSpec, pitchOverride?: number): BemtTable {
-  const key = `${p.id}:${pitchOverride ?? p.pitchIn}`;
+  const key = tableKey(p, pitchOverride);
   let t = tableCache.get(key);
   if (!t) {
     // calibrate at the catalogue pitch; a pitch override then changes the result physically
-    const base = buildBemtTable(propGeometry(p), p.calib);
+    const base = pitchOverride != null && pitchOverride !== p.pitchIn ? propTable(p) : buildBemtTable(propGeometry(p), p.calib);
     t = pitchOverride != null && pitchOverride !== p.pitchIn ? { ...buildBemtTable(propGeometry(p, pitchOverride)), ctScale: base.ctScale, cqScale: base.cqScale } : base;
     if (t !== base) {
       const j0 = (t.ng - 1) >> 1, R = t.R, A = t.A;
@@ -117,6 +120,48 @@ export function propTable(p: PropSpec, pitchOverride?: number): BemtTable {
     tableCache.set(key, t);
   }
   return t;
+}
+
+/** The headline numbers of a drone card (New Game screen): all-up weight, thrust-to-weight, flight time. */
+export function droneCardStats(i: DerivedInfo): { auwG: number; tw: number; minutes: number } {
+  return { auwG: i.auwG, tw: i.thrustToWeight, minutes: i.flightTimeMixedMin };
+}
+
+/** The prop's (catalogue-pitch) table is ready: buildDrone() won't spend ~1.2 s building it. */
+export function hasPropTable(propId: string): boolean {
+  const p = PROPS.find((x) => x.id === propId);
+  return !!p && tableCache.has(tableKey(p));
+}
+
+const loading = new Map<string, Promise<boolean>>();
+/**
+ * Fetch the prop's precomputed table (see bemtTables.ts) so the next buildDrone() with it is quick.
+ * Resolves true once the table is in place, false when there is none to fetch or the download
+ * failed (buildDrone then computes it, as before). Never rejects.
+ */
+export function preloadPropTable(propId: string, opts: { url?: string; timeoutMs?: number } = {}): Promise<boolean> {
+  const p = PROPS.find((x) => x.id === propId);
+  if (!p) return Promise.resolve(false);
+  if (tableCache.has(tableKey(p))) return Promise.resolve(true);
+  const m = bemtManifest(), file = m?.tables[p.id];
+  const url = opts.url ?? (m && file ? `${(import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}${m.base}${file}` : null);
+  if (!url || typeof fetch !== 'function') return Promise.resolve(false);
+  let pending = loading.get(url);
+  if (!pending) {
+    pending = (async () => {
+      const ac = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = setTimeout(() => ac?.abort(), opts.timeoutMs ?? 8000);
+      try {
+        const res = await fetch(url, ac ? { signal: ac.signal } : {});
+        if (!res.ok) return false;
+        const t = decodeTable(await res.arrayBuffer());
+        if (!tableCache.has(tableKey(p))) tableCache.set(tableKey(p), t); // (a table computed meanwhile stays)
+        return true;
+      } catch { return false; } finally { clearTimeout(timer); loading.delete(url); }
+    })();
+    loading.set(url, pending);
+  }
+  return pending;
 }
 
 export function buildDrone(spec: DroneSpec): DroneBuild {

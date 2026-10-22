@@ -16,7 +16,7 @@ import { KEYS, load, save, validSim, validSpec, validView } from './app/persist'
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
 import { simHardwareCli } from './bf/defaults';
-import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
+import { buildDrone, DroneBuild, DroneSpec, preloadPropTable } from './builder/derive';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
@@ -86,7 +86,11 @@ renderer.domElement.addEventListener('webglcontextlost', () => {
 });
 
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
-await preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; });
+// the map's data and the prop's precomputed BEMT table (else buildDrone spends ~1.2 s building it)
+await Promise.all([
+  preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; }),
+  preloadPropTable(spec0.prop),
+]);
 const map0 = withCourse(MAPS[sim0.mapId](), sim0.courseId);
 const build0 = buildDrone(spec0);
 const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })), b.info.cgMm);
@@ -357,6 +361,8 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+// "Fly now" switches to the easiest quad: have its prop table at hand by then
+if (EASY_SPEC.prop !== spec0.prop) setTimeout(() => void preloadPropTable(EASY_SPEC.prop), 3000);
 // replay permalinks: ?replay=<entry id>[&t=<s>] plays that leaderboard lap over the title screen
 {
   const rl = parseReplayLink(location.search);
