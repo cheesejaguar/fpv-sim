@@ -15,7 +15,7 @@ import { courseOf, LapBoard } from './app/leaderboard';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
-import { buildDrone, DroneBuild, DroneSpec, preloadPropTable } from './builder/derive';
+import { buildDrone, DroneBuild, DroneSpec, hasPropTable, preloadPropTable } from './builder/derive';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
@@ -43,8 +43,15 @@ import { createShared, newestTime, R, REC, sampleRing, SimSettings } from './wor
 const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
 
 // ---------------------------------------------------------------------------------------------
-// saved settings are versioned and validated (src/app/persist.ts)
-const store = (k: string, v: unknown) => save(k, v);
+// saved settings are versioned and validated (src/app/persist.ts). A slider drag changes them on
+// every input event: each key is written once it has been still for 250 ms (last value wins), and at
+// once when the page is hidden or closed.
+const unsaved = new Map<string, unknown>();
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+function flushStore() { clearTimeout(saveTimer); saveTimer = undefined; for (const [k, v] of unsaved) save(k, v); unsaved.clear(); }
+const store = (k: string, v: unknown) => { unsaved.set(k, v); clearTimeout(saveTimer); saveTimer = setTimeout(flushStore, 250); };
+addEventListener('pagehide', flushStore);
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushStore(); });
 /** The physics rate the overload governor lowered to this session (not saved), and the pilot's own. */
 let governedHz: number | null = null, chosenHz = 0;
 /** Save simulation settings, with the pilot's own physics rate in place of a governed one. */
@@ -64,6 +71,7 @@ const view0: ViewSettings = load(KEYS.view, validView);
 const sh = createShared();
 const bridge = new WorkerBridge();
 onBeforeReset(() => bridge.worker.terminate()); // it holds the EEPROM database open
+onBeforeReset(() => { clearTimeout(saveTimer); unsaved.clear(); }); // a pending save must not bring settings back
 bridge.send({ type: 'init', sab: sh.sab, spec: spec0, settings: sim0 });
 
 // Rendering
@@ -150,16 +158,24 @@ bridge.onMessage = (m) => {
 // Settings changes
 function sendReset(fullBattery = false) { ctx.input.disarm(); onRespawn(ctx); ctx.send({ type: 'reset', repair: true, fullBattery }); }
 
+let specSeq = 0;
 function applySpec(s: DroneSpec) {
   ctx.replay?.close(); // a replay on screen puts the live quad back first
   ctx.spec = s; store(KEYS.spec, s);
+  ctx.mountQ = cameraMountQuat(s.cameraUptiltDeg);
+  ctx.input.disarm();
+  ctx.send({ type: 'spec', spec: s });
+  // the rendered quad: a prop whose precomputed BEMT table isn't here yet waits for it (a short
+  // download) instead of building it on the main thread (~1.2 s); the newest spec wins
+  const n = ++specSeq;
+  if (hasPropTable(s.prop)) showBuild(s);
+  else void preloadPropTable(s.prop).then(() => { if (n === specSeq) showBuild(s); });
+}
+function showBuild(s: DroneSpec) {
   ctx.build = buildDrone(s);
   ctx.scene.scene.remove(ctx.drone.root); ctx.drone.dispose();
   ctx.drone = makeDroneModel(ctx.build); ctx.scene.scene.add(ctx.drone.root);
   ctx.fpv.setVideo(ctx.build.info.components.video, ctx.view.renderScale);
-  ctx.mountQ = cameraMountQuat(s.cameraUptiltDeg);
-  ctx.input.disarm();
-  ctx.send({ type: 'spec', spec: s });
 }
 
 let applyingRoomMap = false;
@@ -242,7 +258,10 @@ function simAction(a: SimAction) {
   if (a === 'battery') sendReset(true);
   if (a === 'spectrum') ctx.send({ type: 'spectrum', on: spectrum.toggle() });
 }
-WorkerBridge.pollSticks(sh, () => input.poll(), () => input.active); // ~1 kHz, timestamped samples into the shared stick ring
+// ~1 kHz, timestamped samples into the shared stick ring (~125 Hz while a menu has the controls and the
+// simulation is paused; back to full rate the moment the menu hands them back)
+const stickPoller = WorkerBridge.pollSticks(sh, () => input.poll(), () => input.active, { slow: () => input.suspended });
+input.onResume = stickPoller.wake;
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
   if (ctx.menuOpen) return; // the menu handles its own keys

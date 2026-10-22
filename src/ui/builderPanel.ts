@@ -1,18 +1,22 @@
 // Drone builder: component dropdowns + sliders for every physical parameter, with a live panel of
 // the derived flight model (mass budget, inertia, thrust, hover point, currents, flight time).
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO, byId } from '../data/catalog';
-import { buildDrone, DroneSpec, PRESETS, Overrides } from '../builder/derive';
+import { buildDrone, DroneSpec, PRESETS, Overrides, preloadPropTable } from '../builder/derive';
 import { confirmDialog, el, kv, section, select, setLeaveGuard, slider } from './dom';
 
 export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => void): HTMLElement {
   const root = el('div', { class: 'panel builder' });
   let spec: DroneSpec = structuredClone(getSpec());
   const info = el('div', { class: 'derived' });
-  let pending: number | undefined;
+  let pending: number | undefined, seq = 0;
 
   const refreshInfo = () => {
     clearTimeout(pending);
-    pending = window.setTimeout(() => {
+    const n = ++seq;
+    pending = window.setTimeout(async () => {
+      // a new prop's precomputed BEMT table first (else buildDrone spends ~1.2 s building it here)
+      await preloadPropTable(spec.prop);
+      if (n !== seq) return; // changed again meanwhile: that refresh shows it
       const b = buildDrone(spec), i = b.info, p = b.params;
       const I = p.inertia;
       info.replaceChildren(

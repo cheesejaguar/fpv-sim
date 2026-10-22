@@ -1,9 +1,10 @@
 // Derives a build for the share card's drone render off the main thread: buildDrone() builds the
 // propeller BEMT tables (~1 s on a desktop, longer on a phone), which would freeze the share sheet.
-import { buildDrone, DroneSpec } from '../builder/derive';
+import { buildDrone, DroneSpec, preloadPropTable } from '../builder/derive';
 
-self.onmessage = (e: MessageEvent<DroneSpec>) => {
+self.onmessage = async (e: MessageEvent<DroneSpec>) => {
   try {
+    await preloadPropTable(e.data.prop); // the precomputed table, when there is one
     const b = buildDrone(e.data);
     self.postMessage({ spec: b.spec, info: b.info, rotors: b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })) });
   } catch (err) {

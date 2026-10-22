@@ -33,8 +33,10 @@ used here only to identify where the level layouts come from.
 
 ## Textures: LibreQuake, BSD-3-Clause
 
-- Every texture in `textures/` comes, unmodified, from the LibreQuake project
-  (<https://github.com/lavenderdotpet/LibreQuake>, `texture-wads/`, commit `dd4d5bf`).
+- Every texture in `textures/` comes from the LibreQuake project
+  (<https://github.com/lavenderdotpet/LibreQuake>, `texture-wads/`, commit `dd4d5bf`). The pixels
+  are unmodified; the files are losslessly re-encoded as palette PNGs (`scripts/optimize-png.mjs`),
+  which drops editor metadata.
   - Copyright © 2019-2023 Contributors to the LibreQuake project.
   - Licensed under the BSD 3-Clause license: see `textures/LICENSE-LibreQuake.txt`.
   - Contributors are listed in `textures/CREDITS-LibreQuake.txt`.
