@@ -136,9 +136,24 @@ export function genericJoystickProfile(id = ''): InputProfile {
 
 export const PRESET_PROFILES = { xbox: xboxProfile, ps5: ps5Profile, dji: djiRc3Profile, standard: standardProfile, steam: steamControllerProfile, trigger: triggerThrottleProfile, joystick: genericJoystickProfile };
 
+// The input poll (~1 kHz) asks for the family / radio-ness of the same pad id over and over: the
+// answers depend on the id string only, so they are kept per id (a handful of ids per session; the
+// cap only guards against something feeding endless distinct ids).
+const ID_CACHE_MAX = 64;
+const kindCache = new Map<string, ControllerKind>();
+const radioCache = new Map<string, boolean>();
+function cached<T>(m: Map<string, T>, id: string, f: (id: string) => T): T {
+  let v = m.get(id);
+  if (v === undefined) { if (m.size >= ID_CACHE_MAX) m.clear(); v = f(id); m.set(id, v); }
+  return v;
+}
+
 /** Identify the controller family from the browser's gamepad id string (name + USB vendor/product). */
 export function controllerKind(pad: { id: string }): ControllerKind {
-  const id = pad.id.toLowerCase();
+  return cached(kindCache, pad.id, kindOfId);
+}
+function kindOfId(raw: string): ControllerKind {
+  const id = raw.toLowerCase();
   if (id.includes('2ca3') || id.includes('dji')) return 'dji';
   if (id.includes('webhid') || id.includes('steam') || id.includes('valve') || id.includes('28de')) return 'steam';
   if (id.includes('054c') || id.includes('dualsense') || id.includes('dualshock') || id.includes('playstation') || id.startsWith('wireless controller')) return 'playstation';
@@ -154,7 +169,7 @@ export function controllerKind(pad: { id: string }): ControllerKind {
  * Gamepad presets, stick geometry and menu stick navigation must never apply to them.
  */
 const RADIO_ID = /elrs|expresslrs|edgetx|opentx|frsky|taranis|radiomaster|jumper|tbs|crossfire|joystick/i;
-export const isRadio = (pad: { id: string }) => RADIO_ID.test(pad.id) && controllerKind(pad) !== 'dji';
+export const isRadio = (pad: { id: string }) => cached(radioCache, pad.id, (id) => RADIO_ID.test(id) && kindOfId(id) !== 'dji');
 
 /** Button / axis indices follow the W3C standard layout (a real gamepad in the browser's standard
  *  mapping, or our WebHID driver), not a radio the browser happens to label "standard". */
@@ -238,14 +253,21 @@ export function bipolar(pad: Gamepad, b: AxisBind): number {
  * mapping: identity near centre and along the axes, full corners (0.707, 0.707) -> (1, 1).
  */
 export function stick2d(x: number, y: number, dz: number, square: boolean): [number, number] {
+  stick2dInto(x, y, dz, square, pair);
+  return [pair[0], pair[1]];
+}
+const pair = new Float64Array(2);
+const sq0 = (t: number) => Math.sqrt(Math.max(0, t));
+/** stick2d without the result array (the input poll runs at ~1 kHz): writes out[0], out[1]. */
+function stick2dInto(x: number, y: number, dz: number, square: boolean, out: Float64Array) {
   const r = Math.hypot(x, y);
-  if (r <= dz || r < 1e-9) return [0, 0];
+  if (r <= dz || r < 1e-9) { out[0] = 0; out[1] = 0; return; }
   const k = (Math.min(1, r) - dz) / (1 - dz) / r; // radius rescaled past the deadzone, gate clamped
   const u = x * k, v = y * k;
-  if (!square) return [u, v];
+  if (!square) { out[0] = u; out[1] = v; return; }
   const s2 = 2 * Math.SQRT2, a = 2 + u * u - v * v, b = 2 - u * u + v * v;
-  const sq = (t: number) => Math.sqrt(Math.max(0, t));
-  return [clamp1(0.5 * sq(a + s2 * u) - 0.5 * sq(a - s2 * u)), clamp1(0.5 * sq(b + s2 * v) - 0.5 * sq(b - s2 * v))];
+  out[0] = clamp1(0.5 * sq0(a + s2 * u) - 0.5 * sq0(a - s2 * u));
+  out[1] = clamp1(0.5 * sq0(b + s2 * v) - 0.5 * sq0(b - s2 * v));
 }
 
 /** Two bound axes on the same standard stick (0/1 left, 2/3 right; WebHID trackpads 4/5, 6/7). */
@@ -258,24 +280,30 @@ export function squareSticks(pad: { mapping: string; id: string }, p: InputProfi
 
 export interface Sticks { roll: number; pitch: number; yaw: number; throttle: number } // -1..1 each
 
-const CHANNELS = ['roll', 'pitch', 'yaw', 'throttle'] as const;
+// scratch for readSticks (no allocation per poll; nothing in it is re-entrant)
+const sv = new Float64Array(4);
+const paired = new Uint8Array(4);
+const bindOf = (p: InputProfile, i: number): AxisBind => (i === 0 ? p.roll : i === 1 ? p.pitch : i === 2 ? p.yaw : p.throttle);
 
-/** Stick values after calibration, stick geometry (standard pads), inversion, deadzone and expo. */
-export function readSticks(pad: Gamepad, p: InputProfile): Sticks {
-  const v = CHANNELS.map((n) => calibrated(pad, p[n]));
-  const paired = [false, false, false, false];
+/** Stick values after calibration, stick geometry (standard pads), inversion, deadzone and expo.
+ *  `out` is filled and returned (the poll passes one it reuses). */
+export function readSticks(pad: Gamepad, p: InputProfile, out: Sticks = { roll: 0, pitch: 0, yaw: 0, throttle: 0 }): Sticks {
+  for (let i = 0; i < 4; i++) { sv[i] = calibrated(pad, bindOf(p, i)); paired[i] = 0; }
   // which axes share a stick is only known on the standard layout; radios keep per-axis processing
   if (isStandard(pad)) {
     const square = squareSticks(pad, p);
     for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
-      const a = p[CHANNELS[i]], b = p[CHANNELS[j]];
+      const a = bindOf(p, i), b = bindOf(p, j);
       if (paired[i] || paired[j] || !sameStick(a, b)) continue;
-      [v[i], v[j]] = stick2d(v[i], v[j], Math.max(a.deadzone, b.deadzone), square);
-      paired[i] = paired[j] = true;
+      stick2dInto(sv[i], sv[j], Math.max(a.deadzone, b.deadzone), square, pair);
+      sv[i] = pair[0]; sv[j] = pair[1];
+      paired[i] = paired[j] = 1;
     }
   }
-  const out = {} as Sticks;
-  CHANNELS.forEach((n, i) => { out[n] = shape(v[i], p[n], paired[i]); });
+  out.roll = shape(sv[0], p.roll, paired[0] === 1);
+  out.pitch = shape(sv[1], p.pitch, paired[1] === 1);
+  out.yaw = shape(sv[2], p.yaw, paired[2] === 1);
+  out.throttle = shape(sv[3], p.throttle, paired[3] === 1);
   return out;
 }
 
@@ -293,12 +321,28 @@ export function auxMicros(pad: Gamepad, b: AuxBind, toggled = false): number {
   return bindActive(pad, b) !== !!b.invert ? 2000 : 1000;
 }
 
+const MODE_US = [1000, 1500, 2000];
+
+/** actionButtons of one profile, with what it was computed from (see InputManager.actionTable). */
+interface ActionTable {
+  std: boolean; arm: InputProfile['arm']; mode: InputProfile['mode']; turtle: InputProfile['turtle']; beeper: InputProfile['beeper'];
+  aux: InputProfile['aux']; auxLen: number; reset: InputProfile['reset']; menu: InputProfile['menu']; actions: InputProfile['actions'];
+  needsSetup: InputProfile['needsSetup']; out: Partial<Record<SimAction, number>>; list: [SimAction, number][];
+}
+
 export class InputManager {
   profiles: Record<string, InputProfile> = {};
   active: Gamepad | null = null;
   activeIndex = -1;
   readonly channels = new Float32Array(16).fill(1500);
+  // pressed state of the pad's buttons, this poll and the one before: two arrays used in turn, so the
+  // ~1 kHz poll allocates nothing for its edge detection
   private prevButtons: boolean[] = [];
+  private btnA: boolean[] = [];
+  private btnB: boolean[] = [];
+  /** last on-state of arm, mode, turtle, beeper, AUX5..12 (rise detection) */
+  private bindPrev = new Uint8Array(4 + AUX_EXTRA);
+  private sticks: Sticks = { roll: 0, pitch: 0, yaw: 0, throttle: 0 };
   armed = false; modeIdx = FIRST_MODE; turtle = false; beeper = false;
   private auxToggled: boolean[] = [];
   onReset: (() => void) | null = null;
@@ -307,11 +351,16 @@ export class InputManager {
   keyboard = new KeyboardInput();
   /** While a menu is open its buttons navigate it: no arming, mode / turtle changes or respawns. */
   get suspended() { return this.keyboard.suspended; }
-  set suspended(on: boolean) { this.keyboard.suspended = on; if (on) this.disarm(); this.turtle = false; this.keyboard.turtle = false; }
+  set suspended(on: boolean) {
+    const was = this.keyboard.suspended;
+    this.keyboard.suspended = on; if (on) this.disarm(); this.turtle = false; this.keyboard.turtle = false;
+    if (was && !on) this.onResume?.();
+  }
+  /** Called when the menu gives the controls back (the stick poller returns to its full rate at once). */
+  onResume: (() => void) | null = null;
   /** > 0 while the Controller tab listens to the pad (stick wizard, Detect, calibration): its buttons
    *  belong to that, so the menu button can't toggle the menu either. */
   capture = 0;
-  lastRaw: { axes: number[]; buttons: number[] } = { axes: [], buttons: [] };
 
   constructor() {
     try { const s = localStorage.getItem('fpv-input-profiles'); if (s) this.profiles = JSON.parse(s); } catch { /* none */ }
@@ -351,24 +400,36 @@ export class InputManager {
   }
   setProfile(pad: Gamepad, p: InputProfile) { this.profiles[pad.id] = { ...p, id: pad.id }; this.save(); }
 
+  /** The pad poll() uses: the active one if it is still there, else the first of pads() (without
+   *  building that list: this runs ~1000 times a second). */
+  private pickPad(): Gamepad | null {
+    const h = this.steamHid.current() as unknown as Gamepad | null;
+    if (h && h.index === this.activeIndex) return h;
+    const list = navigator.getGamepads?.();
+    let first: Gamepad | null = h;
+    if (list) for (let i = 0; i < list.length; i++) {
+      const g = list[i];
+      if (!g) continue;
+      if (g.index === this.activeIndex) return g;
+      first ??= g;
+    }
+    return first;
+  }
+
   /** Poll devices and update RC channels. Call every animation frame (and more often if possible). */
   poll(): Float32Array {
-    const pads = this.pads();
-    let pad = pads.find((g) => g.index === this.activeIndex) ?? null;
-    if (!pad && pads.length) { pad = pads[0]; this.activeIndex = pad.index; }
+    const pad = this.pickPad();
+    if (pad && pad.index !== this.activeIndex) this.activeIndex = pad.index;
     this.active = pad;
     const ch = this.channels;
     let p: InputProfile | null = null;
-    if (pad) {
-      this.lastRaw = { axes: [...pad.axes], buttons: pad.buttons.map((b) => b.value) };
-      p = this.profileFor(pad);
-    }
+    if (pad) p = this.profileFor(pad);
     // a radio whose channel order isn't set up yet: any guess could put a switch on throttle or roll,
     // so it flies nothing (the keyboard still does) until the setup or "My sticks already work"
     this.blocked = !!pad && !!p?.needsSetup && isRadio(pad);
     if (this.blocked) p = null;
     if (pad && p) {
-      const s = readSticks(pad, p);
+      const s = readSticks(pad, p, this.sticks);
       let thr: number;
       if (p.throttleMode === 'trigger') thr = Math.max(0, Math.min(1, readRaw(pad, p.throttle)));
       else thr = p.throttleMode === 'upper' ? Math.max(0, s.throttle) : (s.throttle + 1) / 2;
@@ -379,7 +440,7 @@ export class InputManager {
       this.armed = this.keyboard.armed; this.modeIdx = this.keyboard.modeIdx; this.turtle = this.keyboard.turtle;
     }
     ch[4] = this.armed ? 1900 : 1000;
-    ch[5] = [1000, 1500, 2000][this.modeIdx];
+    ch[5] = MODE_US[this.modeIdx];
     ch[6] = this.turtle ? 2000 : 1000;
     ch[7] = this.beeper ? 2000 : 1000;
     for (let i = 0; i < AUX_EXTRA; i++) {
@@ -415,43 +476,60 @@ export class InputManager {
     if (n > 5) this.modeIdx = ch[5] < 1300 ? MODE_ACRO : ch[5] < 1700 ? MODE_HORIZON : MODE_ANGLE;
   }
 
-  private prevBind: Record<string, boolean> = {};
+  /** Rise / on state of a bound control (bit 0: on, bit 1: just switched on); slot: its bindPrev index. */
+  private act(slot: number, pad: Gamepad, b: ButtonBind | AuxBind | null | undefined): number {
+    if (!b) return 0;
+    const on = bindActive(pad, b), rise = on && !this.bindPrev[slot];
+    this.bindPrev[slot] = on ? 1 : 0;
+    return (on ? 1 : 0) | (rise ? 2 : 0);
+  }
+  private edge(i: number | null | undefined, pressed: boolean[]): boolean { return i != null && pressed[i] === true && !this.prevButtons[i]; }
+
   private buttons(pad: Gamepad, p: InputProfile) {
-    const pressed = pad.buttons.map((b) => b.pressed || b.value > 0.5);
-    const edge = (i: number | null | undefined) => i != null && pressed[i] && !this.prevButtons[i];
-    const act = (key: string, b: ButtonBind | AuxBind | null | undefined) => {
-      if (!b) return { on: false, rise: false };
-      const on = bindActive(pad, b), rise = on && !this.prevBind[key];
-      this.prevBind[key] = on;
-      return { on, rise };
-    };
-    const arm = act('arm', p.arm), mode = act('mode', p.mode), turtle = act('turtle', p.turtle), beep = act('beeper', p.beeper);
-    const aux = Array.from({ length: AUX_EXTRA }, (_, i) => { const b = p.aux?.[i]; return b?.mode === 'toggle' ? act(`aux${i}`, b) : null; });
+    const btns = pad.buttons, n = btns.length;
+    const pressed = this.prevButtons === this.btnA ? this.btnB : this.btnA;
+    pressed.length = n;
+    for (let i = 0; i < n; i++) { const b = btns[i]; pressed[i] = b.pressed || b.value > 0.5; }
+    const arm = this.act(0, pad, p.arm), mode = this.act(1, pad, p.mode), turtle = this.act(2, pad, p.turtle), beep = this.act(3, pad, p.beeper);
+    let auxRise = 0;
+    for (let i = 0; i < AUX_EXTRA; i++) { const b = p.aux?.[i]; if (b?.mode === 'toggle' && this.act(4 + i, pad, b) & 2) auxRise |= 1 << i; }
     if (this.suspended) {
-      if (!this.capture && edge(p.menu)) this.onMenu?.();
+      if (!this.capture && this.edge(p.menu, pressed)) this.onMenu?.();
       this.prevButtons = pressed;
       return;
     }
-    if (p.arm) { if (p.arm.mode === 'toggle') { if (arm.rise) this.armed = !this.armed; } else this.armed = arm.on; }
+    if (p.arm) { if (p.arm.mode === 'toggle') { if (arm & 2) this.armed = !this.armed; } else this.armed = (arm & 1) === 1; }
     if (p.mode) {
       if (p.mode.mode === 'switch3' && p.mode.src === 'axis') {
         const v = (pad.axes[p.mode.index] ?? 0) * (p.mode.invert ? -1 : 1);
         this.modeIdx = v < -0.33 ? 0 : v > 0.33 ? 2 : 1;
-      } else if (p.mode.mode === 'hold') this.modeIdx = mode.on ? 2 : 0;
-      else if (mode.rise) this.modeIdx = (this.modeIdx + 1) % 3;
+      } else if (p.mode.mode === 'hold') this.modeIdx = mode & 1 ? 2 : 0;
+      else if (mode & 2) this.modeIdx = (this.modeIdx + 1) % 3;
     }
-    if (p.turtle) { if (p.turtle.mode === 'toggle') { if (turtle.rise) this.turtle = !this.turtle; } else this.turtle = turtle.on; }
-    if (p.beeper) this.beeper = beep.on;
-    aux.forEach((a, i) => { if (a?.rise) this.auxToggled[i] = !this.auxToggled[i]; });
-    if (edge(p.reset)) { this.armed = false; this.turtle = false; this.onReset?.(); }
-    for (const [a, b] of Object.entries(this.actionButtons(pad, p))) if (edge(b)) this.onAction?.(a as SimAction);
-    if (edge(p.menu)) this.onMenu?.();
+    if (p.turtle) { if (p.turtle.mode === 'toggle') { if (turtle & 2) this.turtle = !this.turtle; } else this.turtle = (turtle & 1) === 1; }
+    if (p.beeper) this.beeper = (beep & 1) === 1;
+    for (let i = 0; i < AUX_EXTRA; i++) if (auxRise & (1 << i)) this.auxToggled[i] = !this.auxToggled[i];
+    if (this.edge(p.reset, pressed)) { this.armed = false; this.turtle = false; this.onReset?.(); }
+    const acts = this.actionTable(pad, p).list;
+    for (let k = 0; k < acts.length; k++) if (this.edge(acts[k][1], pressed)) this.onAction?.(acts[k][0]);
+    if (this.edge(p.menu, pressed)) this.onMenu?.();
     this.prevButtons = pressed;
   }
 
-  /** Button for each sim action on this pad (none on radios / unmapped joysticks). */
+  /** Button for each sim action on this pad (none on radios / unmapped joysticks). The object is
+   *  shared (cached per profile): read it, don't change it. */
   actionButtons(pad: { mapping: string; id: string }, p: InputProfile): Partial<Record<SimAction, number>> {
+    return this.actionTable(pad, p).out;
+  }
+
+  /** actionButtons, kept per profile object and recomputed when one of the fields it depends on is
+   *  replaced (the poll asks ~1000 times a second; profiles change only in the Controller tab). */
+  private actions = new WeakMap<InputProfile, ActionTable>();
+  private actionTable(pad: { mapping: string; id: string }, p: InputProfile): ActionTable {
     const std = isStandard(pad) || p.kind === 'steam' || p.kind === 'xbox' || p.kind === 'playstation';
+    const c = this.actions.get(p);
+    if (c && c.std === std && c.arm === p.arm && c.mode === p.mode && c.turtle === p.turtle && c.beeper === p.beeper && c.aux === p.aux
+      && c.auxLen === (p.aux?.length ?? 0) && c.reset === p.reset && c.menu === p.menu && c.actions === p.actions && c.needsSetup === p.needsSetup) return c;
     const binds: ({ index: number; src?: string } | null | undefined)[] = [p.arm, p.mode, p.turtle, p.beeper, ...(p.aux ?? [])];
     const taken = new Set(binds.filter((b) => b && (b.src ?? 'button') === 'button').map((b) => b!.index).concat([p.reset, p.menu].filter((x): x is number => x != null)));
     const out: Partial<Record<SimAction, number>> = {};
@@ -459,7 +537,12 @@ export class InputManager {
       const b = p.actions?.[a] !== undefined ? p.actions[a] : std && !p.needsSetup ? STANDARD_ACTIONS[a] : null;
       if (b != null && !taken.has(b)) out[a] = b;
     }
-    return out;
+    const t: ActionTable = {
+      std, arm: p.arm, mode: p.mode, turtle: p.turtle, beeper: p.beeper, aux: p.aux, auxLen: p.aux?.length ?? 0, reset: p.reset, menu: p.menu,
+      actions: p.actions, needsSetup: p.needsSetup, out, list: Object.entries(out) as [SimAction, number][],
+    };
+    this.actions.set(p, t);
+    return t;
   }
 
   /** Haptic feedback on pads that support it (Xbox, DualSense in Chrome/Edge). */
@@ -492,16 +575,16 @@ export class KeyboardInput {
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
   }
+  private k(c: string) { return this.keys.has(c) ? 1 : 0; }
   update(ch: Float32Array) {
     const now = performance.now(), dt = Math.min(0.1, (now - this.last) / 1000); this.last = now;
-    const k = (c: string) => (this.keys.has(c) ? 1 : 0);
-    this.thr = Math.max(0, Math.min(1, this.thr + (k('KeyW') - k('KeyS')) * dt * 0.8));
+    this.thr = Math.max(0, Math.min(1, this.thr + (this.k('KeyW') - this.k('KeyS')) * dt * 0.8));
     ch[2] = 1000 + this.thr * 1000;
     // Keys are on/off; slew the stick toward the target (~0.3 s to full) so it's not bang-bang.
-    const slew = (cur: number, target: number) => { const s = dt / 0.3; return cur + Math.max(-s, Math.min(s, target - cur)); };
-    this.yaw = slew(this.yaw, k('KeyD') - k('KeyA'));
-    this.pitch = slew(this.pitch, k('ArrowUp') - k('ArrowDown'));
-    this.roll = slew(this.roll, k('ArrowRight') - k('ArrowLeft'));
+    const s = dt / 0.3;
+    this.yaw += Math.max(-s, Math.min(s, this.k('KeyD') - this.k('KeyA') - this.yaw));
+    this.pitch += Math.max(-s, Math.min(s, this.k('ArrowUp') - this.k('ArrowDown') - this.pitch));
+    this.roll += Math.max(-s, Math.min(s, this.k('ArrowRight') - this.k('ArrowLeft') - this.roll));
     ch[3] = 1500 + this.yaw * 350;
     ch[1] = 1500 + this.pitch * 350;
     ch[0] = 1500 + this.roll * 350;
