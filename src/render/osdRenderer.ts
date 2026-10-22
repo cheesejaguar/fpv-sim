@@ -94,6 +94,8 @@ export class OsdRenderer {
   private lastSeq = -1;
   private blinkOn = true;
   private lastBlink = 0;
+  /** the last drawn grid had blinking characters (else a blink phase change redraws nothing) */
+  private blinks = true;
   cols = 30; rows = 16;
   hasContent = false;
   /** Cells Betaflight has drawn (blinking ones count while hidden), row-major cols×rows: the
@@ -120,9 +122,10 @@ export class OsdRenderer {
     const seq = Atomics.load(sh.ctrl, 2);
     const blinkPhase = Math.floor(now / 250) % 2 === 0;
     const blinkChanged = blinkPhase !== this.blinkOn && now - this.lastBlink > 200;
-    if (seq === this.lastSeq && !blinkChanged) return false;
-    this.lastSeq = seq;
     if (blinkChanged) { this.blinkOn = blinkPhase; this.lastBlink = now; }
+    // (a canvas redraw is a full texture upload, 3.5 MB for a 53x20 HD grid, and a new present)
+    if (seq === this.lastSeq && !(blinkChanged && this.blinks)) return false;
+    this.lastSeq = seq;
     const cols = Atomics.load(sh.ctrl, 3) || 30, rows = Atomics.load(sh.ctrl, 4) || 16;
     const s = this.hd ? 2 : 1, gw = GLYPH_W * s, gh = GLYPH_H * s;
     if (cols !== this.cols || rows !== this.rows || this.canvas.width !== cols * gw || this.canvas.height !== rows * gh) {
@@ -135,18 +138,18 @@ export class OsdRenderer {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     const atlas = this.hd ? this.atlasHd : this.atlas;
     if (!atlas) return true;
-    let any = false;
+    let any = false, blinks = false;
     if (this.occupied.length !== cols * rows) this.occupied = new Uint8Array(cols * rows); else this.occupied.fill(0);
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
       const c = sh.osd[y * OSD_MAX_COLS + x];
       const attr = sh.osd[OSD_MAX_COLS * OSD_MAX_ROWS + y * OSD_MAX_COLS + x];
       if (c === 0 || c === 0x20) continue;
       this.occupied[y * cols + x] = 1;
-      if ((attr & 0x40) && !this.blinkOn) continue;
+      if (attr & 0x40) { blinks = true; if (!this.blinkOn) continue; }
       any = true;
       ctx.drawImage(atlas, (c % 16) * gw, Math.floor(c / 16) * gh, gw, gh, x * gw, y * gh, gw, gh);
     }
-    this.hasContent = any;
+    this.hasContent = any; this.blinks = blinks;
     this.texture.needsUpdate = true;
     return true;
   }
