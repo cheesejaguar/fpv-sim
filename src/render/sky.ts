@@ -138,12 +138,15 @@ export function buildSky(env: Environment, sunDir: THREE.Vector3): THREE.Mesh {
   return sky;
 }
 
+/** Lamp panels within this horizontal distance (m) belong to one floodlight tower. */
+const FLOOD_TOWER_R = 12;
+
 /** Lamp positions of a map's floodlight towers: `flood`-tagged panels grouped per tower (ENU). */
 export function floodTowers(map: MapDef): { x: number; y: number; z: number }[] {
   const towers: { x: number; y: number; z: number; n: number }[] = [];
   for (const p of [...map.prims, ...(map.decor ?? [])] as Prim[]) {
     if (p.tag !== 'flood' || p.kind === 'brush') continue;
-    let t = towers.find((q) => Math.hypot(q.x / q.n - p.c.x, q.y / q.n - p.c.y) < 12);
+    let t = towers.find((q) => Math.hypot(q.x / q.n - p.c.x, q.y / q.n - p.c.y) < FLOOD_TOWER_R);
     if (!t) towers.push((t = { x: 0, y: 0, z: 0, n: 0 }));
     t.x += p.c.x; t.y += p.c.y; t.z += p.c.z; t.n++;
   }
@@ -168,9 +171,11 @@ export interface NightLights { lights: THREE.Light[]; objects: THREE.Object3D[];
  */
 export function buildLights(map: MapDef, env: Environment): NightLights {
   const lights: THREE.Light[] = [], objects: THREE.Object3D[] = [], disp: { dispose(): void }[] = [];
+  const spotAt: { x: number; y: number }[] = [];
   if (env.floods > 0) {
     const c = courseCentre(map), target = new THREE.Vector3(c.x, c.z, -c.y);
     for (const t of floodTowers(map)) {
+      spotAt.push(t);
       const pos = new THREE.Vector3(t.x, t.z, -t.y), d = pos.distanceTo(target), cos = Math.max(0.2, (pos.y - target.y) / d);
       const spot = new THREE.SpotLight(0xfff1dc, (0.25 * d * d / cos) * env.floods, 0, THREE.MathUtils.degToRad(66), 0.9, 2);
       spot.position.copy(pos); spot.target.position.copy(target);
@@ -182,11 +187,18 @@ export function buildLights(map: MapDef, env: Environment): NightLights {
   if (ml.length) {
     const bulbGeo = new THREE.SphereGeometry(0.07, 10, 6); disp.push(bulbGeo);
     for (const l of ml) {
-      const pl = new THREE.PointLight(l.color, l.intensity, l.range, 2);
-      pl.position.set(l.pos.x, l.pos.z, -l.pos.y);
-      lights.push(pl);
+      const at = new THREE.Vector3(l.pos.x, l.pos.z, -l.pos.y);
+      // a floodlight tower that has its spot is lit by that already: three shades every light on
+      // every pixel whatever its range, and Night Session's 6 spotted towers (of 8) were lit twice,
+      // 14 local lights per shaded pixel where 8 remain (the spots carry ~90 % of the course's
+      // light; the bases of those towers lose their omni fill). The lamp bulbs stay.
+      if (!spotAt.some((t) => Math.hypot(l.pos.x - t.x, l.pos.y - t.y) < FLOOD_TOWER_R)) {
+        const pl = new THREE.PointLight(l.color, l.intensity, l.range, 2);
+        pl.position.copy(at);
+        lights.push(pl);
+      }
       const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(l.color).multiplyScalar(4) }); disp.push(mat); // HDR: blooms in the FPV camera
-      const bulb = new THREE.Mesh(bulbGeo, mat); bulb.position.copy(pl.position);
+      const bulb = new THREE.Mesh(bulbGeo, mat); bulb.position.copy(at);
       objects.push(bulb);
     }
   }
