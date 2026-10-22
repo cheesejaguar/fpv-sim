@@ -15,7 +15,6 @@ import { courseOf, LapBoard } from './app/leaderboard';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
-import { simHardwareCli } from './bf/defaults';
 import { buildDrone, DroneBuild, DroneSpec, preloadPropTable } from './builder/derive';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
@@ -32,11 +31,8 @@ import { RemoteQuads } from './render/remoteQuads';
 import { buildScene } from './render/scene';
 import { VideoLink } from './render/videoLink';
 import { PbShots } from './share/capture';
-import { bfPanel } from './ui/bfPanel';
 import { Blackbox } from './ui/blackbox';
-import { builderPanel } from './ui/builderPanel';
 import { el } from './ui/dom';
-import { inputPanel } from './ui/inputPanel';
 import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
 import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { settingsPanel, ViewSettings } from './ui/settingsPanel';
@@ -322,6 +318,37 @@ function startFlight(mode: GameMode) {
   resetLaps(ctx);
   sendReset(true);
 }
+/**
+ * A settings tab whose code loads the first time it is opened (the Controller, Betaflight and Drone
+ * builder panels are ~45 kB that the menu doesn't need to open): a "Loading…" placeholder that the
+ * panel replaces once its chunk is in; from then on the panel renders at once, as before. A tab left
+ * before its chunk arrived is not rendered into the detached placeholder (its listeners would never
+ * be unmounted). The chunks are fetched in the background a few seconds after the menu is up.
+ */
+function lazyTab<M>(load: () => Promise<M>, render: (m: M) => HTMLElement): { render: () => HTMLElement; warm: () => void } {
+  let mod: M | undefined, pending: Promise<M> | undefined;
+  const get = () => (pending ??= load().then((m) => (mod = m), (e) => { pending = undefined; throw e; }));
+  return {
+    render: () => {
+      if (mod) return render(mod);
+      const box = el('div', { class: 'panel', 'aria-busy': 'true' }, el('p', { class: 'note' }, 'Loading…'));
+      get().then((m) => { if (box.isConnected) box.replaceWith(render(m)); },
+        (e) => { if (box.isConnected) box.replaceChildren(el('p', {}, `This panel failed to load: ${(e as Error)?.message ?? e}. Check the connection and open it again.`)); });
+      return box;
+    },
+    warm: () => { get().catch(() => { /* retried when opened */ }); },
+  };
+}
+const controllerLazy = lazyTab(() => import('./ui/inputPanel'), (m) => m.inputPanel(input));
+const bfLazy = lazyTab(() => Promise.all([import('./ui/bfPanel'), import('./bf/defaults')]), ([p, d]) => p.bfPanel(bridge, {
+  hardwareCli: (keepOsdLayout, propsOut) => d.simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
+  propsOut: () => ctx.spec.propDirection === 'props-out',
+  setPropsOut: (out) => applySpec({ ...ctx.spec, propDirection: out ? 'props-out' : 'props-in' }),
+  factoryReset: () => ctx.send({ type: 'factoryReset' }),
+}));
+const builderLazy = lazyTab(() => import('./ui/builderPanel'), (m) => m.builderPanel(() => ctx.spec, (s) => { applySpec(s); gameMenu.resume(); }));
+const controllerTab = controllerLazy.render, bfTab = bfLazy.render, builderTab = builderLazy.render;
+
 const gameMenu = new GameMenu({
   input, mp: ctx.mp,
   spec: () => ctx.spec, applySpec,
@@ -333,14 +360,9 @@ const gameMenu = new GameMenu({
       video: () => ctx.build.info.components.video,
       effectiveLatencyMs: () => (ctx.fpv as { effectiveLatencyMs?: number }).effectiveLatencyMs,
     }) },
-    { id: 'controller', label: 'Controller', icon: 'gamepad', render: () => inputPanel(input) },
-    { id: 'bf', label: 'Betaflight', icon: 'cpu', render: () => bfPanel(bridge, {
-      hardwareCli: (keepOsdLayout, propsOut) => simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
-      propsOut: () => ctx.spec.propDirection === 'props-out',
-      setPropsOut: (out) => applySpec({ ...ctx.spec, propDirection: out ? 'props-out' : 'props-in' }),
-      factoryReset: () => ctx.send({ type: 'factoryReset' }),
-    }) },
-    { id: 'builder', label: 'Drone builder', icon: 'wrench', render: () => builderPanel(() => ctx.spec, (s) => { applySpec(s); gameMenu.resume(); }) },
+    { id: 'controller', label: 'Controller', icon: 'gamepad', render: controllerTab },
+    { id: 'bf', label: 'Betaflight', icon: 'cpu', render: bfTab },
+    { id: 'builder', label: 'Drone builder', icon: 'wrench', render: builderTab },
     { id: 'mp', label: 'Multiplayer', icon: 'users', render: () => multiplayerPanel(ctx.mp, joinRoom) },
     { id: 'blackbox', label: 'Blackbox', icon: 'database', render: blackboxPanel },
   ],
@@ -370,8 +392,12 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
-// "Fly now" switches to the easiest quad: have its prop table at hand by then
-if (EASY_SPEC.prop !== spec0.prop) setTimeout(() => void preloadPropTable(EASY_SPEC.prop), 3000);
+// in the background once the menu is up: "Fly now"'s quad (the easiest one) gets its prop table,
+// and the settings panels that load on first use get their code
+setTimeout(() => {
+  if (EASY_SPEC.prop !== spec0.prop) void preloadPropTable(EASY_SPEC.prop);
+  controllerLazy.warm(); bfLazy.warm(); builderLazy.warm();
+}, 3000);
 // replay permalinks: ?replay=<entry id>[&t=<s>] plays that leaderboard lap over the title screen
 {
   const rl = parseReplayLink(location.search);
