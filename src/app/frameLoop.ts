@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { pilotPos, spawnGroundZ } from '../maps/world';
 import { enuToThree, quatEnuToThree } from '../render/coords';
 import { cameraMountZ } from '../render/droneMesh';
-import { bladeSolidity, mountVibration, propLook, SHUTTER_MAX } from '../render/fpvCamera';
+import { autoCubeSize, bladeSolidity, mountVibration, propLook, SHUTTER_MAX } from '../render/fpvCamera';
 import { GoggleOverlay } from '../render/osdRenderer';
 import type { RemoteSound } from '../render/audio';
 import { TAG_LAYER } from '../render/remoteQuads';
@@ -20,7 +20,16 @@ export interface FrameLoopDeps {
   backdrop(): boolean;
   /** HUD update, after the frame is drawn */
   afterFrame(): void;
+  /** true while a menu screen covers the view (the picture behind it is dimmed): the title orbit
+   *  and the spectator views are then redrawn at ~10 Hz only */
+  dimmed?(): boolean;
 }
+
+/** Minimum interval (ms) between redraws of the title orbit (~60 fps; with a 2 ms tolerance so a
+ *  60 Hz display still draws every frame) and of any backdrop behind a menu screen (~10 Hz). */
+const TITLE_MS = 1000 / 60, DIMMED_MS = 100;
+const Y_UP = new THREE.Vector3(0, 1, 0);
+const _euler = new THREE.Euler();
 
 // The browser + monitor pipeline (rAF -> compositor -> scan-out) already adds ~1.5 frames plus the
 // panel's response; measure the frame interval and subtract that from the emulated video latency.
@@ -68,6 +77,19 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   let skyOpen = 1, skyTimer = 0;
   // presenting the FPV picture only when something in it changed (see below)
   let presentDue = true, lastMode = '', lastGog = true;
+  // title orbit / spectator views behind a menu: drawn at a capped rate (see TITLE_MS)
+  let backdropDue = 0, lastViewAt = performance.now();
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const backdropReady = (now: number, minMs: number) => {
+    if (!presentDue && now < backdropDue - 2) return false;
+    backdropDue = Math.max(backdropDue + minMs, now - minMs);
+    presentDue = false;
+    return true;
+  };
+  // scratch for the per-frame / per-capture state (no allocations in the loop)
+  const rpmNow = [0, 0, 0, 0], vib = { amp: [0, 0, 0, 0], freq: [0, 0, 0, 0] };
+  let motionT = 0, motionHead = 0;
+  const motionAt = (t: number, q: THREE.Quaternion) => lensAt(motionT + t, motionHead, q);
   const drillMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 16), new THREE.MeshBasicMaterial({ color: 0x39b6ff, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
   const marker = losMarker();
   const chaseCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 3000);
@@ -108,7 +130,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     }
     q.multiply(ctx.mountQ);
   };
-  const yawOf = (q: THREE.Quaternion) => new THREE.Euler().setFromQuaternion(q, 'YXZ').y;
+  const yawOf = (q: THREE.Quaternion) => _euler.setFromQuaternion(q, 'YXZ').y;
   let solidity = { id: '', v: 0.15 };
   /** Props: spin by the real elapsed time; disc vs. blades from what one exposure of `shutter` s shows. */
   const spinProps = (rpm: number[], dt: number, shutter: number) => {
@@ -158,8 +180,10 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     sceneB.setWind(wind.speed, wind.direction, now / 1000);
     // chipped / snapped blades show on the model (and on the FPV view of the quad's own props)
     if (ctx.tel && !rp) drone.setDamage(ctx.tel.rotorDamage);
-    if (fpv.cubeSize !== (view.cubeSize || 768)) fpv.setCubeSize(view.cubeSize || 768); // Settings → cube map resolution
     const v = build.info.components.video;
+    // Settings → cube map resolution (0: automatic for the video system, autoCubeSize)
+    const cube = view.cubeSize > 0 ? view.cubeSize : autoCubeSize(v, view.renderScale);
+    if (fpv.cubeSize !== cube) fpv.setCubeSize(cube);
     const head = rp ? rp.time : newestTime(sh);
     pilotPos(ctx.map, pilot);
     // ---- emulated glass-to-glass latency + camera frame cadence ----
@@ -177,11 +201,12 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     if (mode !== 'fpv') sceneB.hemi.intensity = sceneB.hemiBase; // spectators: true lighting
     if (mode !== lastMode) { presentDue = true; lastMode = mode; }
     applyPixelRatio(mode === 'chase' || mode === 'los' || mode === 'orbit' ? Math.min(devicePixelRatio, 2) : 1);
+    const dimmed = !rp && (deps.dimmed?.() ?? false);
     if (mode === 'title') {
-      if (poseAt(head)) {
+      if (backdropReady(now, dimmed ? DIMMED_MS : TITLE_MS) && poseAt(head)) {
         const p = drone.root.position;
         const r = Math.max(0.28, build.info.components.frame.wheelbaseMm / 225 * 0.85);
-        const a = matchMedia('(prefers-reduced-motion: reduce)').matches ? 2.2 : now * 0.00016 + 2.2;
+        const a = reducedMotion.matches ? 2.2 : now * 0.00016 + 2.2;
         orbitCam.position.set(p.x + Math.cos(a) * r, p.y + 0.32 * r + 0.04, p.z + Math.sin(a) * r);
         orbitCam.lookAt(p.x, p.y + 0.02, p.z);
         sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(p);
@@ -200,7 +225,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         const dtw = (now - lastCapWall) / 1000; lastCapWall = now;
         lastCap = tCap;
         jitter = (Math.random() - 0.5) * v.latencyJitterMs;
-        const rpmNow = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]];
+        rpmNow[0] = rec[R.rpm0]; rpmNow[1] = rec[R.rpm1]; rpmNow[2] = rec[R.rpm2]; rpmNow[3] = rec[R.rpm3];
         // lens pose: body pose * camera mount offset
         drone.root.updateMatrixWorld();
         const camOffset = tmpV.set(build.info.components.frame.plateLengthMm / 2000 + 0.006 - build.info.cgMm.x / 1000, cameraMountZ(build.info.components.frame, build.info.components.motor) - build.info.cgMm.z / 1000, 0);
@@ -215,9 +240,9 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           spinProps(rpmNow, dtw, fpv.shutter);
           // the camera's orientation through readout + exposure, and the props shaking its mount
           // (a replay has the whole recording: no extrapolation past the newest sample)
-          const hd = rp ? Infinity : newestTime(sh);
-          fpv.setMotion((t, q) => lensAt(tCap + t, hd, q));
-          fpv.setVibration(mountVibration(rpmNow, rp ? undefined : ctx.tel?.rotorDamage, build.info.hoverRpm), tCap);
+          motionT = tCap; motionHead = rp ? Infinity : newestTime(sh);
+          fpv.setMotion(motionAt);
+          fpv.setVibration(mountVibration(rpmNow, rp ? undefined : ctx.tel?.rotorDamage, build.info.hoverRpm, vib), tCap);
           // shadow map at <= 30 Hz, rendered while the whole quad is still visible (the capture
           // hides it for the world pass, so its own shadow would be missing otherwise)
           if (shadowsDue(now)) fpv.renderShadows(sceneB.scene);
@@ -252,17 +277,21 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         presentDue = false;
       }
     } else {
-      // spectator views show the true (undelayed) state
-      if (poseAt(head)) {
-        spinProps([rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]], dtFrame, SHUTTER_MAX); // ~ the eye's integration time
-        updateSky(dtFrame);
+      // spectator views show the true (undelayed) state; behind a menu screen at ~10 Hz
+      if ((!dimmed || backdropReady(now, DIMMED_MS)) && poseAt(head)) {
+        if (!dimmed) presentDue = false;
+        // behind a menu: the time since this view was last drawn (the smoothing runs per drawn frame)
+        const dtv = dimmed ? Math.min(0.1, Math.max(0, (now - lastViewAt) / 1000)) : dtFrame; lastViewAt = now;
+        rpmNow[0] = rec[R.rpm0]; rpmNow[1] = rec[R.rpm1]; rpmNow[2] = rec[R.rpm2]; rpmNow[3] = rec[R.rpm3];
+        spinProps(rpmNow, dtv, SHUTTER_MAX); // ~ the eye's integration time
+        updateSky(dtv);
         const p = drone.root.position;
         if (mode === 'chase') {
           // chase distance scales with the quad (1.6 m behind a 5", ~0.5 m behind a 65 mm whoop)
           const cs = Math.max(0.3, Math.min(1.3, build.info.components.frame.wheelbaseMm / 225));
-          const back = tmpV.set(-1.6 * cs, 0.6 * cs, 0).applyQuaternion(tmpQ.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOf(drone.root.quaternion)));
+          const back = tmpV.set(-1.6 * cs, 0.6 * cs, 0).applyQuaternion(tmpQ.setFromAxisAngle(Y_UP, yawOf(drone.root.quaternion)));
           // same feel at any refresh rate: 15 % per 60 Hz frame = time constant ~0.1 s
-          chaseCam.position.lerp(back.add(p), 1 - Math.exp(-dtFrame / 0.1026));
+          chaseCam.position.lerp(back.add(p), 1 - Math.exp(-dtv / 0.1026));
           chaseCam.lookAt(p);
           if (chaseCam.fov !== 70) { chaseCam.fov = 70; chaseCam.updateProjectionMatrix(); }
         } else if (mode === 'orbit' && rp) {
@@ -278,7 +307,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           // operator's framing), and ring it when it is still only a few pixels
           const d = chaseCam.position.distanceTo(p), wb = build.info.components.frame.wheelbaseMm / 1000;
           const fovT = Math.max(14, Math.min(60, (60 * 10) / Math.max(1, d)));
-          const fov = chaseCam.fov === 70 ? fovT : chaseCam.fov + (fovT - chaseCam.fov) * (1 - Math.exp(-dtFrame / 0.4));
+          const fov = chaseCam.fov === 70 ? fovT : chaseCam.fov + (fovT - chaseCam.fov) * (1 - Math.exp(-dtv / 0.4));
           if (Math.abs(fov - chaseCam.fov) > 1e-3) { chaseCam.fov = fov; chaseCam.updateProjectionMatrix(); }
           const H = renderer.domElement.clientHeight || innerHeight, tanH = Math.tan(THREE.MathUtils.degToRad(chaseCam.fov) / 2);
           const sizePx = ((wb * 1.4) / Math.max(0.1, d) / (2 * tanH)) * H;
