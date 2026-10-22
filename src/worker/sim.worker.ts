@@ -13,8 +13,7 @@
 import { Betaflight, BF_PORT, armingFlagNames } from '../bf/bfModule';
 import { batteryCli, defaultCli, loopCli, osdGrid, osdLayout } from '../bf/defaults';
 import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
-import { packageEntry, urlTableSource } from '../maps/mapFormat';
-import { hasMap, MAPS, preloadMap, registerMap } from '../maps/maps';
+import { hasMap, MapEntry, MAPS, preloadMap, registerMap } from '../maps/maps';
 import { gatePassed } from '../maps/gates';
 import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ, withCourse } from '../maps/world';
 import { RcLink } from '../sim/rcLink';
@@ -133,6 +132,23 @@ function makeEnv(): QuadEnv {
   const w = new Wind({ speed20ft: settings.wind.speed * ws, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 * ws }); // calm air: no gusts
   w.zones = map.wakeZones; w.indoor = map.indoor ?? [];
   return { world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
+}
+
+/**
+ * A map package from disk, as mapFormat.packageEntry builds it, but the package loader (~30 kB) is
+ * imported when the map is first loaded instead of with the worker: most sessions never use it.
+ */
+function localPackageEntry(id: string, info: { name: string; author: string; license: string }, urls: Record<string, string>): MapEntry {
+  return {
+    name: info.name,
+    credit: `Loaded from disk by ${info.author} (${info.license})`,
+    community: { author: info.author, license: info.license, local: true },
+    build: () => { throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`); },
+    prepare: async () => {
+      const mf = await import('../maps/mapFormat');
+      return mf.packageEntry(id, { ...info, local: true }, () => mf.urlTableSource(urls)).prepare!();
+    },
+  };
 }
 
 /** Load a map for the physics; on failure fly 'field'. Tells the main thread what it got. */
@@ -770,8 +786,9 @@ async function handle(m: ToWorker) {
       break;
     }
     case 'registerMap': {
-      // a map package loaded from disk (blob: URLs from the main thread)
-      registerMap(m.id, packageEntry(m.id, { ...m.info, local: true }, () => urlTableSource(m.urls)));
+      // a map package loaded from disk (blob: URLs from the main thread); registered at once, so a
+      // settings message right behind it finds the map
+      registerMap(m.id, localPackageEntry(m.id, m.info, m.urls));
       if (settings.mapId === m.id && quad) { if (await loadMap(m.id)) respawn(); }
       break;
     }
