@@ -110,6 +110,23 @@ export function impulseResponse(rate: number, rt60 = 1.3, seconds = 1.6, seed = 
 
 // ---------------------------------------------------------------------------------------------
 
+/** The target last sent to each AudioParam (see target()). */
+const sent = new WeakMap<AudioParam, number>();
+/**
+ * setTargetAtTime, unless the param is already heading for (practically) the same value. The frame
+ * loop updates ~35 params every frame (11 more per remote pilot) and most of them hold still most of
+ * the time (idle or paused motors, the beeper off, volume and mute, the panner in FPV); each call is
+ * a binding call that adds an automation event. A target that changes, even by a step (the beeper
+ * and beacon gates), goes out at once with its own time constant. The tolerance (1e-5 relative) is
+ * far below anything audible: 0.02 Hz at 2 kHz, 0.3 us of a 30 ms propagation delay.
+ */
+function target(p: AudioParam, v: number, t: number, tc: number) {
+  const prev = sent.get(p);
+  if (prev !== undefined && Math.abs(v - prev) <= 1e-5 * Math.max(Math.abs(v), Math.abs(prev)) + 1e-9) return;
+  sent.set(p, v);
+  p.setTargetAtTime(v, t, tc);
+}
+
 /** One sound source's path to the listener: delay -> air low-pass -> panner -> level, + reverb send. */
 class SpatialChain {
   readonly input: GainNode;
@@ -119,6 +136,7 @@ class SpatialChain {
   private out: GainNode;
   private send: GainNode;
   private lastD = -1;
+  private lastDir: [number, number, number] = [NaN, NaN, NaN];
   constructor(private ctx: AudioContext, dest: AudioNode, reverb: AudioNode | null) {
     this.input = ctx.createGain();
     this.delay = ctx.createDelay(MAX_DELAY);
@@ -127,6 +145,9 @@ class SpatialChain {
     try {
       const pn = ctx.createPanner();
       pn.panningModel = 'HRTF'; pn.distanceModel = 'linear'; pn.refDistance = 1; pn.maxDistance = 1e4; pn.rolloffFactor = 0; // level is ours
+      // the direction is set once a frame anyway: per render quantum (k-rate) is plenty, and spares the
+      // panner its per-sample azimuth / elevation path while the position automation runs
+      for (const q of [pn.positionX, pn.positionY, pn.positionZ]) { try { if (q) q.automationRate = 'k-rate'; } catch { /* fixed a-rate */ } }
       p = pn;
     } catch { p = ctx.createStereoPanner(); }
     this.panner = p;
@@ -140,17 +161,18 @@ class SpatialChain {
     const t = this.ctx.currentTime, pr = propagation(d), jump = this.lastD < 0 || Math.abs(d - this.lastD) > 25;
     this.lastD = d;
     if (jump) {
-      this.delay.delayTime.cancelScheduledValues(t); this.delay.delayTime.setValueAtTime(pr.delay, t);
-      this.out.gain.cancelScheduledValues(t); this.out.gain.setValueAtTime(0, t);
-    } else this.delay.delayTime.setTargetAtTime(pr.delay, t, 0.06); // smooth: the rate of change is the Doppler shift
-    this.out.gain.setTargetAtTime(pr.gain * levelScale, t, jump ? 0.02 : 0.05);
-    this.lp.frequency.setTargetAtTime(pr.lowpassHz, t, 0.05);
-    this.send.gain.setTargetAtTime(0.5 * Math.pow(Math.max(0, Math.min(1, enclosed)), 1.5) * pr.gain * levelScale, t, 0.1);
+      this.delay.delayTime.cancelScheduledValues(t); this.delay.delayTime.setValueAtTime(pr.delay, t); sent.set(this.delay.delayTime, pr.delay);
+      this.out.gain.cancelScheduledValues(t); this.out.gain.setValueAtTime(0, t); sent.delete(this.out.gain);
+    } else target(this.delay.delayTime, pr.delay, t, 0.06); // smooth: the rate of change is the Doppler shift
+    target(this.out.gain, pr.gain * levelScale, t, jump ? 0.02 : 0.05);
+    target(this.lp.frequency, pr.lowpassHz, t, 0.05);
+    target(this.send.gain, 0.5 * Math.pow(Math.max(0, Math.min(1, enclosed)), 1.5) * pr.gain * levelScale, t, 0.1);
     const p = this.panner;
     if ('positionX' in p && p.positionX) {
-      p.positionX.setTargetAtTime(dir[0], t, 0.03); p.positionY.setTargetAtTime(dir[1], t, 0.03); p.positionZ.setTargetAtTime(dir[2], t, 0.03);
-    } else if ('setPosition' in p) (p as PannerNode).setPosition(dir[0], dir[1], dir[2]);
-    else (p as StereoPannerNode).pan.setTargetAtTime(Math.max(-1, Math.min(1, dir[0])), t, 0.03);
+      target(p.positionX, dir[0], t, 0.03); target(p.positionY, dir[1], t, 0.03); target(p.positionZ, dir[2], t, 0.03);
+    } else if ('setPosition' in p) {
+      if (dir[0] !== this.lastDir[0] || dir[1] !== this.lastDir[1] || dir[2] !== this.lastDir[2]) { (p as PannerNode).setPosition(dir[0], dir[1], dir[2]); this.lastDir = [dir[0], dir[1], dir[2]]; }
+    } else target((p as StereoPannerNode).pan, Math.max(-1, Math.min(1, dir[0])), t, 0.03);
   }
   disconnect() { this.input.disconnect(); this.out.disconnect(); this.send.disconnect(); }
 }
@@ -240,7 +262,7 @@ export class MotorAudio {
   /** Mute the speakers (the DVR stream keeps recording). */
   setMuted(m: boolean) {
     this.muted = m;
-    if (this.ctx) this.speakers.gain.setTargetAtTime(m ? 0 : 1, this.ctx.currentTime, 0.02);
+    if (this.ctx) target(this.speakers.gain, m ? 0 : 1, this.ctx.currentTime, 0.02); // (the frame loop says so every frame)
   }
 
   /** What the pilot hears, for recording (DVR); null until the audio has been unlocked. */
@@ -265,7 +287,7 @@ export class MotorAudio {
   update(rpm: number[], loadA: number, blades: number, poles: number, distance = 1, wash = 0, extras?: AudioExtras) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    this.master.gain.setTargetAtTime(this.enabled ? this.volume : 0, t, 0.05);
+    target(this.master.gain, this.enabled ? this.volume : 0, t, 0.05);
     // ---- where the quad is, relative to the listener ----
     let d = distance, dir: [number, number, number] = [0, 0, -1];
     if (extras?.quad && extras.listener) {
@@ -286,21 +308,21 @@ export class MotorAudio {
       const f = Math.max(20, (r / 60) * blades);
       if (this.beaconT0 >= 0) {
         // ESC beacon: the windings driven at an audio tone, each motor a touch apart
-        v.osc.frequency.setTargetAtTime(BEACON_HZ * (1 + k * 0.004), t, 0.002);
-        v.g.gain.setTargetAtTime(beacon ? 0.018 * this.beeperLevel : 0, t, 0.004);
-        v.wg.gain.setTargetAtTime(0, t, 0.01); v.ng.gain.setTargetAtTime(0, t, 0.01);
+        target(v.osc.frequency, BEACON_HZ * (1 + k * 0.004), t, 0.002);
+        target(v.g.gain, beacon ? 0.018 * this.beeperLevel : 0, t, 0.004);
+        target(v.wg.gain, 0, t, 0.01); target(v.ng.gain, 0, t, 0.01);
         continue;
       }
-      v.osc.frequency.setTargetAtTime(f, t, 0.01);
+      target(v.osc.frequency, f, t, 0.01);
       // electrical frequency: pole pairs × mechanical revolutions per second
-      v.whine.frequency.setTargetAtTime(Math.max(40, (r / 60) * (poles / 2)), t, 0.01);
+      target(v.whine.frequency, Math.max(40, (r / 60) * (poles / 2)), t, 0.01);
       const a = Math.min(1, r / 30000);
-      v.g.gain.setTargetAtTime(0.05 * a * a, t, 0.02);
-      v.wg.gain.setTargetAtTime(0.004 * a, t, 0.02);
+      target(v.g.gain, 0.05 * a * a, t, 0.02);
+      target(v.wg.gain, 0.004 * a, t, 0.02);
       // in prop wash the broadband noise drops in pitch and flutters (blades chopping their own wake)
       const flutter = wash > 0.05 ? 1 + wash * (Math.random() - 0.5) * 1.6 : 1;
-      v.nf.frequency.setTargetAtTime((400 + f * 2) * (1 - 0.5 * wash), t, 0.02);
-      v.ng.gain.setTargetAtTime((0.06 * a * a + Math.min(0.08, loadA / 2500) + 0.05 * wash * a) * flutter, t, 0.012);
+      target(v.nf.frequency, (400 + f * 2) * (1 - 0.5 * wash), t, 0.02);
+      target(v.ng.gain, (0.06 * a * a + Math.min(0.08, loadA / 2500) + 0.05 * wash * a) * flutter, t, 0.012);
     }
     // ---- beeper: the FC's buzzer output; held on (the beeper switch) it plays the lost-model beeps ----
     let on = false;
@@ -314,7 +336,7 @@ export class MotorAudio {
       if (!BEEP_PATTERNS[this.pattern.kind].repeat && pt > 2) this.pattern = null;
     }
     // a 3.1 kHz piezo sits where hearing is most sensitive: well under the motors at full level
-    this.beepGain.gain.setTargetAtTime(on ? 0.035 * this.beeperLevel : 0, t, 0.003);
+    target(this.beepGain.gain, on ? 0.035 * this.beeperLevel : 0, t, 0.003);
   }
 
   /** Crash / prop strike from the quad: a low thud plus a plastic-and-carbon clatter, strength 0..1. */
@@ -363,15 +385,15 @@ export class MotorAudio {
       v.seen = t;
       const rpm = Array.isArray(r.rpm) ? r.rpm.reduce((s, x) => s + Math.abs(x), 0) / Math.max(1, r.rpm.length) : Math.abs(r.rpm);
       const f = Math.max(20, (rpm / 60) * 3), a = Math.min(1, rpm / 30000); // blade count unknown: tri-blades
-      v.osc.frequency.setTargetAtTime(f, t, 0.02);
-      v.g.gain.setTargetAtTime(0.1 * a * a, t, 0.03);          // four motors' worth
-      v.nf.frequency.setTargetAtTime(400 + f * 2, t, 0.03);
-      v.ng.gain.setTargetAtTime(0.14 * a * a, t, 0.03);
+      target(v.osc.frequency, f, t, 0.02);
+      target(v.g.gain, 0.1 * a * a, t, 0.03);          // four motors' worth
+      target(v.nf.frequency, 400 + f * 2, t, 0.03);
+      target(v.ng.gain, 0.14 * a * a, t, 0.03);
       v.chain.set(d, view === 'fpv' ? [0, 0, -1] : listenerDir(r.pos, listener, facing), this.last.enclosed);
     }
     for (const [id, v] of this.remotes) {
       if (v.seen === t) continue;
-      v.g.gain.setTargetAtTime(0, t, 0.05); v.ng.gain.setTargetAtTime(0, t, 0.05);
+      target(v.g.gain, 0, t, 0.05); target(v.ng.gain, 0, t, 0.05);
       if (t - v.seen > 0.5) { v.osc.stop(); v.noise.stop(); v.chain.disconnect(); this.remotes.delete(id); }
     }
   }
