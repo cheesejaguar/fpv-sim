@@ -8,7 +8,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { gateIdOf, isFlagBanner } from '../maps/gates';
 import { BoxPrim, MapDef, Prim } from '../maps/world';
 import { buildCrowd } from './crowd';
-import { buildClutter, groundMaterial, pitchDecal, terrainTiles } from './ground';
+import { buildClutter, groundMaterial, terrainTiles } from './ground';
 import { addQuakeLevel } from './quakeScene';
 import { buildLights, buildSky, courseCentre, Environment, environment, skyDir, TimeOfDay } from './sky';
 import { flowDir, makeWorldUniforms, windStrength } from './sway';
@@ -187,16 +187,13 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   if (map.ground !== false) {
     const builtin = !map.groundTexture, grass = map.groundMat === 'grass';
     const groundTex = track(builtin ? (grass ? grassTexture() : dirtTexture()) : imageTexture(map.groundTexture!));
-    const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass));
+    // the stadium's painted pitch is part of the ground's own shading (no second lit pass over it)
+    const pitch = map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch ? { tex: track(pitchTexture(120, 73)), w: 120, h: 73 } : undefined;
+    const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass, pitch));
     for (const g of terrainTiles(map)) {
       const tile = new THREE.Mesh(track(g), mat);
       tile.receiveShadow = true; tile.name = 'terrain';
       scene.add(tile);
-    }
-    if (map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch) {
-      const decal = pitchDecal(map, track(pitchTexture(120, 73)), 120, 73);
-      track(decal.geometry); track(decal.material as THREE.Material); decal.name = 'pitch';
-      scene.add(decal);
     }
   }
   if (map.quake) for (const d of addQuakeLevel(scene, map)) track(d);
