@@ -31,6 +31,9 @@ describe('BEMT table binary form', () => {
     expectSameTable(t, back);
     // own, aligned buffers (not views into the download)
     expect(back.ct.byteOffset).toBe(0);
+    // also from a Node Buffer (the test setup reads the tables from disk): its slice() is a view
+    const fromDisk = decodeTable(Buffer.concat([Buffer.alloc(3), Buffer.from(encodeTable(t))]).subarray(3));
+    expectSameTable(t, fromDisk);
   }, 60000);
 
   test('garbage, truncated and padded files are refused', () => {

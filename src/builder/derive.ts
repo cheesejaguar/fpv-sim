@@ -105,12 +105,20 @@ export function propGeometry(p: PropSpec, pitchOverride?: number): PropGeometry 
 
 const tableKey = (p: PropSpec, pitch = p.pitchIn) => `${p.id}:${pitch}`;
 
+/**
+ * Where propTable() looks for a catalogue prop's table before building it: the test setup points it
+ * at the precomputed tables on disk (tests/setup/propTables.ts), so test files don't each solve the
+ * same tables again. The app doesn't use it: it fetches them ahead (preloadPropTable).
+ */
+let tableSource: ((propId: string) => BemtTable | null) | null = null;
+export function setPropTableSource(f: ((propId: string) => BemtTable | null) | null) { tableSource = f; }
+
 export function propTable(p: PropSpec, pitchOverride?: number): BemtTable {
   const key = tableKey(p, pitchOverride);
   let t = tableCache.get(key);
   if (!t) {
     // calibrate at the catalogue pitch; a pitch override then changes the result physically
-    const base = pitchOverride != null && pitchOverride !== p.pitchIn ? propTable(p) : buildBemtTable(propGeometry(p), p.calib);
+    const base = pitchOverride != null && pitchOverride !== p.pitchIn ? propTable(p) : tableSource?.(p.id) ?? buildBemtTable(propGeometry(p), p.calib);
     t = pitchOverride != null && pitchOverride !== p.pitchIn ? { ...buildBemtTable(propGeometry(p, pitchOverride)), ctScale: base.ctScale, cqScale: base.cqScale } : base;
     if (t !== base) {
       const j0 = (t.ng - 1) >> 1, R = t.R, A = t.A;

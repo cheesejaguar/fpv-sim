@@ -93,5 +93,9 @@ export default defineConfig({
       },
     },
   },
-  test: { environment: 'node', include: ['tests/**/*.test.ts'] },
+  test: {
+    environment: 'node', include: ['tests/**/*.test.ts'],
+    // the propeller BEMT tables are precomputed once per run and read from disk by every test file
+    globalSetup: ['tests/setup/globalSetup.ts'], setupFiles: ['tests/setup/propTables.ts'],
+  },
 } as any);

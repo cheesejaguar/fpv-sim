@@ -49,7 +49,8 @@ export function encodeTable(t: BemtTable): Uint8Array<ArrayBuffer> {
 }
 
 export function decodeTable(bytes: ArrayBuffer | Uint8Array): BemtTable {
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  // a plain view (a Node Buffer's slice() is a view of its memory, not the copy the arrays need below)
+  const u8 = bytes instanceof Uint8Array ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) : new Uint8Array(bytes);
   if (u8.length < 12) throw new Error('BEMT table: truncated');
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   if (dv.getUint32(0, true) !== MAGIC || dv.getUint32(4, true) !== VERSION) throw new Error('BEMT table: not a table');
