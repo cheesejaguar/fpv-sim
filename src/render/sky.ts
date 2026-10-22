@@ -105,6 +105,15 @@ void main() {
   gl_FragColor = vec4(c, 1.0);
 }`;
 
+/**
+ * Draw order of the sky domes: after every other opaque object. Both write their depth on the far
+ * plane, so drawn last they only shade the pixels nothing else covered (early depth test) instead of
+ * running the sky shader under the whole picture and painting over it. three sorts opaque objects
+ * by material id before distance, and the sky's material is the scene's first: it used to be drawn
+ * first, under everything (indoors: on every pixel of every cube face, for nothing).
+ */
+export const SKY_RENDER_ORDER = 1000;
+
 /** The sky dome: three's Sky (scaled into proportion with the lit ground) by day, the night sky at night. */
 export function buildSky(env: Environment, sunDir: THREE.Vector3): THREE.Mesh {
   if (env.sky === 'night') {
@@ -112,7 +121,7 @@ export function buildSky(env: Environment, sunDir: THREE.Vector3): THREE.Mesh {
       vertexShader: NIGHT_VS, fragmentShader: NIGHT_FS, side: THREE.BackSide, depthWrite: false, fog: false,
       uniforms: { moonDir: { value: sunDir.clone() } },
     }));
-    m.frustumCulled = false; m.renderOrder = -10;
+    m.frustumCulled = false; m.renderOrder = SKY_RENDER_ORDER;
     return m;
   }
   const sky = new Sky();
@@ -125,6 +134,7 @@ export function buildSky(env: Environment, sunDir: THREE.Vector3): THREE.Mesh {
   sky.material.uniforms.skyScale = { value: env.skyScale };
   sky.material.fragmentShader = 'uniform float skyScale;\n' + sky.material.fragmentShader.replace('gl_FragColor = vec4( texColor, 1.0 );', 'gl_FragColor = vec4( texColor * skyScale, 1.0 );');
   sky.material.needsUpdate = true;
+  sky.renderOrder = SKY_RENDER_ORDER;
   return sky;
 }
 
