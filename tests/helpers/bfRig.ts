@@ -65,11 +65,16 @@ export async function bfRig(spec: DroneSpec, opts: BfRigOpts = {}) {
     try { return calibrateAccLevel(bf, 8000, () => step()); } finally { heldLevel = false; }
   };
   const run = (s: number) => { let armed = false; for (let i = 0, n = Math.round(s / DT); i < n; i++) armed = step(); return armed; };
-  const cli = (lines: string[]) => {
+  /** held: the plant frozen and the IMU reading a still, level quad meanwhile, as the worker runs
+   *  every CLI batch (the first boot's defaults included) */
+  const cli = (lines: string[], held = false) => {
     let out = '';
-    bf.serialWrite(0, enc.encode('#\n')); run(0.3); out += dec.decode(bf.serialRead(0));
-    for (const l of lines) { if (l.startsWith('#')) continue; bf.serialWrite(0, enc.encode(l + '\n')); run(l === 'save' ? 2.5 : 0.12); out += dec.decode(bf.serialRead(0)); }
-    if (!lines.includes('save')) { bf.serialWrite(0, enc.encode('exit\n')); run(2.5); out += dec.decode(bf.serialRead(0)); }
+    heldLevel = held;
+    try {
+      bf.serialWrite(0, enc.encode('#\n')); run(0.3); out += dec.decode(bf.serialRead(0));
+      for (const l of lines) { if (l.startsWith('#')) continue; bf.serialWrite(0, enc.encode(l + '\n')); run(l === 'save' ? 2.5 : 0.12); out += dec.decode(bf.serialRead(0)); }
+      if (!lines.includes('save')) { bf.serialWrite(0, enc.encode('exit\n')); run(2.5); out += dec.decode(bf.serialRead(0)); }
+    } finally { heldLevel = false; }
     return out;
   };
   bf.setGyroRate(odr);
@@ -84,8 +89,9 @@ export async function bfRig(spec: DroneSpec, opts: BfRigOpts = {}) {
 
 export type BfRig = Awaited<ReturnType<typeof bfRig>>;
 
-/** First boot: settle, apply the simulator defaults (+ extra lines), save. */
+/** First boot as the worker does it: settle, then apply the simulator defaults (+ extra lines) and
+ *  save on the held plant (the save reboots the FC, which calibrates its gyro on the held IMU). */
 export function applyDefaults(r: BfRig, extra: string[] = []) {
   r.run(0.5);
-  return r.cli([...defaultCli(r.build).filter((l) => l !== 'save'), ...extra, 'save']);
+  return r.cli([...defaultCli(r.build).filter((l) => l !== 'save'), ...extra, 'save'], true);
 }

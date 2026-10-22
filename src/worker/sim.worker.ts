@@ -115,6 +115,12 @@ let imuHold = 0, imuFresh = true;
 const kv = new IdbKv(undefined, (why) => post({ type: 'log', text: `Settings storage unavailable (${why}): Betaflight changes won't be kept after a reload` }));
 const eeprom = new EepromStore(kv);
 
+// Started the moment the worker runs, before the main thread's init arrives: the firmware download
+// and compile, and the stored configuration, come in while the map and the drone are prepared.
+const fwPrefetch = Betaflight.prefetch(FW_URL);
+const storedConfig = Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY)]);
+storedConfig.catch(() => {}); // (the store never rejects; bootFirmware awaits it)
+
 // Noise-spectrum analyser: raw IMU gyro vs Betaflight's filtered gyro (debug_mode GYRO_FILTERED),
 // sampled every physics step into rings, FFT'd ~10 times a second while the overlay is shown.
 const SPEC_N = 2048, SPEC_MAX_HZ = 1000, SPEC_PERIOD = 0.1;
@@ -232,7 +238,8 @@ async function loadFirmware(): Promise<Betaflight> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const ac = new AbortController();
     try {
-      return await withTimeout(Betaflight.load(FW_URL, { signal: ac.signal, bust: attempt ? String(Date.now()) : undefined }), FW_TIMEOUT_MS, `no answer within ${FW_TIMEOUT_MS / 1000} s`);
+      // the first attempt uses the download started at worker start; the retry bypasses the cache
+      return await withTimeout(Betaflight.load(FW_URL, { signal: ac.signal, bust: attempt ? String(Date.now()) : undefined, prefetched: attempt ? undefined : fwPrefetch }), FW_TIMEOUT_MS, `no answer within ${FW_TIMEOUT_MS / 1000} s`);
     } catch (e) {
       ac.abort(); last = e;
       if (attempt === 0) post({ type: 'log', text: `Betaflight download failed (${(e as Error).message}); retrying` });
@@ -260,7 +267,7 @@ async function bootFirmware() {
     return;
   }
   try {
-    const [saved, applied, fwSeen, accKey] = await Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY)]);
+    const [saved, applied, fwSeen, accKey] = await storedConfig;
     accCalKey = typeof accKey === 'string' ? accKey : undefined;
     if (saved) bf.eepromSet(saved);
     powerOnFirmware();
@@ -272,7 +279,10 @@ async function bootFirmware() {
       : applied !== DEFAULTS_VERSION ? 'New simulator defaults' : FW_VERSION !== 'dev' && fwSeen !== FW_VERSION ? 'Firmware updated' : null;
     if (why) {
       post({ type: 'log', text: `${why}: applying fpv-sim defaults over the Betaflight CLI` });
-      await cliBatch(defaultCli(build), true);
+      // on the held plant, as every later batch: the quad sits disarmed on the ground either way, and
+      // the ~2.1 s of firmware time (the `save` reboot included) then costs ~0.3 s instead of ~1.5 s
+      // of flying physics at 8 kHz
+      await cliBatch(defaultCli(build));
       await kv.set('bf-defaults-version', DEFAULTS_VERSION);
     }
     // new defaults, another board, or trims from before the level calibration (ACC_CAL_REV)
@@ -320,20 +330,21 @@ async function calibrateAcc(): Promise<boolean> {
 /** The stored trims don't fit the simulated board: never calibrated, another build's IMU errors, or an older calibration. */
 const accCalStale = () => !!bf && (!bf.accCalibrated() || accCalKey !== accBoardKey(quad.imu));
 
-/** Firmware time passes by ms; live: the plant flies (boot), else it holds still (CLI batches). */
-function advanceFirmware(ms: number, live: boolean) {
+/** Firmware time passes by ms while the plant holds still (CLI batches). */
+function advanceFirmware(ms: number) {
   const dt = 1 / settings.physicsHz;
-  for (let i = 0, n = Math.round(ms / 1000 / dt); i < n; i++) { if (live) physicsStep(dt); else heldStep(dt); }
+  for (let i = 0, n = Math.round(ms / 1000 / dt); i < n; i++) heldStep(dt);
 }
 
 /**
- * Run CLI lines on the firmware, persist the EEPROM if they saved. After boot the plant is held at
- * rest meanwhile: opening Settings -> Betaflight (~44 `get`s) or importing a diff must not let a
- * quad that is paused in the air fall and crash.
+ * Run CLI lines on the firmware, persist the EEPROM if they saved. The plant is held at rest
+ * meanwhile: opening Settings -> Betaflight (~44 `get`s) or importing a diff must not let a quad
+ * that is paused in the air fall and crash (and the first boot's defaults run on a quad that sits on
+ * the ground anyway).
  */
-async function cliBatch(lines: string[], live = false): Promise<string> {
+async function cliBatch(lines: string[]): Promise<string> {
   if (!bf) return '';
-  const out = runCliBatch(bf, lines, (ms) => advanceFirmware(ms, live));
+  const out = runCliBatch(bf, lines, advanceFirmware);
   eeprom.check(bf);
   await eeprom.flush();
   resyncClock();
