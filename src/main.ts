@@ -49,6 +49,10 @@ const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('d
 // ---------------------------------------------------------------------------------------------
 // saved settings are versioned and validated (src/app/persist.ts)
 const store = (k: string, v: unknown) => save(k, v);
+/** The physics rate the overload governor lowered to this session (not saved), and the pilot's own. */
+let governedHz: number | null = null, chosenHz = 0;
+/** Save simulation settings, with the pilot's own physics rate in place of a governed one. */
+const storeSim = (s: SimSettings) => store(KEYS.sim, governedHz !== null && s.physicsHz === governedHz ? { ...s, physicsHz: chosenHz } : s);
 
 const appEl = document.getElementById('app')!;
 
@@ -56,6 +60,7 @@ const appEl = document.getElementById('app')!;
 // (a saved build with parts this version doesn't have falls back to the whoop too)
 const spec0: DroneSpec = load(KEYS.spec, (r) => validSpec(r, EASY_SPEC));
 const sim0: SimSettings = load(KEYS.sim, validSim);
+chosenHz = sim0.physicsHz;
 const view0: ViewSettings = load(KEYS.view, validView);
 
 // ---------------------------------------------------------------------------------------------
@@ -135,8 +140,10 @@ bridge.onMessage = (m) => {
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
     case 'mapLoaded': onWorkerMap(m.id, m.requested, m.ok, m.error); break;
     case 'overload': {
-      // the worker already flies at the lower rate: settings follow, so later messages don't undo it
-      ctx.sim = { ...ctx.sim, physicsHz: m.physicsHz }; store(KEYS.sim, ctx.sim);
+      // the worker already flies at the lower rate: settings follow, so later messages don't undo it,
+      // but it is not saved: a slow moment (a busy tab, a first visit's downloads) must not lower the
+      // rate for every later session; the next page load starts from the chosen rate again
+      ctx.sim = { ...ctx.sim, physicsHz: m.physicsHz }; governedHz = m.physicsHz;
       ctx.log(`This computer can't run the simulation in real time (${Math.round(m.simRate * 100)} %): physics rate lowered to ${m.physicsHz} Hz`);
       break;
     }
@@ -175,7 +182,9 @@ function showMap(id: string) {
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
   const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '');
-  ctx.sim = s; store(KEYS.sim, s);
+  // the pilot picked another physics rate: that one is theirs (and the governor's no longer applies)
+  if (s.physicsHz !== ctx.sim.physicsHz) { chosenHz = s.physicsHz; governedHz = null; }
+  ctx.sim = s; storeSim(s);
   // loading is async (Quake maps fetch their sources): remember now whether the room asked for it
   const fromRoom = applyingRoomMap;
   if (mapChanged) void preloadMap(s.mapId).then(() => {
@@ -186,7 +195,7 @@ function applySim(s: SimSettings, reloadMap = false) {
     if (ctx.sim.mapId !== s.mapId) return;
     // physics and render must never disagree: stay on the map on screen and send the worker back to it
     ctx.log(`Map ${s.mapId} failed to load (${(e as Error)?.message ?? e}); staying on ${ctx.map.name}`);
-    ctx.sim = { ...ctx.sim, mapId: hasMap(shown) ? shown : 'field' }; store(KEYS.sim, ctx.sim);
+    ctx.sim = { ...ctx.sim, mapId: hasMap(shown) ? shown : 'field' }; storeSim(ctx.sim);
     if (ctx.sim.mapId !== ctx.map.id) showMap(ctx.sim.mapId);
     ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: ctx.menuOpen } });
   });
@@ -196,7 +205,7 @@ function applySim(s: SimSettings, reloadMap = false) {
 function onWorkerMap(id: string, requested: string, ok: boolean, error?: string) {
   if (id === ctx.sim.mapId) return; // physics flies what we show (or are about to)
   if (!ok && requested === ctx.sim.mapId) {
-    ctx.sim = { ...ctx.sim, mapId: id }; store(KEYS.sim, ctx.sim);
+    ctx.sim = { ...ctx.sim, mapId: id }; storeSim(ctx.sim);
     void preloadMap(id).then(() => {
       if (ctx.sim.mapId !== id) return;
       showMap(id);

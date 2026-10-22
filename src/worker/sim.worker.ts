@@ -79,6 +79,10 @@ let realtime = false; // inside loop(): sim time maps onto the wall clock (stick
 const rcLink = new RcLink();
 const pilotTmp = { x: 0, y: 0, z: 0 };
 let linkAcc = 0;
+/** prop-wash puffs: time not yet handed to WakeField.step (s), and its scratch wind vector */
+const WAKE_DT = 0.001 - 1e-9;
+let wakeAcc = 0;
+const wakeWind: V3 = { x: 0, y: 0, z: 0 };
 let rcAcc = 0, battAcc = 0, baroAcc = 0, ringAcc = 0, osdAcc = 0, telAcc = 0, cliAcc = 0, gpsAcc = 0, bblAcc = 0;
 let lastOsdFrame = -1;
 const motorCmd = new Uint16Array(4);
@@ -97,6 +101,9 @@ let simRate = 1;
 let lastPos = { x: 0, y: 0, z: 0 };
 let nextGate = 0;
 let cliOutBuf = '';
+/** EEPROM dirty-check pacing (pumpSideChannels): CLI traffic seen within the last CLI_HOT_S seconds */
+const CLI_HOT_S = 2;
+let cliHot = 0, eepAcc = 0, eepAfterDisarm = false;
 // beeper / beacon seen since the last telemetry message (their patterns are faster than 20 Hz)
 let beeperSeen = false, beaconSeen = false;
 
@@ -216,7 +223,7 @@ function respawn() {
   const sp = map.spawn;
   const z = spawnGroundZ(map) + 0.06 - Math.min(...build.params.colliders.map((c) => c.pos.z - c.radius));
   quad.reset({ x: sp.pos.x, y: sp.pos.y, z }, sp.yaw);
-  env.wake.reset();
+  env.wake.reset(); wakeAcc = 0;
   lastPos = { ...quad.s.pos };
   nextGate = 0;
 }
@@ -427,8 +434,9 @@ function stepFirmware(dt: number) {
   }
   bf.step(Math.round(dt * 1e6));
   fcT += dt;
-  if (bf.beeper()) beeperSeen = true;
-  if (bf.beacon()) beaconSeen = true;
+  // (once seen, not asked again until the next telemetry message reports and clears it)
+  if (!beeperSeen && bf.beeper()) beeperSeen = true;
+  if (!beaconSeen && bf.beacon()) beaconSeen = true;
 }
 
 /** Track whether the IMU sample taken this step is a new one (call after every imu.sample). */
@@ -482,7 +490,13 @@ function physicsStep(dt: number) {
   if (specOn) sampleSpectrum(dt);
   quad.step(dt, env);
   noteImuSample(dt);
-  env.wake.step(dt, env.wind.meanAt(quad.s.pos.z, { x: 0, y: 0, z: 0 }), map.terrain(quad.s.pos.x, quad.s.pos.y));
+  // the prop-wash puffs drift with the mean wind: advanced once per ms with the time gathered, not
+  // every 125 µs step (their motion is far slower than that; WakeField.step takes any dt)
+  wakeAcc += dt;
+  if (wakeAcc >= WAKE_DT) {
+    env.wake.step(wakeAcc, env.wind.meanAt(quad.s.pos.z, wakeWind), map.terrain(quad.s.pos.x, quad.s.pos.y));
+    wakeAcc = 0;
+  }
   simT += dt;
 
   // state ring at 1 kHz
@@ -499,7 +513,7 @@ function physicsStep(dt: number) {
     impactLastT = simT;
     if (v > impactPeak) {
       impactPeak = v;
-      if (v > CRASH_MIN_MPS) { impactMsg = `Impact ${v.toFixed(1)} m/s`; damageMsg = ''; crashMsgUntil = simT + 2; }
+      if (v > CRASH_MIN_MPS) { impactMsg = `Impact ${v.toFixed(1)} m/s`; damageMsg = ''; crashMsgUntil = simT + 2; crashMsg = impactMsg; }
     }
   }
   // damage from this crash (rolled by the quad once per impact event): name it on the banner
@@ -517,9 +531,9 @@ function physicsStep(dt: number) {
       damageMsg = bits.join(' · ');
       if (simT >= crashMsgUntil) impactMsg = 'Crash';
       crashMsgUntil = simT + 3;
+      crashMsg = `${impactMsg} · ${damageMsg}`;
     }
   }
-  crashMsg = impactMsg ? (damageMsg ? `${impactMsg} · ${damageMsg}` : impactMsg) : null;
 }
 
 /** A browned-out FC draws no OSD (its OSD chip / displayport is dead too). */
@@ -633,11 +647,21 @@ function pumpSideChannels(dt: number) {
   }
   cliAcc += dt;
   if (cliAcc >= 0.01) {
+    const dtc = cliAcc;
     cliAcc = 0;
     const r = bf.serialRead(0);
-    if (r.length) cliOutBuf += dec.decode(r, { stream: true });
+    if (r.length) { cliOutBuf += dec.decode(r, { stream: true }); cliHot = CLI_HOT_S; }
     if (cliOutBuf) { post({ type: 'cliOut', text: cliOutBuf }); cliOutBuf = ''; }
-    if (eeprom.check(bf)) accRecheck = true; // CLI / OSD-menu / MSP `save`: store the new image
+    // CLI / OSD-menu `save`: store the new image. The check hashes the whole 32 KB image (~43 µs):
+    // every 10 ms while the CLI console is in use, else 10 times a second, never while armed (no
+    // save is possible then; checked once right after the disarm instead)
+    cliHot = Math.max(0, cliHot - dtc);
+    eepAcc += dtc;
+    if (armed) eepAfterDisarm = true;
+    else if (cliHot > 0 || eepAfterDisarm || eepAcc >= 0.1) {
+      eepAcc = 0; eepAfterDisarm = false;
+      if (eeprom.check(bf)) accRecheck = true;
+    }
   }
 }
 
@@ -679,14 +703,23 @@ function tick(): number {
     accRecheck = false;
     if (accCalStale()) fwOps = fwOps.then(() => guarded(async () => { if (bf && fwState === 2 && !armed && accCalStale()) await calibrateAcc(); }));
   }
+  // behind, or a millisecond of steps is due already (this tick took that long): go on at once
+  if (behind || simAtWallStart + ((performance.now() - wallStart) / 1000) * settings.timeScale - simT >= 0.001) return 0;
   return 1;
 }
 
+/**
+ * Next loop iteration: delay 0 yields through a MessageChannel (a task, so messages still get in,
+ * without the timer's 1 ms minimum, which becomes 4 ms once timeouts nest five deep: a worker that
+ * is behind would idle 4 ms per iteration and the overload governor would see a slower machine).
+ */
+const loopChannel = new MessageChannel();
+loopChannel.port1.onmessage = () => loop();
 function loop() {
   if (dead) return;
   let delay: number;
   try { delay = tick(); } catch (e) { fatal(e); return; }
-  setTimeout(loop, delay);
+  if (delay <= 0) loopChannel.port2.postMessage(0); else setTimeout(loop, delay);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -758,7 +791,7 @@ async function firmwareOp(m: ToWorker) {
       break;
     }
     case 'cli': {
-      if (bf && fwState === 2) bf.serialWrite(0, enc.encode(m.text)); // replies come back through pumpSideChannels
+      if (bf && fwState === 2) { bf.serialWrite(0, enc.encode(m.text)); cliHot = CLI_HOT_S; } // replies come back through pumpSideChannels
       break;
     }
     case 'cliBatch': {
