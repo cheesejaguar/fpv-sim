@@ -133,7 +133,7 @@ exit                   # leave without saving</pre>
     html: `<ol>
       <li><b>Pick a build.</b> A tiny whoop (New Game → Drone) is slow and forgiving. A 5" quad is the standard freestyle and racing class.</li>
       <li><b>Check the controller.</b> Move the sticks and confirm the stick preview (H) follows them. Throttle should rest at the bottom. No controller? The keyboard works for a first try: <kbd>W</kbd> / <kbd>S</kbd> throttle, <kbd>A</kbd> / <kbd>D</kbd> yaw, the arrow keys pitch and roll.</li>
-      <li><b>Arm in Angle.</b> You start in it (the OSD shows <code>ANGL</code>); LB (1 / 2 / 3 on the keyboard) steps acro → horizon → angle. Arm with RB (Space).</li>
+      <li><b>Pick a mode, then arm.</b> You start in Acro (the OSD shows <code>AIR</code>). For a first hover, press LB until it shows <code>ANGL</code>, the self-levelling mode (on the keyboard, 3; 1 is Acro). Arm with RB (Space).</li>
       <li><b>Hover.</b> Add throttle slowly until the quad lifts, and hold it about a meter up. The hover drill scores this.</li>
       <li><b>Switch to Acro</b> once hovering feels easy. Fly slow laps of the stadium and keep the horizon level with gentle inputs.</li>
       <li><b>Crash, respawn, repeat.</b> A (✕) or R respawns. Menu / Options or Esc opens the pause menu.</li></ol>

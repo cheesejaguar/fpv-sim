@@ -38,6 +38,10 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
   - Settings are saved once a slider stops moving.
 - `npm run bench:sim` measures the physics step cost.
 
+### Flight mode
+- Flights start in **Acro** (the OSD shows `AIR`), not Angle. LB / L1, or 1 / 2 / 3 on the keyboard,
+  still steps to Horizon and Angle; the guide's first-flight steps say so.
+
 ### Sound
 - Betaflight's beeper and the ESCs' DShot beacon are much quieter (about 15 dB at the default),
   with a new **Beeper volume** slider under Settings → Audio.

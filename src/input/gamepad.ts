@@ -10,8 +10,8 @@ export type ThrottleMode = 'full' | 'upper' | 'trigger';
 
 /** AUX2 flight mode index (Betaflight ranges here: 1000 acro, 1500 horizon, 2000 angle). */
 export const MODE_ACRO = 0, MODE_HORIZON = 1, MODE_ANGLE = 2;
-/** New pilots start self-levelling: Quick fly and the guide both say "arm in Angle". */
-export const FIRST_MODE = MODE_ANGLE;
+/** Every flight starts in Acro (the OSD shows AIR: airmode is on); the mode button steps to Horizon and Angle. */
+export const FIRST_MODE = MODE_ACRO;
 
 export interface AxisBind {
   src: 'axis' | 'button' | 'none';

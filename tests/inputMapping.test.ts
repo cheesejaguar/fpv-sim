@@ -1,7 +1,7 @@
 // Gamepad -> RC channel mapping: first-flight defaults, stick geometry, presets vs browser mapping,
 // AUX5-12 bindings and radio passthrough.
 import { beforeEach, describe, expect, test } from 'vitest';
-import { auxMicros, genericJoystickProfile, guessProfile, InputManager, InputProfile, isRadio, isStandard, MODE_ANGLE, readSticks, standardProfile, stick2d, xboxProfile } from '../src/input/gamepad';
+import { auxMicros, genericJoystickProfile, guessProfile, InputManager, InputProfile, isRadio, isStandard, MODE_ACRO, readSticks, standardProfile, stick2d, xboxProfile } from '../src/input/gamepad';
 import { RadioWizard } from '../src/input/radioWizard';
 
 const store = new Map<string, string>();
@@ -22,12 +22,12 @@ const setPads = (...pads: Gamepad[]) => { (navigator as any).getGamepads = () =>
 beforeEach(() => { store.clear(); setPads(); });
 
 describe('first flight', () => {
-  test('a new gamepad starts in Angle with the throttle at idle when the stick is released', () => {
+  test('a new gamepad starts in Acro (AIR) with the throttle at idle when the stick is released', () => {
     const im = new InputManager();
     setPads(mkPad());
     const ch = im.poll();
-    expect(im.modeIdx).toBe(MODE_ANGLE);
-    expect(ch[5]).toBe(2000); // AUX2 high = ANGLE in the sim's Betaflight modes
+    expect(im.modeIdx).toBe(MODE_ACRO);
+    expect(ch[5]).toBe(1000); // AUX2 low = no self-levelling mode: acro (airmode on, the OSD shows AIR)
     expect(ch[2]).toBe(1000); // spring-centred stick, 'upper' throttle: centre = off (not 50 %)
     expect(im.profileFor(mkPad()).throttleMode).toBe('upper');
   });
@@ -36,13 +36,13 @@ describe('first flight', () => {
     const im = new InputManager();
     const seen: number[] = [];
     for (const pressed of [[], [4], [], [4], [], [4]]) { setPads(mkPad({ pressed })); seen.push(im.poll()[5]); }
-    expect(seen).toEqual([2000, 1000, 1000, 1500, 1500, 2000]);
+    expect(seen).toEqual([1000, 1500, 1500, 2000, 2000, 1000]); // acro -> horizon -> angle -> acro
   });
 
-  test('the keyboard fallback starts in Angle too', () => {
+  test('the keyboard fallback starts in Acro too', () => {
     const im = new InputManager();
-    expect(im.poll()[5]).toBe(2000);
-    expect(im.keyboard.modeIdx).toBe(MODE_ANGLE);
+    expect(im.poll()[5]).toBe(1000);
+    expect(im.keyboard.modeIdx).toBe(MODE_ACRO);
   });
 });
 

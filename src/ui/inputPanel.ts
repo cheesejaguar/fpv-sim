@@ -132,7 +132,7 @@ export function inputPanel(im: InputManager): HTMLElement {
     const pad = im.active;
     const notes = section('Controller notes',
       el('ul', {},
-        el('li', {}, el('b', {}, 'Xbox (Series / One / 360) and PS5 DualSense: '), 'plug in by USB or pair over Bluetooth, then press a button with this page focused. They’re recognized automatically (Mode 2: left stick throttle/yaw, right stick pitch/roll; RB / R1 arms, LB / L1 changes flight mode — you start in Angle, the self-levelling mode — A / ✕ respawns, B / ○ fresh battery, D-pad ↑ camera, ↓ telemetry, ← hover drill, → noise spectrum). Crashes rumble the controller in Chrome and Edge.'),
+        el('li', {}, el('b', {}, 'Xbox (Series / One / 360) and PS5 DualSense: '), 'plug in by USB or pair over Bluetooth, then press a button with this page focused. They’re recognized automatically (Mode 2: left stick throttle/yaw, right stick pitch/roll; RB / R1 arms, LB / L1 changes flight mode — you start in Acro (the OSD shows AIR), and Angle is the self-levelling one — A / ✕ respawns, B / ○ fresh battery, D-pad ↑ camera, ↓ telemetry, ← hover drill, → noise spectrum). Crashes rumble the controller in Chrome and Edge.'),
         el('li', {}, el('b', {}, 'DJI FPV Remote Controller 3: '), 'power it on and connect its USB-C port to the computer; it appears as “DJI Virtual Joystick”. Move a stick, then run the stick & switch setup once. If its throttle springs back to center, the “Full stick travel” throttle mode treats center as 50%; DJI’s manual describes adjusting the throttle stick for manual (M-mode) flying.'),
         el('li', {}, el('b', {}, 'Other RC radios (EdgeTX / OpenTX, USB joystick mode) and HID joysticks: '), 'same as the DJI radio — run the setup, or turn on radio passthrough to fly with the radio’s own mixer and switches.'),
         el('li', {}, el('b', {}, 'Gamepad throttle: '), 'gamepad sticks spring to center, so new gamepads use “Upper half” (center = off). “Full stick travel” and “Analog trigger” are in the Throttle mode list.'),
@@ -146,7 +146,7 @@ export function inputPanel(im: InputManager): HTMLElement {
     if (!pad) {
       auxVals = [];
       root.replaceChildren(el('div', { class: 'cols' },
-        el('div', { class: 'col' }, section('No controller detected', el('p', {}, 'Connect a controller and press a button (or move a stick) with this page focused. Keyboard fallback: W/S throttle, A/D yaw, arrows pitch/roll, Space arm, 1/2/3 acro/horizon/angle (you start in angle), T turtle, R respawn.')), section('RC channels sent to Betaflight', chans)),
+        el('div', { class: 'col' }, section('No controller detected', el('p', {}, 'Connect a controller and press a button (or move a stick) with this page focused. Keyboard fallback: W/S throttle, A/D yaw, arrows pitch/roll, Space arm, 1/2/3 acro/horizon/angle (you start in acro), T turtle, R respawn.')), section('RC channels sent to Betaflight', chans)),
         el('div', { class: 'col' }, notes), el('div', { class: 'col' }, hidSec)));
       return;
     }
@@ -311,7 +311,7 @@ export function inputPanel(im: InputManager): HTMLElement {
             bindRow('beeper', [{ value: 'hold', label: 'hold' }, { value: 'toggle', label: 'toggle' }]),
             sel('reset', 'Respawn button', [{ value: '-1', label: 'none' }, ...pad.buttons.map((_, i) => ({ value: String(i), label: buttonName(kind, i) }))], String(p.reset ?? -1), (v) => { p.reset = +v < 0 ? null : +v; save(); }),
             sel('menu', 'Menu button', [{ value: '-1', label: 'none' }, ...pad.buttons.map((_, i) => ({ value: String(i), label: buttonName(kind, i) }))], String(p.menu ?? -1), (v) => { p.menu = +v < 0 ? null : +v; save(); }),
-            help('The flight mode starts in Angle (self-levelling) and each press of the mode button steps acro → horizon → angle.'),
+            help('The flight mode starts in Acro and each press of the mode button steps acro → horizon → angle (self-levelling).'),
           ),
           section('AUX 5–12 (CH9–CH16)', ...Array.from({ length: AUX_EXTRA }, (_, i) => auxRow(i)), auxHelp),
           section('RC channels sent to Betaflight', chans),
