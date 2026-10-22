@@ -1,12 +1,12 @@
 // Feeds the in-flight HUD every frame: notices, key hints for the device in use, the arming coach,
 // telemetry, race / drill panel, crash banner (+ rumble and impact sound), and lays it out around the OSD.
-import { buttonName } from '../input/gamepad';
+import { buttonName, type InputProfile } from '../input/gamepad';
 import { webHidSupported } from '../input/steamHid';
 import { formatLap } from '../net/leaderboard';
 import { el, touchOnly } from '../ui/dom';
-import { armingAdvice, CoachGlyphs } from '../ui/hud/coach';
+import { armingAdvice, CoachAdvice, CoachGlyphs } from '../ui/hud/coach';
 import { Hud, KeyHint, osdRects } from '../ui/hud/hud';
-import { newestTime, R, sampleRing } from '../worker/shared';
+import { newestTime, R, sampleRing, type Telemetry } from '../worker/shared';
 import type { AppCtx } from './context';
 import type { SpectrumView, SticksView } from './instruments';
 import { raceInfo, updateDrill } from './race';
@@ -20,6 +20,9 @@ const DPAD: Record<number, string> = { 12: '↑', 13: '↓', 14: '←', 15: '→
 /** Set once the pilot has flown (armed for a few seconds): the first-flight steps stop showing. */
 const FLOWN_KEY = 'fpv-flown';
 const hasFlown = () => { try { return localStorage.getItem(FLOWN_KEY) === '1'; } catch { return true; } };
+
+/** The telemetry overlay is read by a person: ~12 Hz is plenty (its text is rebuilt and laid out each time). */
+const TEL_MS = 80;
 
 export class HudController {
   readonly hud: Hud;
@@ -58,6 +61,14 @@ export class HudController {
   private layoutAt = 0;
   private lastCrash: string | null = null;
   private newPilot = !hasFlown();
+  // memos: the HUD runs every frame, but hints and advice change only with the pad / profile / telemetry
+  private hintsMemo: { p: InputProfile; acts: object; kind: InputProfile['kind']; hints: KeyHint[] } | null = null;
+  private glyphsMemo: { hints: KeyHint[]; glyphs: CoachGlyphs } | null = null;
+  private adviceMemo: { tel: Telemetry; armReq: boolean; newPilot: boolean; glyphs: CoachGlyphs; advice: CoachAdvice | null } | null = null;
+  private telAt = -Infinity;
+  private telOn = false;
+  private sticksDrawn = new Float32Array(4).fill(NaN);
+  private crashUpper: { src: string; up: string } | null = null;
 
   constructor(private ctx: AppCtx, private sticks: SticksView, private spectrum: SpectrumView) {
     this.hud = new Hud(sticks.canvas, spectrum.canvas);
@@ -82,6 +93,9 @@ export class HudController {
     const input = this.ctx.input, pad = input.active;
     if (!pad) return touchOnly() ? TOUCH_HINTS : KB_HINTS;
     const p = input.profileFor(pad), acts = input.actionButtons(pad, p);
+    // the same profile and action table (both replaced, not edited, when they change): the same hints
+    const m = this.hintsMemo;
+    if (m && m.p === p && m.acts === acts && m.kind === p.kind) return m.hints;
     const btn = (i: number) => ({ glyph: DPAD[i] ?? buttonName(p.kind, i).replace(/ \(\d+\)$/, '').replace(/^button /, '#'), cls: DPAD[i] ? 'sh' : (['a', 'b', 'x', 'y'][i] ?? 'sh') });
     const out: KeyHint[] = [];
     const add = (i: number | null | undefined, label: string) => { if (i != null) out.push({ ...btn(i), label }); };
@@ -90,15 +104,32 @@ export class HudController {
     add(sw(p.arm), 'Arm'); add(sw(p.mode), 'Mode'); add(p.reset, 'Respawn'); add(acts.battery, 'Fresh battery');
     add(sw(p.turtle), 'Turtle'); add(acts.camera, 'Camera'); add(acts.telemetry, 'Telemetry'); add(acts.drill, 'Drill'); add(acts.spectrum, 'Spectrum');
     p.aux?.forEach((b, i) => { if (b?.src === 'button') add(b.index, `AUX${i + 5}`); });
+    this.hintsMemo = { p, acts, kind: p.kind, hints: out };
     return out;
   }
 
   /** Names of the arm / respawn controls for the arming coach. */
   private coachGlyphs(hints: KeyHint[]): CoachGlyphs {
     if (!this.ctx.input.active) return KB_GLYPHS;
+    const m = this.glyphsMemo;
+    if (m && m.hints === hints) return m.glyphs;
     const find = (label: string) => hints.find((h) => h.label === label)?.glyph;
-    return { arm: find('Arm') ?? 'arm switch', respawn: find('Respawn') ?? 'Esc → Respawn', throttleUp: 'left stick', throttleDown: 'left stick', keyboard: false };
+    const glyphs = { arm: find('Arm') ?? 'arm switch', respawn: find('Respawn') ?? 'Esc → Respawn', throttleUp: 'left stick', throttleDown: 'left stick', keyboard: false };
+    this.glyphsMemo = { hints, glyphs };
+    return glyphs;
   }
+
+  /** Arming advice, worked out again only when the telemetry (20 Hz), the arm request or the glyphs change. */
+  private advice(tel: Telemetry, armReq: boolean, glyphs: CoachGlyphs): CoachAdvice | null {
+    const m = this.adviceMemo;
+    if (m && m.tel === tel && m.armReq === armReq && m.newPilot === this.newPilot && m.glyphs === glyphs) return m.advice;
+    const advice = armingAdvice({ flags: tel.armingFlagNames, armRequested: armReq, newPilot: this.newPilot, glyphs });
+    this.adviceMemo = { tel, armReq, newPilot: this.newPilot, glyphs, advice };
+    return advice;
+  }
+
+  /** Set a notice's text; the HUD measures the notices again when one changed. */
+  private noticeText(n: HTMLElement, t: string) { if (setText(n, t)) this.hud.invalidate('notices'); }
 
   update() {
     const ctx = this.ctx, hud = this.hud, rec = ctx.rec, view = ctx.view, input = ctx.input, tel = ctx.tel;
@@ -112,8 +143,8 @@ export class HudController {
     if (this.newPilot && armed && now - this.armedSince > 5000) { this.newPilot = false; try { localStorage.setItem(FLOWN_KEY, '1'); } catch { /* ignore */ } }
     const video = ctx.build.info.components.video;
     // notices: only the ones that matter right now, and controller help only while disarmed
-    setText(this.hidStatus, input.steamHid.status);
-    setText(this.fwNotice, ctx.fwStatus);
+    this.noticeText(this.hidStatus, input.steamHid.status);
+    this.noticeText(this.fwNotice, ctx.fwStatus);
     const notices: HTMLElement[] = [];
     if (ctx.fwStatus) notices.push(this.fwNotice);
     // digital link down for more than a moment: say so, and how to get the quad back
@@ -126,16 +157,17 @@ export class HudController {
     if (ctx.audio.blocked) notices.push(this.soundChip);
     const lap = ctx.lb.noteNow(now);
     if (lap) {
-      setText(this.lapTitle, lap.kind === 'pb' ? `NEW PERSONAL BEST · ${formatLap(lap.lapMs)}` : `LAP NOT COUNTED · ${formatLap(lap.lapMs)}`);
-      setText(this.lapText, lap.text);
-      this.lapNotice.className = `card notice status ${lap.kind === 'pb' ? 'pb' : 'warn'}`;
+      this.noticeText(this.lapTitle, lap.kind === 'pb' ? `NEW PERSONAL BEST · ${formatLap(lap.lapMs)}` : `LAP NOT COUNTED · ${formatLap(lap.lapMs)}`);
+      this.noticeText(this.lapText, lap.text);
+      const cls = `card notice status ${lap.kind === 'pb' ? 'pb' : 'warn'}`;
+      if (this.lapNotice.className !== cls) this.lapNotice.className = cls;
       notices.push(this.lapNotice);
     } else if (ctx.lb.pending && !armed) {
       const p = ctx.lb.pending;
-      setText(this.postTitle, `POST YOUR LAP · ${formatLap(p.lapMs)}`);
-      setText(this.postText, `New personal best with the ${p.summary}.`);
+      this.noticeText(this.postTitle, `POST YOUR LAP · ${formatLap(p.lapMs)}`);
+      this.noticeText(this.postText, `New personal best with the ${p.summary}.`);
       // with a controller the way in is the menu; on the keyboard L is a shortcut
-      setText(this.postHow, input.active ? 'Open the menu, then Post your lap, to add your initials.' : 'Press L (or Esc, then Post your lap) to add your initials.');
+      this.noticeText(this.postHow, input.active ? 'Open the menu, then Post your lap, to add your initials.' : 'Press L (or Esc, then Post your lap) to add your initials.');
       notices.push(this.postNotice);
     }
     { // multiplayer connection notice
@@ -143,8 +175,8 @@ export class HudController {
       if (mp.room && (mp.status === 'reconnecting' || mp.status === 'error')) {
         const t = mp.status === 'reconnecting' ? 'Room connection lost — reconnecting…' : 'Disconnected from room';
         const p = mp.status === 'reconnecting' ? `Room ${mp.room}, attempt ${mp.attempt} of ${mp.maxAttempts}. Keep flying; other pilots reappear when it is back.` : `${mp.error} To leave or retry: Esc, then Leave room (or Settings, Multiplayer).`;
-        if (this.mpTitle.textContent !== t) this.mpTitle.textContent = t;
-        if (this.mpText.textContent !== p) this.mpText.textContent = p;
+        this.noticeText(this.mpTitle, t);
+        this.noticeText(this.mpText, p);
         notices.push(this.mpNotice);
       }
     }
@@ -153,32 +185,21 @@ export class HudController {
     const hints = this.keyHints();
     hud.keys(hints, this.armedSince >= 0 && now - this.armedSince > 3000);
     // arming coach: why Betaflight refuses to arm (and the fix), first-flight steps for new pilots
-    hud.coach(!armed && tel && !ctx.fwStatus && (input.active || !touchOnly()) ? armingAdvice({ flags: tel.armingFlagNames, armRequested: input.armed, newPilot: this.newPilot, glyphs: this.coachGlyphs(hints) }) : null);
+    hud.coach(!armed && tel && !ctx.fwStatus && (input.active || !touchOnly()) ? this.advice(tel, input.armed, this.coachGlyphs(hints)) : null);
     if (view.telemetry && tel) {
-      const b = tel.battery;
-      const spd = Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]) * 3.6;
-      const rpm = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map((r) => Math.abs(r).toFixed(0).padStart(5)).join(' ');
-      const modes = tel.modeFlags;
-      hud.tel([
-        `${tel.fw}  sim ${(tel.simRate).toFixed(1)}× rt  ${tel.stepCostUs.toFixed(0)} µs`,
-        `${Atomics.load(ctx.sh.ctrl, 5) ? 'ARMED' : 'disarmed'}  ${modes & 1 ? 'ANGLE' : modes & 2 ? 'HORIZON' : 'ACRO'}${rec[R.crashFlip] ? '  TURTLE' : ''}${tel.armingFlagNames.length ? '  blocked: ' + tel.armingFlagNames.join(',') : ''}`,
-        `batt ${b.v.toFixed(2)} V  ${b.cellV.toFixed(2)} V/cell  ${b.i.toFixed(1)} A  sag ${b.sag.toFixed(2)} V`,
-        `     ${b.mah.toFixed(0)} mAh  SoC ${(b.soc * 100).toFixed(0)} %  ${b.tempC.toFixed(1)} °C`,
-        `rpm ${rpm}`,
-        `motor °C ${tel.motorTemps.map((t) => t.toFixed(0)).join(' ')}`,
-        `${spd.toFixed(0)} km/h  alt ${(rec[R.pz] - ctx.map.terrain(rec[R.px], rec[R.py])).toFixed(1)} m  wash ${(rec[R.vrs] * 100).toFixed(0)} %`,
-        `video ${ctx.link.state.distance.toFixed(0)} m  ${ctx.link.state.rssiDbm.toFixed(0)} dBm${video.kind === 'analog' ? `  CNR ${ctx.link.state.cnr.toFixed(0)} dB` : ''}`,
-        `props ${tel.rotorDamage.map((d) => (d.broken ? 'BROKEN' : `${(d.thrust * 100).toFixed(0)}%`)).join(' ')}`,
-        ...ctx.logLines.slice(-2),
-      ]);
+      // rebuilt at ~12 Hz (and at once when switched on); the stick view only when the sticks moved
+      if (!this.telOn || now - this.telAt >= TEL_MS) { this.telAt = now; hud.tel(this.telLines(tel, video.kind)); }
+      this.telOn = true;
       hud.sticks(true);
-      this.sticks.draw(input.channels);
-    } else { hud.tel(null); hud.sticks(false); }
+      const ch = input.channels, d = this.sticksDrawn;
+      if (ch[0] !== d[0] || ch[1] !== d[1] || ch[2] !== d[2] || ch[3] !== d[3]) { d[0] = ch[0]; d[1] = ch[1]; d[2] = ch[2]; d[3] = ch[3]; this.sticks.draw(ch); }
+    } else { this.telOn = false; this.sticksDrawn.fill(NaN); hud.tel(null); hud.sticks(false); }
     hud.spectrum(this.spectrum.shown);
     hud.race(raceInfo(ctx), updateDrill(ctx, head, armed), now);
     // crash banner; haptic thump + impact sound on a new crash, scaled by impact speed ("Impact 12.3 m/s")
     const crash = tel?.crash ?? null;
-    hud.crash(crash ? crash.toUpperCase() : null);
+    if (crash && this.crashUpper?.src !== crash) this.crashUpper = { src: crash, up: crash.toUpperCase() };
+    hud.crash(crash ? this.crashUpper!.up : null);
     if (crash && crash !== this.lastCrash) {
       const v = parseFloat(crash.match(/\d+(\.\d+)?/)?.[0] ?? '') || 8; // first number: the impact speed
       input.rumble(Math.min(1, v / 15), Math.min(1, v / 25), 180 + Math.min(320, v * 15));
@@ -193,6 +214,27 @@ export class HudController {
     }
   }
 
+  /** The telemetry overlay's lines (rpm, speed and altitude from the newest ring sample). */
+  private telLines(tel: Telemetry, videoKind: string): string[] {
+    const ctx = this.ctx, rec = ctx.rec;
+    const b = tel.battery;
+    const spd = Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]) * 3.6;
+    const rpm = [rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map((r) => Math.abs(r).toFixed(0).padStart(5)).join(' ');
+    const modes = tel.modeFlags;
+    return [
+      `${tel.fw}  sim ${(tel.simRate).toFixed(1)}× rt  ${tel.stepCostUs.toFixed(0)} µs`,
+      `${Atomics.load(ctx.sh.ctrl, 5) ? 'ARMED' : 'disarmed'}  ${modes & 1 ? 'ANGLE' : modes & 2 ? 'HORIZON' : 'ACRO'}${rec[R.crashFlip] ? '  TURTLE' : ''}${tel.armingFlagNames.length ? '  blocked: ' + tel.armingFlagNames.join(',') : ''}`,
+      `batt ${b.v.toFixed(2)} V  ${b.cellV.toFixed(2)} V/cell  ${b.i.toFixed(1)} A  sag ${b.sag.toFixed(2)} V`,
+      `     ${b.mah.toFixed(0)} mAh  SoC ${(b.soc * 100).toFixed(0)} %  ${b.tempC.toFixed(1)} °C`,
+      `rpm ${rpm}`,
+      `motor °C ${tel.motorTemps.map((t) => t.toFixed(0)).join(' ')}`,
+      `${spd.toFixed(0)} km/h  alt ${(rec[R.pz] - ctx.map.terrain(rec[R.px], rec[R.py])).toFixed(1)} m  wash ${(rec[R.vrs] * 100).toFixed(0)} %`,
+      `video ${ctx.link.state.distance.toFixed(0)} m  ${ctx.link.state.rssiDbm.toFixed(0)} dBm${videoKind === 'analog' ? `  CNR ${ctx.link.state.cnr.toFixed(0)} dB` : ''}`,
+      `props ${tel.rotorDamage.map((d) => (d.broken ? 'BROKEN' : `${(d.thrust * 100).toFixed(0)}%`)).join(' ')}`,
+      ...ctx.logLines.slice(-2),
+    ];
+  }
+
   /** Screen rects the HUD keeps clear of: the drawn Betaflight OSD characters and the goggles' own
    *  overlay (signal, bitrate, DVR); none in spectator views. */
   osdCells() {
@@ -203,4 +245,4 @@ export class HudController {
 }
 
 /** Only touch the DOM when the text actually changes (the HUD is fed every frame). */
-function setText(n: HTMLElement, t: string) { if (n.textContent !== t) n.textContent = t; }
+function setText(n: HTMLElement, t: string): boolean { if (n.textContent === t) return false; n.textContent = t; return true; }

@@ -16,7 +16,12 @@ let uid = 0;
 export const uniqueId = (prefix = 'ui') => `${prefix}-${++uid}`;
 
 /** Phones and tablets: no mouse or trackpad anywhere (`any-pointer: fine` is false). */
-export const touchOnly = () => typeof matchMedia === 'function' && !matchMedia('(any-pointer: fine)').matches;
+let finePointer: MediaQueryList | null | undefined;
+// one MediaQueryList, read live (the HUD asks every frame; matchMedia parses the query each call)
+export const touchOnly = () => {
+  if (finePointer === undefined) finePointer = typeof matchMedia === 'function' ? matchMedia('(any-pointer: fine)') : null;
+  return !!finePointer && !finePointer.matches;
+};
 
 export interface SliderOpts { label: string; min: number; max: number; step: number; value: number; unit?: string; digits?: number; hint?: string; onInput: (v: number) => void }
 export function slider(o: SliderOpts): { row: HTMLElement; set(v: number): void; input: HTMLInputElement } {

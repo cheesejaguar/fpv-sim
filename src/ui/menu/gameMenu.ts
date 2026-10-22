@@ -90,7 +90,8 @@ interface NewGameState { mode: GameMode; map: string; preset: number } // preset
 const NG_KEY = KEYS.newGame;
 const loadNg = (sim: SimSettings): NewGameState => ({ ...load(NG_KEY, (r) => validNewGame(r, MODES.map((m) => m.id))), map: sim.mapId });
 
-const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+let reducedMq: MediaQueryList | null = null;
+const reduced = () => (reducedMq ??= matchMedia('(prefers-reduced-motion: reduce)')).matches;
 
 /** Quick fly always uses the easiest quad: the 65 mm 1S tiny whoop (slow, light, crash-proof). */
 const EASY_IDX = Math.max(0, PRESETS.findIndex((p) => /65 mm/.test(p.name)));
