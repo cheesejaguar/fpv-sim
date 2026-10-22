@@ -217,6 +217,45 @@ describe('MultiplayerClient', () => {
     expect(paused.every((m) => m.h === 1)).toBe(true);
   });
 
+  test('a disarmed quad holding still is sent at 2 Hz (shown flying), and its first move at once', () => {
+    mp.join('ABCDE', ME);
+    const ws = last();
+    ws.open(); ws.recv(welcome(1));
+    ws.sent = [];
+    for (let t = 1000; t < 3000; t += 7) mp.sendPose(t, [1, 2, 3], [1, 0, 0, 0], [0, 0, 0, 0], false);
+    const still = ws.msgs();
+    expect(still.length).toBeGreaterThanOrEqual(4);
+    expect(still.length).toBeLessThanOrEqual(6); // ~2 s at 2 Hz (+ the first), not ~60 at 30 Hz
+    expect(still.every((m) => m.h === 0)).toBe(true);
+    // it moves: the held-back still pose (stamped when last seen) and the new one go out together
+    ws.sent = [];
+    mp.sendPose(3001, [1.2, 2, 3], [1, 0, 0, 0], [0, 0, 0, 0], false);
+    expect(ws.msgs().map((m) => [m.c, m.p[0]])).toEqual([[2995, 1], [3001, 1.2]]);
+    // flying (moving) poses at 30 Hz as before
+    ws.sent = [];
+    for (let t = 3040; t < 4040; t += 7) mp.sendPose(t, [1.2 + (t - 3040) / 100, 2, 3], [1, 0, 0, 0], [9000, 9000, 9000, 9000], true);
+    expect(ws.msgs().length).toBeGreaterThan(25);
+    // armed but holding still (on the pad, armed): still 30 Hz
+    ws.sent = [];
+    for (let t = 4100; t < 5100; t += 7) mp.sendPose(t, [1, 2, 3], [1, 0, 0, 0], [0, 0, 0, 0], true);
+    expect(ws.msgs().length).toBeGreaterThan(25);
+  });
+
+  test('poseOf can interpolate into an object the caller keeps', () => {
+    mp.join('ABCDE', ME);
+    last().open(); last().recv(welcome(1, [{ id: 2, name: 'Bo' }]));
+    const peer = mp.peers.get(2)!;
+    vi.setSystemTime(10_000); last().recv({ t: 's', id: 2, p: [0, 0, 0], q: [1, 0, 0, 0], r: [0, 0, 0, 0], a: 1, h: 0 });
+    vi.setSystemTime(10_100); last().recv({ t: 's', id: 2, p: [10, 0, 0], q: [0, 1, 0, 0], r: [100, 100, 100, 100], a: 1, h: 0 });
+    const out = { at: 0, p: [0, 0, 0], q: [0, 0, 0, 0], r: [0, 0, 0, 0], a: 0, h: 0 };
+    const pose = mp.poseOf(peer, 10_150, out)!;
+    expect(pose).toBe(out);
+    expect(out.p[0]).toBeCloseTo(5, 6);
+    expect(out.r[0]).toBeCloseTo(50, 6);
+    expect(Math.hypot(...out.q)).toBeCloseTo(1, 9);
+    expect(mp.poseOf(peer, 10_150)).not.toBe(out); // without one: a new object, as before
+  });
+
   test('peers on another protocol version are named in the status notes', () => {
     mp.join('ABCDE', ME);
     last().open();
