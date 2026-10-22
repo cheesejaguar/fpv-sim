@@ -101,6 +101,7 @@ export class QuadSim {
   private wakeTimer = 0;
   private wakeVel: V3[] = [];
   private wakeTurb: number[] = [];
+  private hubW: V3[] = []; // hub positions (world) for the 1 kHz wake sampling
   private hit: ContactHit = { depth: 0, nx: 0, ny: 0, nz: 1, material: MATERIALS.grass };
   // temporaries (no allocation in the hot loop)
   private t1 = v3(); private t2 = v3(); private t3 = v3(); private t4 = v3(); private t5 = v3();
@@ -167,6 +168,7 @@ export class QuadSim {
     this.ceilCache = p.rotors.map(() => Infinity);
     this.wakeVel = p.rotors.map(() => v3());
     this.wakeTurb = p.rotors.map(() => 0);
+    this.hubW = p.rotors.map(() => v3());
     this.battery = new Battery(p.battery, soc, ambientC);
     this.imu = new Imu(p.imuChip, physicsHz, p.flex, p.seed ?? 42, p.rotors.map((r) => r.pos));
     this.rotorVib = p.rotors.map(() => v3());
@@ -281,6 +283,12 @@ export class QuadSim {
     const doWake = this.wakeTimer <= 0;
     if (doWake) this.wakeTimer = 0.001;
 
+    if (doWake) {
+      // the wake at every hub, in one pass over the puffs
+      for (let k = 0; k < n; k++) { const hw = rotate(this.hubW[k], s.q, p.rotors[k].pos); hw.x += s.pos.x; hw.y += s.pos.y; hw.z += s.pos.z; }
+      env.wake.sampleAll(this.hubW, this.wakeVel, this.wakeTurb);
+    }
+
     let busI = 0, floor2 = 0;
     const h = this.hTot; h.x = h.y = h.z = 0; // total rotor angular momentum (body); own storage: t5 is scratch for contacts()
     for (let k = 0; k < n; k++) {
@@ -291,7 +299,6 @@ export class QuadSim {
       // hub world position
       const hubW = rotate(this.t4, s.q, rc.pos);
       hubW.x += s.pos.x; hubW.y += s.pos.y; hubW.z += s.pos.z;
-      if (doWake) this.wakeTurb[k] = env.wake.sample(hubW, this.wakeVel[k], k);
       // air velocity at rotor (wind + wake), world -> body
       const aw = this.airTmp;
       const rw = this.rotorWind[k]; // per-rotor wind (see the wind block above)
