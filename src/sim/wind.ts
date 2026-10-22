@@ -146,7 +146,7 @@ export class Wind {
     if (airDir) { ex = airDir.x; ey = airDir.y; ez = airDir.z; }
     else { this.direction(); ex = this.mSin; ey = this.mCos; ez = 0; }
     g.ex = ex; g.ey = ey; g.ez = ez;
-    const hl = Math.hypot(ex, ey);
+    const hl = Math.sqrt(ex * ex + ey * ey);
     if (hl > 1e-3) { g.cx = -ey / hl; g.cy = ex / hl; } else { g.cx = 1; g.cy = 0; }
     // discrete gusts (none in calm air)
     this.gustTimer -= dt;
@@ -163,7 +163,8 @@ export class Wind {
       const zm = this.zMean;
       for (let i = 0; i < this.zones.length; i++) {
         const zn = this.zones[i];
-        const UH = Math.hypot(this.meanAt(zn.height, zm).x, zm.y);
+        this.meanAt(zn.height, zm);
+        const UH = Math.sqrt(zm.x * zm.x + zm.y * zm.y);
         const T = (0.5 * zn.height) / Math.max(airspeed, 0.5 * UH, 0.5);
         const c = Math.exp(-this.zTimer / T), s = Math.sqrt(1 - c * c);
         for (let j = 0; j < 3; j++) this.zt[i * 3 + j] = c * this.zt[i * 3 + j] + s * this.rng2.gauss();
@@ -217,7 +218,7 @@ export class Wind {
       const lee = along - R;                            // distance behind the lee face
       if (lee > 9 * H || along < -R - H || cross > R + 2 * H || h > 1.8 * H) continue;
       this.meanAt(H, zm);
-      const UH = Math.hypot(zm.x, zm.y);
+      const UH = Math.sqrt(zm.x * zm.x + zm.y * zm.y);
       if (UH < 0.05) continue;
       const W = R + 0.2 * Math.max(0, lee);             // wake widens slowly downstream
       const fc = 1 - sstep(W, W + 0.5 * H, cross);
@@ -227,7 +228,7 @@ export class Wind {
       shelter = Math.max(shelter, s);
       // lee downdraft (recirculation over the cavity) and roof-edge separation updraft (windward edge)
       wz -= 0.25 * UH * sstep(-R, 0, lee) * (1 - sstep(0, 2.5 * H, lee)) * fc * (1 - sstep(0.9 * H, 1.4 * H, h));
-      const de = Math.hypot(along + R, h - H) / (0.35 * H);
+      const ea = along + R, eh = h - H, de = Math.sqrt(ea * ea + eh * eh) / (0.35 * H);
       if (de < 3) wz += 0.5 * UH * Math.exp(-de * de) * (1 - sstep(R, R + 0.3 * H, cross));
       // local turbulence: σ ≈ 0.3·U_H·intensity in the wake, also in the roof shear layer
       const st = 0.3 * UH * zn.intensity * Math.max(s, 0.6 * Math.exp(-de * de));

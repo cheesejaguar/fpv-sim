@@ -48,7 +48,7 @@ export function qmul(o: Quat, a: Quat, b: Quat): Quat {
   o.w = w; o.x = x; o.y = y; o.z = z; return o;
 }
 export function qnormalize(q: Quat): Quat {
-  const l = Math.hypot(q.w, q.x, q.y, q.z) || 1;
+  const l = Math.sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z) || 1;
   q.w /= l; q.x /= l; q.y /= l; q.z /= l; return q;
 }
 /** Integrate body-frame angular velocity w over dt (exact exponential map). */

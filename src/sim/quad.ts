@@ -208,7 +208,7 @@ export class QuadSim {
     this.evAge.fill(0); this.evProp.fill(0); this.evStrike.fill(0); this.evMotor.fill(0); this.evArm.fill(0); this.evTouch.fill(0);
     for (const v of this.wakeVel) { v.x = v.y = v.z = 0; }
     this.wakeTurb.fill(0);
-    for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = o.mAdv = o.mFront = o.flapLag = 0; }
+    for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = o.mAdv = o.mFront = o.flapLag = o.flapTan = 0; }
     // IMU filter / flex states restart (a crash can saturate them); keep the chip's bias
     this.imu.resetState();
     if (!Number.isFinite(this.battery.s.voltage) || !Number.isFinite(this.battery.s.soc)) {
@@ -340,8 +340,8 @@ export class QuadSim {
         // side part becomes blowback too) and keeps cos(lag) of it at the hub.
         const ix = ipx / vip, iy = ipy / vip, iz = ipz / vip, a = rc.axis;
         const yx = a.y * iz - a.z * iy, yy = a.z * ix - a.x * iz, yz = a.x * iy - a.y * ix;
-        const m0 = -rc.dir * o.mAdv, m1 = -o.mFront, g = Math.cos(o.flapLag);
-        const c = Math.cos(rc.dir * o.flapLag) * g, sn = Math.sin(rc.dir * o.flapLag) * g;
+        // turned by the lag ψ and scaled by cos ψ: cos ψ·(cos ψ, dir·sin ψ) = (1, dir·tan ψ) / (1 + tan² ψ)
+        const m0 = -rc.dir * o.mAdv, m1 = -o.mFront, ft = o.flapTan, c = 1 / (1 + ft * ft), sn = rc.dir * ft * c;
         const mx = m0 * c - m1 * sn, my = m0 * sn + m1 * c;
         Tq.x += mx * ix + my * yx; Tq.y += mx * iy + my * yy; Tq.z += mx * iz + my * yz;
       }
@@ -382,7 +382,7 @@ export class QuadSim {
       const sgn = omega >= 0 ? 1 : -1;
       const propTorque = o.torque * (omegaAir >= 0 ? 1 : -1) + this.rotorExtraTorque[k] * sgn;
       this.rotorExtraTorque[k] = 0;
-      m.step(V, propTorque, rc.propInertia, dt, env.ambientC, Math.hypot(vc, vip));
+      m.step(V, propTorque, rc.propInertia, dt, env.ambientC, Math.sqrt(vc * vc + vip * vip));
       busI += m.s.busCurrent;
       // reaction torque on the stator (frame): -(J*omegaDot + tau_prop) about the spin vector
       const J = rc.motor.rotorInertia + rc.propInertia;
@@ -565,7 +565,7 @@ export class QuadSim {
         rel.x = c.pos.x - rc.pos.x; rel.y = c.pos.y - rc.pos.y; rel.z = c.pos.z - rc.pos.z;
         const spin = this.fTmp; spin.x = rc.axis.x * om; spin.y = rc.axis.y * om; spin.z = rc.axis.z * om;
         const tv = cross(this.t5, spin, rel);
-        tipSpeed = Math.abs(om) * Math.hypot(rel.x, rel.y, rel.z);
+        tipSpeed = Math.abs(om) * Math.sqrt(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z);
         const tvW = rotate(this.t5, s.q, tv);
         vx += tvW.x; vy += tvW.y; vz += tvW.z;
       }
@@ -605,7 +605,7 @@ export class QuadSim {
       }
       Tq.x += tq.x; Tq.y += tq.y; Tq.z += tq.z;
       // rolling resistance: a small torque against the body rate while pressed on a surface
-      const wm = Math.hypot(s.w.x, s.w.y, s.w.z);
+      const wm = Math.sqrt(s.w.x * s.w.x + s.w.y * s.w.y + s.w.z * s.w.z);
       if (wm > 1e-6 && mat.rolling > 0) {
         const tr = (mat.rolling * c.radius * fn) / Math.max(wm, 1);
         Tq.x -= tr * s.w.x; Tq.y -= tr * s.w.y; Tq.z -= tr * s.w.z;
@@ -674,7 +674,7 @@ export class QuadSim {
     if (!env.world.foliage) return;
     const d = env.world.foliage(this.s.pos);
     if (d <= 0) return;
-    const v = this.s.vel, V = Math.hypot(v.x, v.y, v.z);
+    const v = this.s.vel, V = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     const kf = this.foliageDrag * Math.min(d, 1.5) * V;
     Fw.x -= kf * v.x; Fw.y -= kf * v.y; Fw.z -= kf * v.z;
     const dd = Math.min(d, 1);

@@ -198,7 +198,7 @@ export class Motor {
     // (h ∝ U^0.8, U ∝ rpm; a 5" 2207 runs ~30 °C at hover and ~100-120 °C after a minute at full
     // throttle on a thrust stand) and by the flight airspeed
     const xs = Math.min(1, (Math.abs(w) * kt) / Math.max(1, vbus));
-    const rth = p.thermalResKPerW / (0.25 + 8 * Math.pow(xs, 0.8) + coolingAirspeed / 12);
+    const rth = p.thermalResKPerW / (0.25 + 8 * Math.exp(0.8 * Math.log(xs)) + coolingAirspeed / 12); // (xs^0.8)
     s.tempC += ((pLoss - (s.tempC - ambientC) / rth) / p.thermalCapJPerK) * dt;
     if (s.tempC > s.peakC) {
       s.peakC = s.tempC;
