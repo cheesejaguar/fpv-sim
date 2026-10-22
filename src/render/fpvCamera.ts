@@ -554,8 +554,10 @@ export class FpvCamera {
   private makeCubeRT(n: number) {
     // mipmapped + anisotropic: each fisheye sample is filtered over its own footprint (the periphery
     // compresses the cube several times), which is what keeps fences and wires from shimmering
+    // (anisotropy 4: the fisheye already spreads 4-8 samples over each pixel and its motion arc, and
+    // in fast motion 8 probes per sample made up to ~130 trilinear taps per pixel)
     const rt = new THREE.WebGLCubeRenderTarget(n, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter });
-    rt.texture.anisotropy = 8;
+    rt.texture.anisotropy = 4;
     return rt;
   }
 
