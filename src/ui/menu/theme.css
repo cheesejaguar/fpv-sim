@@ -53,11 +53,14 @@
   -webkit-font-smoothing: antialiased;
 }
 .gm.hidden { display: none; }
-/* everything but the title screen sits on a deeper, blurred scrim so text never fights the scene */
+/* everything but the title screen sits on a deeper scrim so text never fights the scene. No
+   backdrop blur: a full-screen blur is redone on every frame the scene behind changes; the scrim is
+   made that much more opaque instead (the scene shows through about as faintly as it did blurred). */
 .gm.deep { background:
     radial-gradient(120% 90% at 15% 10%, rgba(124, 58, 237, 0.22), transparent 55%),
-    linear-gradient(180deg, rgba(15, 15, 35, 0.86), rgba(15, 15, 35, 0.94));
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    linear-gradient(180deg, rgba(15, 15, 35, 0.93), rgba(15, 15, 35, 0.97)); }
+/* glass cards on that scrim: nothing behind them worth blurring */
+.gm.deep .gm-card, .gm.deep .gm-chip { backdrop-filter: none; -webkit-backdrop-filter: none; }
 /* scanline + vignette atmosphere over the live 3D backdrop */
 .gm::before { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: -1;
   background: radial-gradient(130% 100% at 50% 40%, transparent 55%, rgba(0, 0, 0, 0.55) 100%),
@@ -281,7 +284,7 @@ a.gm-btn { text-decoration: none; }
 .gm-chapter[aria-current='step'] { color: var(--gm-fg); background: rgba(124, 58, 237, 0.25); border-color: var(--gm-border); }
 .gm-chapter[aria-current='step'] .n { background: var(--gm-primary); color: #fff; }
 .gm-chapter.done .n { background: var(--gm-ok); color: #052e1b; }
-.gm-article { background: var(--gm-bg-glass); border: 1px solid var(--gm-border-soft); border-radius: var(--gm-radius); padding: clamp(18px, 3vw, 32px); box-shadow: var(--gm-shadow); backdrop-filter: blur(12px); max-width: 920px; }
+.gm-article { background: var(--gm-bg-glass); border: 1px solid var(--gm-border-soft); border-radius: var(--gm-radius); padding: clamp(18px, 3vw, 32px); box-shadow: var(--gm-shadow); max-width: 920px; }
 .gm-article h2 { font-family: var(--gm-font-display); font-weight: 400; font-size: clamp(24px, 2.6vw, 32px); margin: 0 0 6px; letter-spacing: 0.02em; }
 .gm-article h4 { margin: 22px 0 8px; font-size: 17px; color: var(--gm-secondary); letter-spacing: 0.04em; }
 .gm-article p, .gm-article li { color: #cbd5e1; max-width: 72ch; }
@@ -303,13 +306,13 @@ a.gm-btn { text-decoration: none; }
 
 /* ---------- settings host (existing panels inside) ---------- */
 .gm-settings .panel { animation: gm-screen-in 220ms var(--gm-ease) both; }
-.gm-settings .sec { background: var(--gm-bg-glass); border-radius: var(--gm-radius); backdrop-filter: blur(10px); }
+.gm-settings .sec { background: var(--gm-bg-glass); border-radius: var(--gm-radius); }
 .gm-settings .sec h3 { font-family: var(--gm-font-display); font-weight: 400; letter-spacing: 0.12em; color: var(--gm-secondary); }
 .gm-settings button { min-height: 40px; border-radius: var(--gm-radius-sm); }
 .gm-settings button.primary { background: var(--gm-primary); border-color: transparent; color: #fff; }
 .gm-settings select { min-height: 36px; }
 .gm-settings input:not([type]), .gm-settings input[type=text], .gm-settings textarea { min-height: 36px; border-radius: 8px; background: rgba(15, 15, 35, 0.85); color: var(--gm-fg); border: 1px solid var(--gm-border-soft); }
-.gm-settings .builder-bar { background: #1e1c35; border-color: var(--gm-border); border-radius: var(--gm-radius); backdrop-filter: blur(10px); }
+.gm-settings .builder-bar { background: #1e1c35; border-color: var(--gm-border); border-radius: var(--gm-radius); }
 .gm-settings .builder-bar button { min-height: 40px; }
 .gm-settings input[type=range] { accent-color: var(--gm-primary); }
 .gm-settings label.slider .hint { grid-column: 1 / -1; margin: -2px 0 4px; font-size: 13px; line-height: 1.35; color: var(--gm-fg-muted); }
