@@ -10,6 +10,12 @@ export interface WorldUniforms {
   /** LOD centre: the rendering camera's position (set before every render, shadow pass included) */
   uLod: { value: THREE.Vector3 };
 }
+/**
+ * userData flag of a camera that must not move the LOD centre: the FPV camera's shadow-refresh
+ * render looks at nothing from far away, and binning the trees around it hid every near tree (and
+ * its shadow) just before the shadow pass. The LOD stays where the last real camera put it.
+ */
+export const NO_LOD = 'noLodCentre';
 export const makeWorldUniforms = (): WorldUniforms => ({ uWind: { value: new THREE.Vector4(1, 0, 0.35, 0) }, uLod: { value: new THREE.Vector3() } });
 
 /** Visual wind strength from a wind speed (m/s): 1 at a stiff 8 m/s breeze, capped at a gale. */

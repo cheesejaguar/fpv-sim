@@ -15,6 +15,7 @@
 //     the goggles' own overlay.
 import * as THREE from 'three';
 import type { VideoSpec } from '../data/catalog';
+import { NO_LOD } from './sway';
 
 // ---------------------------------------------------------------------------------------------
 // Camera maths shared by the shaders and the frame loop (plain numbers: unit-tested)
@@ -535,6 +536,7 @@ export class FpvCamera {
     this.quad.frustumCulled = false;
     this.quadScene.add(this.quad);
     this.voidCam.position.set(0, 1e7, 0); this.voidCam.lookAt(1, 1e7, 0); this.voidCam.updateMatrixWorld();
+    this.voidCam.userData[NO_LOD] = true; // the trees stay binned around the lens for the shadow pass
   }
 
   get cubeSize() { return this.cubeRT.width; }

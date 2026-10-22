@@ -11,7 +11,7 @@ import { buildCrowd } from './crowd';
 import { buildClutter, groundMaterial, terrainTiles } from './ground';
 import { addQuakeLevel } from './quakeScene';
 import { buildLights, buildSky, courseCentre, Environment, environment, skyDir, TimeOfDay } from './sky';
-import { flowDir, makeWorldUniforms, windStrength } from './sway';
+import { flowDir, makeWorldUniforms, NO_LOD, windStrength } from './sway';
 import { brickTexture, concreteTexture, dirtTexture, foliageAtlas, gateTexture, grassTexture, grassTuftTexture, macroNoiseTexture, metalTexture, netTexture, padTexture, pitchTexture, textTexture, woodTexture } from './textures';
 import { buildTrees } from './trees';
 import { buildWindsock, clothMaterials, flagCloth, windsockSpot } from './windVisuals';
@@ -385,8 +385,12 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   if (clutter) { track(clutter); for (const m of clutter.meshes) { m.name = 'clutter'; scene.add(m); } }
   const sockAt = windsockSpot(map), sock = sockAt ? buildWindsock(sockAt) : null;
   if (sock) { track(sock); sock.object.name = 'windsock'; scene.add(sock.object); }
-  // LOD centre = whichever camera renders (the cube faces, the chase camera); runs before the shadow pass
-  scene.onBeforeRender = (_r, _s, camera) => { u.uLod.value.setFromMatrixPosition(camera.matrixWorld); trees?.update(u.uLod.value); clutter?.update(u.uLod.value); };
+  // LOD centre = whichever camera renders (the cube faces, the chase camera); runs before the shadow
+  // pass. The FPV shadow refresh (a camera looking at nothing) keeps the lens's LOD (sway.ts NO_LOD).
+  scene.onBeforeRender = (_r, _s, camera) => {
+    if (camera.userData[NO_LOD]) return;
+    u.uLod.value.setFromMatrixPosition(camera.matrixWorld); trees?.update(u.uLod.value); clutter?.update(u.uLod.value);
+  };
 
   // ---- glTF meshes (map packages); they load asynchronously, like the Quake textures ----
   let disposed = false;
