@@ -23,6 +23,8 @@ const SRC: Record<string, number> = {
 };
 const NC = COLUMNS.length;
 const MODES = COLUMNS.findIndex((c) => c.id === 'modes');
+/** ring field of column c (resolved once, not by name for every sample) */
+const COL_SRC = Int32Array.from(COLUMNS, (c) => SRC[c.id] ?? -1);
 
 /** What the header needs besides the samples (filled in by race.ts from the lap and the session). */
 export type LapMeta = Omit<ReplayHeader, 'v' | 'rate' | 'n' | 't0' | 'cols' | 'osd' | 'gates'>;
@@ -30,6 +32,12 @@ export type LapMeta = Omit<ReplayHeader, 'v' | 'rate' | 'n' | 't0' | 'cols' | 'o
 export interface LapDone { start: number; gates: GatePass[]; meta: LapMeta }
 
 interface Pending { lap: LapDone; end: number; wall: number; done: (b: Uint8Array | null) => void }
+
+/** Run f when the main thread is idle (after the frame being drawn), at the latest after timeoutMs. */
+function whenIdle(f: () => void, timeoutMs = 1000) {
+  const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o: { timeout: number }) => number }).requestIdleCallback;
+  if (ric) ric(f, { timeout: timeoutMs }); else setTimeout(f, 0);
+}
 
 export class LapRecorder {
   private cap = 0;
@@ -43,6 +51,8 @@ export class LapRecorder {
   private osdFrames: { t: number; cols: number; rows: number; idx: Uint16Array; ch: Uint8Array; attr: Uint8Array }[] = [];
   private osdSeen = { seq: -1, ch: new Uint8Array(OSD_CELLS).fill(0x20), attr: new Uint8Array(OSD_CELLS), cols: 30, rows: 16 };
   private pending: Pending[] = [];
+  /** laps whose post-roll is in, waiting for an idle moment to be copied out and encoded */
+  private finishing: Pending[] = [];
   /** The newest completed lap's replay (counted or not), for "Replay last lap". */
   last: { lap: LapDone; replay: Promise<Uint8Array | null> } | null = null;
   /** Record Betaflight's OSD grid (on by default). */
@@ -72,12 +82,20 @@ export class LapRecorder {
       }
       if (this.osd) this.pumpOsd(sh, head);
     }
-    // finish laps whose post-roll is in (or that waited long enough)
-    for (const p of [...this.pending]) if (this.next / RATE > p.end + POST_S || now - p.wall > POST_WAIT_MS) { this.pending.splice(this.pending.indexOf(p), 1); void this.finish(p); }
+    // finish laps whose post-roll is in (or that waited long enough): not in this frame (the copy and
+    // the column encoding take a few ms for a long lap) but when the main thread is next idle; their
+    // samples stay held until then
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const p = this.pending[i];
+      if (!(this.next / RATE > p.end + POST_S || now - p.wall > POST_WAIT_MS)) continue;
+      this.pending.splice(i, 1); this.finishing.push(p);
+      whenIdle(() => { const k = this.finishing.indexOf(p); if (k >= 0) this.finishing.splice(k, 1); void this.finish(p); });
+    }
     // forget what no lap needs any more
     let keep = this.next / RATE - PRE_S - 0.5; // (a gate message arrives a little after the pass)
     if (keepFrom !== null) keep = Math.min(keep, keepFrom);
     for (const p of this.pending) keep = Math.min(keep, p.lap.start - PRE_S);
+    for (const p of this.finishing) keep = Math.min(keep, p.lap.start - PRE_S);
     const k = Math.max(this.first, Math.min(this.next, Math.floor(keep * RATE)));
     if (k > this.first) this.first = k;
     if (this.next - this.first > MAX_SAMPLES) this.first = this.next - MAX_SAMPLES;
@@ -95,7 +113,7 @@ export class LapRecorder {
   private store(k: number, modes: number) {
     if (k - this.first >= this.cap) this.grow(k - this.first + 1);
     const i = k % this.cap, r = this.rec;
-    for (let c = 0; c < NC; c++) this.cols[c][i] = c === MODES ? modes : r[SRC[COLUMNS[c].id]];
+    for (let c = 0; c < NC; c++) this.cols[c][i] = c === MODES ? modes : COL_SRC[c] >= 0 ? r[COL_SRC[c]] : NaN;
   }
 
   private grow(need: number) {
