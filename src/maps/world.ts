@@ -116,6 +116,7 @@ export class PrimitiveWorld implements CollisionWorld {
   private groundMat: SurfaceMaterial;
   private planes = new Float64Array(PLANES * PL).fill(Infinity); // (no plane anywhere yet)
   private nPlanes = 0; private lastPlane = 0; private nextPlane = 0;
+  private cand = new Float64Array(64 * REC); private nCand = 0; // near(): records within reach
   readonly brushes = new BrushGrid();
   // porous drag volumes (tree canopies, foliage spheres, hedges): not solid, see foliage()
   private canopies = new Map<number, (SpherePrim | BoxPrim)[]>();
@@ -228,72 +229,115 @@ export class PrimitiveWorld implements CollisionWorld {
     return (this.lastPlane = o);
   }
 
-  sphere(p: V3, radius: number, out: ContactHit): boolean {
-    let best = 0;
-    const px = p.x, py = p.y, pz = p.z;
-    // terrain: the tangent plane under the sphere (all of a quad's spheres share a few)
+  /** Terrain part of sphere(): the deepest-so-far result written to out (0 = none). */
+  private terrainHit(px: number, py: number, pz: number, radius: number, out: ContactHit): number {
+    // the tangent plane under the sphere (all of a quad's spheres share a few)
     const P = this.planes, o = this.plane(px, py);
     const h = P[o + 2] + P[o + 3] * (px - P[o]) + P[o + 4] * (py - P[o + 1]);
-    if (pz - radius < h + 0.5) {
-      const nz = P[o + 7], d = radius - (pz - h) * nz;
-      if (d > best) { best = d; out.depth = d; out.nx = P[o + 5]; out.ny = P[o + 6]; out.nz = nz; out.material = this.groundMat; }
+    if (pz - radius >= h + 0.5) return 0;
+    const nz = P[o + 7], d = radius - (pz - h) * nz;
+    if (d <= 0) return 0;
+    out.depth = d; out.nx = P[o + 5]; out.ny = P[o + 6]; out.nz = nz; out.material = this.groundMat;
+    return d;
+  }
+
+  /** Packed records a[0 .. end) against the sphere: returns the new best depth (hit written to out). */
+  private records(a: Float64Array, end: number, px: number, py: number, pz: number, radius: number, best: number, out: ContactHit): number {
+    const mats = this.mats, r2 = radius * radius;
+    for (let i = 0; i < end; i += REC) {
+      const kind = a[i], dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3];
+      if (kind === K_BOX) {
+        const rb = a[i + 12] + radius;
+        if (dx * dx + dy * dy + dz * dz > rb * rb) continue; // out of reach
+        const hx = a[i + 4], hy = a[i + 5], hz = a[i + 6], c = a[i + 7], s = a[i + 8], cp = a[i + 9], sp = a[i + 10];
+        // into box frame: yaw about z then pitch about local y
+        let lx = c * dx + s * dy, lz = dz;
+        const ly = -s * dx + c * dy;
+        const tx = cp * lx - sp * lz; lz = sp * lx + cp * lz; lx = tx;
+        const qx = lx < -hx ? -hx : lx > hx ? hx : lx, qy = ly < -hy ? -hy : ly > hy ? hy : ly, qz = lz < -hz ? -hz : lz > hz ? hz : lz;
+        let nx = lx - qx, ny = ly - qy, nz = lz - qz;
+        const n2 = nx * nx + ny * ny + nz * nz;
+        let depth: number;
+        if (n2 > 1e-18) {
+          if (n2 >= r2) continue;
+          const dist = Math.sqrt(n2);
+          depth = radius - dist; nx /= dist; ny /= dist; nz /= dist;
+        } else {
+          // centre inside: push out along the axis of least penetration
+          const ex = hx - Math.abs(lx), ey = hy - Math.abs(ly), ez = hz - Math.abs(lz);
+          if (ex < ey && ex < ez) { nx = Math.sign(lx) || 1; ny = 0; nz = 0; depth = ex + radius; }
+          else if (ey < ez) { nx = 0; ny = Math.sign(ly) || 1; nz = 0; depth = ey + radius; }
+          else { nx = 0; ny = 0; nz = Math.sign(lz) || 1; depth = ez + radius; }
+        }
+        if (depth > best) {
+          // back to world: inverse pitch then inverse yaw
+          const wx0 = cp * nx + sp * nz;
+          best = depth; out.depth = depth; out.nx = c * wx0 - s * ny; out.ny = s * wx0 + c * ny; out.nz = -sp * nx + cp * nz; out.material = mats[a[i + 11]];
+        }
+      } else if (kind === K_CYL) {
+        const r = a[i + 4], top = a[i + 3] + a[i + 5];
+        if (pz < a[i + 3] - radius || pz > top + radius) continue;
+        const rr = Math.sqrt(dx * dx + dy * dy), side = r + radius - rr;
+        if (side <= 0) continue;
+        const dTop = top + radius - pz;
+        if (dTop < side && pz > top) {
+          if (dTop > best && rr < r) { best = dTop; out.depth = dTop; out.nx = 0; out.ny = 0; out.nz = 1; out.material = mats[a[i + 11]]; }
+        } else if (side > best) {
+          best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = mats[a[i + 11]];
+        }
+      } else {
+        const rs = a[i + 4] + radius, d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= rs * rs) continue;
+        const d = Math.sqrt(d2), depth = rs - d;
+        if (depth > best && d > 1e-6) { best = depth; out.depth = depth; out.nx = dx / d; out.ny = dy / d; out.nz = dz / d; out.material = mats[a[i + 11]]; }
+      }
     }
+    return best;
+  }
+
+  sphere(p: V3, radius: number, out: ContactHit): boolean {
+    const px = p.x, py = p.y, pz = p.z;
+    let best = this.terrainHit(px, py, pz, radius, out);
     // every grid cell the sphere overlaps (a prim just across a cell border is not listed in this one)
-    const C = this.cell, cells = this.packed, mats = this.mats, r2 = radius * radius;
+    const C = this.cell, cells = this.packed;
     const cx0 = Math.floor((px - radius) / C), cx1 = Math.floor((px + radius) / C);
     const cy0 = Math.floor((py - radius) / C), cy1 = Math.floor((py + radius) / C);
     for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
       const a = cells.get(this.key(cx, cy));
+      if (a !== undefined) best = this.records(a, a.length, px, py, pz, radius, best, out);
+    }
+    if (this.brushes.count) best = this.brushes.sphere(p, radius, out, best);
+    return best > 0;
+  }
+
+  /**
+   * Collect the prims within reach of the sphere (p, r), e.g. an airframe's bound sphere, for the
+   * sphereNear() queries of spheres inside it that follow: those then skip the grid and every prim
+   * out of reach. (Same results as sphere(): a prim missing from the list can't touch them.)
+   */
+  near(p: V3, r: number): void {
+    const R = r * (1 + 1e-9) + 1e-9, px = p.x, py = p.y, pz = p.z, C = this.cell;
+    let c = this.cand, n = 0;
+    for (let cx = Math.floor((px - R) / C), cx1 = Math.floor((px + R) / C); cx <= cx1; cx++) for (let cy = Math.floor((py - R) / C), cy1 = Math.floor((py + R) / C); cy <= cy1; cy++) {
+      const a = this.packed.get(this.key(cx, cy));
       if (a === undefined) continue;
       for (let i = 0; i < a.length; i += REC) {
-        const kind = a[i], dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3];
-        if (kind === K_BOX) {
-          const rb = a[i + 12] + radius;
-          if (dx * dx + dy * dy + dz * dz > rb * rb) continue; // out of reach
-          const hx = a[i + 4], hy = a[i + 5], hz = a[i + 6], c = a[i + 7], s = a[i + 8], cp = a[i + 9], sp = a[i + 10];
-          // into box frame: yaw about z then pitch about local y
-          let lx = c * dx + s * dy, lz = dz;
-          const ly = -s * dx + c * dy;
-          const tx = cp * lx - sp * lz; lz = sp * lx + cp * lz; lx = tx;
-          const qx = lx < -hx ? -hx : lx > hx ? hx : lx, qy = ly < -hy ? -hy : ly > hy ? hy : ly, qz = lz < -hz ? -hz : lz > hz ? hz : lz;
-          let nx = lx - qx, ny = ly - qy, nz = lz - qz;
-          const n2 = nx * nx + ny * ny + nz * nz;
-          let depth: number;
-          if (n2 > 1e-18) {
-            if (n2 >= r2) continue;
-            const dist = Math.sqrt(n2);
-            depth = radius - dist; nx /= dist; ny /= dist; nz /= dist;
-          } else {
-            // centre inside: push out along the axis of least penetration
-            const ex = hx - Math.abs(lx), ey = hy - Math.abs(ly), ez = hz - Math.abs(lz);
-            if (ex < ey && ex < ez) { nx = Math.sign(lx) || 1; ny = 0; nz = 0; depth = ex + radius; }
-            else if (ey < ez) { nx = 0; ny = Math.sign(ly) || 1; nz = 0; depth = ey + radius; }
-            else { nx = 0; ny = 0; nz = Math.sign(lz) || 1; depth = ez + radius; }
-          }
-          if (depth > best) {
-            // back to world: inverse pitch then inverse yaw
-            const wx0 = cp * nx + sp * nz;
-            best = depth; out.depth = depth; out.nx = c * wx0 - s * ny; out.ny = s * wx0 + c * ny; out.nz = -sp * nx + cp * nz; out.material = mats[a[i + 11]];
-          }
-        } else if (kind === K_CYL) {
-          const r = a[i + 4], top = a[i + 3] + a[i + 5];
-          if (pz < a[i + 3] - radius || pz > top + radius) continue;
-          const rr = Math.sqrt(dx * dx + dy * dy), side = r + radius - rr;
-          if (side <= 0) continue;
-          const dTop = top + radius - pz;
-          if (dTop < side && pz > top) {
-            if (dTop > best && rr < r) { best = dTop; out.depth = dTop; out.nx = 0; out.ny = 0; out.nz = 1; out.material = mats[a[i + 11]]; }
-          } else if (side > best) {
-            best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = mats[a[i + 11]];
-          }
-        } else {
-          const rs = a[i + 4] + radius, d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 >= rs * rs) continue;
-          const d = Math.sqrt(d2), depth = rs - d;
-          if (depth > best && d > 1e-6) { best = depth; out.depth = depth; out.nx = dx / d; out.ny = dy / d; out.nz = dz / d; out.material = mats[a[i + 11]]; }
-        }
+        const dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3], kind = a[i];
+        const reach = (kind === K_BOX ? a[i + 12] : a[i + 4]) + R;
+        if (kind === K_CYL ? pz < a[i + 3] - R || pz > a[i + 3] + a[i + 5] + R || dx * dx + dy * dy > reach * reach : dx * dx + dy * dy + dz * dz > reach * reach) continue;
+        if ((n + 1) * REC > c.length) { const g = new Float64Array(c.length * 2); g.set(c); this.cand = c = g; }
+        for (let j = 0, o = n * REC; j < REC; j++) c[o + j] = a[i + j];
+        n++;
       }
     }
+    this.nCand = n;
+  }
+
+  /** sphere() for a sphere inside the one last passed to near(). */
+  sphereNear(p: V3, radius: number, out: ContactHit): boolean {
+    const px = p.x, py = p.y, pz = p.z;
+    let best = this.terrainHit(px, py, pz, radius, out);
+    if (this.nCand) best = this.records(this.cand, this.nCand * REC, px, py, pz, radius, best, out);
     if (this.brushes.count) best = this.brushes.sphere(p, radius, out, best);
     return best > 0;
   }

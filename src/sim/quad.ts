@@ -464,7 +464,9 @@ export class QuadSim {
     // pass 1: penetration queries (broadphase: one sphere around the whole airframe). A sphere whose
     // centre ends up inside an obstacle keeps the normal / plane it entered by: the least-penetration
     // axis of a thin bar or post flips at its mid-plane and used to spit the quad out the far side.
-    const any = env.world.sphere(s.pos, this.boundR, hit);
+    const world = env.world, any = world.sphere(s.pos, this.boundR, hit);
+    const near = any && world.near !== undefined && world.sphereNear !== undefined;
+    if (near) world.near!(s.pos, this.boundR); // the colliders below test only what is within reach
     let nTouch = 0;
     for (let i = 0; i < nc; i++) {
       this.hD[i] = 0;
@@ -472,7 +474,7 @@ export class QuadSim {
       const c = cs[i];
       const cw = rotate(this.t2, s.q, c.pos);
       pw.x = s.pos.x + cw.x; pw.y = s.pos.y + cw.y; pw.z = s.pos.z + cw.z;
-      if (!env.world.sphere(pw, c.radius, hit)) { this.cState[i] = 0; continue; }
+      if (!(near ? world.sphereNear!(pw, c.radius, hit) : world.sphere(pw, c.radius, hit))) { this.cState[i] = 0; continue; }
       const r = c.radius, i3 = i * 3, st = this.cState[i];
       const inside = hit.depth >= r;
       let depth = hit.depth, frozen = false;

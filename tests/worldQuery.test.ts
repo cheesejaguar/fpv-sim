@@ -125,6 +125,28 @@ describe('PrimitiveWorld.sphere matches a brute-force reference', () => {
     }, 30000);
   }
 
+  test('sphereNear() inside the sphere given to near() = sphere()', () => {
+    let hits = 0;
+    for (const [, make] of maps) {
+      const m = make(), w = new PrimitiveWorld(m), prims = solids(m), rng = new Rng(9);
+      for (let i = 0; i < 400; i++) {
+        const pr = prims[Math.floor(rng.next() * prims.length)], R = 0.05 + rng.next() * 0.3;
+        const c = { x: pr.c.x + (rng.next() - 0.5) * 2, y: pr.c.y + (rng.next() - 0.5) * 2, z: pr.c.z + (rng.next() - 0.5) * 2 };
+        w.near(c, R);
+        for (let j = 0; j < 20; j++) {
+          // a sphere inside (c, R)
+          const r = rng.next() * R * 0.5, d = (R - r) * rng.next(), u = { x: rng.next() - 0.5, y: rng.next() - 0.5, z: rng.next() - 0.5 }, l = Math.hypot(u.x, u.y, u.z) || 1;
+          const p = { x: c.x + (u.x / l) * d, y: c.y + (u.y / l) * d, z: c.z + (u.z / l) * d };
+          const a = query(w, p, r), o: ContactHit = { depth: 0, nx: 0, ny: 0, nz: 0, material: MATERIALS.grass };
+          const b = w.sphereNear(p, r, o) ? { depth: o.depth, nx: o.nx, ny: o.ny, nz: o.nz, material: o.material.name } : NONE;
+          expect(b).toEqual(a);
+          if (a.depth > 0) hits++;
+        }
+      }
+    }
+    expect(hits).toBeGreaterThan(5000);
+  }, 30000);
+
   test('brush grid (quake-dm3) agrees with a single-cell brush list', () => {
     provideMapSource('quake-dm3', readFileSync(new URL('../public/maps/quake/dm3.map', import.meta.url), 'latin1'));
     const m = MAPS['quake-dm3'](), w = new PrimitiveWorld(m), all = new BrushGrid(1e6), rng = new Rng(3);
