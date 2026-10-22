@@ -26,6 +26,12 @@ export const GYRO_CHIPS: Record<string, GyroChip> = {
 
 export interface FlexMode { freqHz: number; zeta: number; gain: number }
 
+// output saturation and LSB quantisation: ±2000 °/s at 16.4 LSB/(°/s), ±16 g at 2048 LSB/g
+const G_LIM = (2000 * Math.PI) / 180, G_LSB = Math.PI / 180 / 16.4;
+const A_LIM = 16 * G0, A_LSB = G0 / 2048;
+const qz = (v: number) => Math.round(Math.max(-G_LIM, Math.min(G_LIM, v)) / G_LSB) * G_LSB;
+const qa = (v: number) => Math.round(Math.max(-A_LIM, Math.min(A_LIM, v)) / A_LSB) * A_LSB;
+
 /** 2nd-order Butterworth low-pass (bilinear, prewarped). */
 class Biquad {
   b0 = 1; b1 = 0; b2 = 0; a1 = 0; a2 = 0; x1 = 0; x2 = 0; y1 = 0; y2 = 0;
@@ -181,8 +187,6 @@ export class Imu {
     let gy = s[1] * wy + cr[2] * wx + cr[3] * wz + b[1] + sg * this.rng.gauss();
     let gz = s[2] * wz + cr[4] * wx + cr[5] * wy + b[2] + sg * this.rng.gauss();
     gx = this.lpG[0].run(gx); gy = this.lpG[1].run(gy); gz = this.lpG[2].run(gz);
-    const lim = (2000 * Math.PI) / 180, lsb = Math.PI / 180 / 16.4;
-    const qz = (v: number) => Math.round(Math.max(-lim, Math.min(lim, v)) / lsb) * lsb;
     // a 3.2 kHz chip (BMI270) holds its last sample between data-ready edges: the 8 kHz loop sees
     // a staircase, as Betaflight does reading the real register
     this.holdT += dt;
@@ -201,8 +205,6 @@ export class Imu {
     const ax = A[0] * px + A[1] * py + A[2] * pz + ab[0] + sa * this.rng.gauss();
     const ay = A[3] * px + A[4] * py + A[5] * pz + ab[1] + sa * this.rng.gauss();
     const az = A[6] * px + A[7] * py + A[8] * pz + ab[2] + sa * this.rng.gauss();
-    const alim = 16 * G0, alsb = G0 / 2048;
-    const qa = (v: number) => Math.round(Math.max(-alim, Math.min(alim, v)) / alsb) * alsb;
     this.accOut.x = qa(this.lpA[0].run(ax)); this.accOut.y = qa(this.lpA[1].run(ay)); this.accOut.z = qa(this.lpA[2].run(az));
   }
 }

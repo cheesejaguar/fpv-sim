@@ -102,6 +102,9 @@ export class QuadSim {
   private wakeVel: V3[] = [];
   private wakeTurb: number[] = [];
   private hubW: V3[] = []; // hub positions (world) for the 1 kHz wake sampling
+  private hubLift: number[] = []; // per rotor: height of the prop's imbalance above the hub (≈ R/4)
+  private misImb: number[] = []; private misV: number[] = []; // per rotor: blade mismatch for the imbalance it was computed at
+  private th = { vth: 0, rth: 0 }; private bus = { a: 0, b: 0, driven: false }; // bus solve scratch
   private hit: ContactHit = { depth: 0, nx: 0, ny: 0, nz: 1, material: MATERIALS.grass };
   // temporaries (no allocation in the hot loop)
   private t1 = v3(); private t2 = v3(); private t3 = v3(); private t4 = v3(); private t5 = v3();
@@ -169,6 +172,8 @@ export class QuadSim {
     this.wakeVel = p.rotors.map(() => v3());
     this.wakeTurb = p.rotors.map(() => 0);
     this.hubW = p.rotors.map(() => v3());
+    this.hubLift = p.rotors.map((rc) => 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)));
+    this.misImb = p.rotors.map(() => NaN); this.misV = p.rotors.map(() => 0);
     this.battery = new Battery(p.battery, soc, ambientC);
     this.imu = new Imu(p.imuChip, physicsHz, p.flex, p.seed ?? 42, p.rotors.map((r) => r.pos));
     this.rotorVib = p.rotors.map(() => v3());
@@ -215,8 +220,9 @@ export class QuadSim {
   /** True if the state has gone non-finite (should never happen; guarded anyway). */
   private corrupt(): boolean {
     const s = this.s;
-    return !(Number.isFinite(s.pos.x + s.pos.y + s.pos.z + s.vel.x + s.vel.y + s.vel.z + s.w.x + s.w.y + s.w.z + s.q.w) &&
-      this.motors.every((m) => Number.isFinite(m.s.omega)));
+    if (!Number.isFinite(s.pos.x + s.pos.y + s.pos.z + s.vel.x + s.vel.y + s.vel.z + s.w.x + s.w.y + s.w.z + s.q.w)) return true;
+    for (let k = 0; k < this.motors.length; k++) if (!Number.isFinite(this.motors[k].s.omega)) return true;
+    return false;
   }
 
   /** Set the motors' commanded DShot values (called whenever the FC outputs). */
@@ -233,11 +239,11 @@ export class QuadSim {
     // ---------- electrical bus: Thevenin battery feeding all ESCs ----------
     // Each driven ESC draws I_k = a_k*V - b_k at its applied duty (an enabled current limiter acts
     // through that duty, with a lag, as the real PI does): V = vth - rth*sum(I) is linear in V.
-    const th = this.battery.thevenin();
+    const th = this.battery.thevenin(this.th);
     const iAux = p.auxPowerW / Math.max(6, s.vbus);
     let A = 0, B = 0;
     for (const m of this.motors) {
-      const c = m.busCoeffs();
+      const c = m.busCoeffs(this.bus);
       if (!c.driven) continue;
       A += c.a; B += c.b;
     }
@@ -347,14 +353,17 @@ export class QuadSim {
       this.phase[k] += omega * rc.dir * dt;
       const ph = this.phase[k];
       const fImb = ro.damage.imbalance * omega * omega;
-      const imbRatio = ro.damage.imbalance / Math.max(1e-9, rc.imbalance ?? ro.damage.imbalance);
-      const mismatch = 0.017 * Math.sqrt(Math.max(1, imbRatio));
+      if (ro.damage.imbalance !== this.misImb[k]) {
+        const imbRatio = ro.damage.imbalance / Math.max(1e-9, rc.imbalance ?? ro.damage.imbalance);
+        this.misImb[k] = ro.damage.imbalance; this.misV[k] = 0.017 * Math.sqrt(Math.max(1, imbRatio));
+      }
+      const mismatch = this.misV[k];
       const ripple = o.thrust * (mismatch * Math.sin(ph + 1.3 * k) + 0.012 * Math.sin(rc.bladeCount * ph) + 0.006 * Math.sin(2 * ph + 0.7 * k));
       const vfx = fImb * Math.cos(ph), vfy = fImb * Math.sin(ph), vfz = ripple;
       fx += vfx; fy += vfy; fz += vfz;
       vibF.x += vfx; vibF.y += vfy; vibF.z += vfz;
       const ft = this.fTmp; ft.x = vfx; ft.y = vfy; ft.z = vfz;
-      const hubLift = 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)); // ≈ R/4
+      const hubLift = this.hubLift[k];
       const hp = this.hubTmp; hp.x = rc.pos.x; hp.y = rc.pos.y; hp.z = rc.pos.z + hubLift;
       const vt = cross(this.t3, hp, ft);
       // + broadband bearing / commutation / blade-turbulence noise (∝ rpm²): part excites the

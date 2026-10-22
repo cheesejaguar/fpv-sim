@@ -55,6 +55,7 @@ export class RotorAero {
   private rng: Rng;
   private ouT = 0; private ouQ = 0;
   private tNow = 0;
+  private ouDt = NaN; private ouA = 0; private ouSd = 0; // OU decay / drive for the last dt
   /** Frame-wide correlated part of the prop-wash noise (optional). */
   common: CommonNoise | null = null;
   /** Reversed rotation efficiency (props run backwards are poor airfoils). */
@@ -165,7 +166,8 @@ export class RotorAero {
     // ~15-50 Hz), scaled by VRS intensity. Part is common to the whole frame (it sits in one
     // turbulent wake, rho ~ 0.36), the rest per rotor (eddies ~ R across are uncorrelated).
     const tau = 0.006;
-    const a = Math.exp(-dt / tau), sd = Math.sqrt(1 - a * a);
+    if (dt !== this.ouDt) { this.ouDt = dt; this.ouA = Math.exp(-dt / tau); this.ouSd = Math.sqrt(1 - this.ouA * this.ouA); }
+    const a = this.ouA, sd = this.ouSd;
     this.ouT = this.ouT * a + sd * this.rng.gauss();
     this.ouQ = this.ouQ * a + sd * this.rng.gauss();
     this.tNow += dt;
