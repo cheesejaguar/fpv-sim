@@ -51,11 +51,12 @@
 .rp-timeline { position: relative; height: 28px; cursor: pointer; touch-action: none; margin: 0 0 8px; }
 .rp-timeline:focus-visible { outline: 3px solid var(--gm-ring); outline-offset: 2px; border-radius: 8px; }
 .rp-rail { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.3); }
-.rp-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--gm-primary), var(--gm-accent)); }
+.rp-fill { position: absolute; inset: 0; border-radius: 999px; background: linear-gradient(90deg, var(--gm-primary), var(--gm-accent)); transform-origin: 0 50%; transform: scaleX(0); }
+.rp-headtrack { position: absolute; inset: 0; pointer-events: none; }
 .rp-marks { position: absolute; inset: 0; }
 .rp-mark { position: absolute; top: -5px; width: 2px; height: 16px; margin-left: -1px; border-radius: 1px; background: #c4b5fd; opacity: 0.9; }
 .rp-mark.end { width: 4px; margin-left: -2px; background: #5dff3a; }
-.rp-head { position: absolute; top: 5px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.45), 0 2px 8px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.rp-head { position: absolute; left: 0; top: 5px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.45), 0 2px 8px rgba(0, 0, 0, 0.5); pointer-events: none; }
 .rp-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rp-play { min-width: 60px; }
 .rp-btn[aria-pressed='true'] { background: rgba(124, 58, 237, 0.55); border-color: var(--gm-secondary); }
