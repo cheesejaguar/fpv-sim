@@ -420,13 +420,20 @@ void main() {
   gl_FragColor = vec4(clamp(mix(c.rgb, p, k), 0.0, 6e4), c.a);
 }`;
 
+// OSD texel at frame uv (osdRect: the character grid's rectangle in the frame)
+const OSD_AT = /* glsl */ `
+vec4 osdAt(vec2 uv) {
+  vec2 o = (uv - osdRect.xy) / (osdRect.zw - osdRect.xy);
+  if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) return vec4(0.0);
+  return textureLod(osd, vec2(o.x, o.y), 0.0) * osdOn;
+}`;
+
 const commonPost = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
-uniform sampler2D frame, prevFrame, glow, prevGlow, osd, gog, expTex;
-uniform float time, cnr, osdOn, gogOn, glowK, wdr, frameH, frameW, oddField, interlaced, freeze, block, lost, hdz, gammaOut;
+uniform sampler2D frame, prevFrame, glow, prevGlow, osd, expTex;
+uniform float time, cnr, osdOn, glowK, wdr, frameH, frameW, oddField, interlaced, freeze, block, lost, hdz, gammaOut;
 uniform vec4 osdRect;   // x0,y0,x1,y1 in frame uv
-uniform vec2 screenFit; // scale of frame quad on screen (letterbox)
 // Texture reads below use explicit LOD 0: they happen inside per-line / per-block choices (interlaced
 // fields, macroblocks), where implicit derivatives are undefined. Apple GPUs (Metal, every Mac
 // browser) then pick a far-too-blurry mip on alternate lines, which showed as heavy banding.
@@ -446,24 +453,15 @@ vec3 tone(vec3 c, float e) {
 }
 // camera transfer curve (Rec.709-like gamma): the frame buffers are linear light
 vec3 oetf(vec3 c) { return pow(max(c, 0.0), vec3(gammaOut)); }
-vec4 osdAt(vec2 uv) {
-  vec2 o = (uv - osdRect.xy) / (osdRect.zw - osdRect.xy);
-  if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) return vec4(0.0);
-  return textureLod(osd, vec2(o.x, o.y), 0.0) * osdOn;
-}
-// the goggles' own overlay (signal, recording ...) is drawn after the link, over the whole frame
-vec3 goggle(vec3 c, vec2 uv) {
-  vec4 g = textureLod(gog, uv, 0.0) * gogOn;
-  return mix(c, g.rgb, g.a);
-}
+${OSD_AT}
 `;
 
+// at the video's resolution (one fragment per video pixel); outFS scales it to the screen
 const analogFS = commonPost + /* glsl */ `
 vec3 rgb2yiq(vec3 c) { return vec3(dot(c, vec3(0.299, 0.587, 0.114)), dot(c, vec3(0.596, -0.274, -0.322)), dot(c, vec3(0.211, -0.523, 0.312))); }
 vec3 yiq2rgb(vec3 y) { return vec3(y.x + 0.956*y.y + 0.621*y.z, y.x - 0.272*y.y - 0.647*y.z, y.x - 1.106*y.y + 1.703*y.z); }
 void main() {
-  vec2 uv = (vUv - 0.5) / screenFit + 0.5;
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec2 uv = vUv;
   float bad = clamp((22.0 - cnr) / 16.0, 0.0, 1.0);      // 0 clean .. 1 terrible
   float line = floor(uv.y * frameH);
   // sync problems: per-line horizontal tearing and vertical roll when the carrier drops
@@ -510,17 +508,15 @@ void main() {
   // total loss: snow
   float snow = smoothstep(4.0, -2.0, cnr);
   rgb = mix(rgb, vec3(hash(uv * 731.0 + time * 61.0)), snow);
-  // faint scanline structure
-  rgb *= 0.94 + 0.06 * cos(uv.y * frameH * 3.14159);
-  gl_FragColor = vec4(goggle(clamp(rgb, 0.0, 1.0), uv), 1.0);
+  // (unclipped: the screen pass adds the scanlines, then clips)
+  gl_FragColor = vec4(rgb, 1.0);
 }`;
 
 const digitalFS = commonPost + /* glsl */ `
 void main() {
-  vec2 uv = (vUv - 0.5) / screenFit + 0.5;
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(vec3(0.0), 1.0); return; }
+  vec2 uv = vUv;
   // no signal: goggles show black (the HD OSD travels over the same link, so it is gone too)
-  if (lost > 0.5) { gl_FragColor = vec4(goggle(vec3(0.0), uv), 1.0); return; }
+  if (lost > 0.5) { gl_FragColor = vec4(vec3(0.0), 1.0); return; }
   float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   vec2 suv = uv;
   vec3 c;
@@ -547,10 +543,35 @@ void main() {
   }
   c = tone(c, e);
   c = oetf(c);
-  // HD OSD is drawn by the VTX/goggles after decoding: crisp
-  vec4 o = osdAt(uv);
-  c = mix(c, o.rgb, o.a);
-  gl_FragColor = vec4(goggle(clamp(c, 0.0, 1.0), uv), 1.0);
+  // (the HD OSD is drawn by the VTX/goggles after decoding, crisp, at screen resolution: outFS)
+  gl_FragColor = vec4(c, 1.0);
+}`;
+
+// Screen pass: the received picture scaled to the screen (letterboxed), analog scanline structure,
+// an HD OSD (digital: drawn by the goggles, so at the display's resolution) and the goggles' own
+// overlay (its canvas covers the top gogBand of the frame).
+const outFS = /* glsl */ `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D img, osd, gog;
+uniform float osdOn, gogOn, gogBand, scan, hdOsd, lost, frameH;
+uniform vec4 osdRect;
+uniform vec2 screenFit; // scale of frame quad on screen (letterbox)
+${OSD_AT}
+void main() {
+  vec2 uv = (vUv - 0.5) / screenFit + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec3 c = textureLod(img, uv, 0.0).rgb;
+  // analog: faint scanline structure
+  if (scan > 0.5) c *= 0.94 + 0.06 * cos(uv.y * frameH * 3.14159);
+  if (hdOsd > 0.5 && lost < 0.5) { vec4 o = osdAt(uv); c = mix(c, o.rgb, o.a); }
+  c = clamp(c, 0.0, 1.0);
+  // the goggles' own overlay (signal, recording ...) is drawn after the link, over the frame's top band
+  if (gogOn > 0.5 && uv.y >= 1.0 - gogBand) {
+    vec4 g = textureLod(gog, vec2(uv.x, 1.0 - (1.0 - uv.y) / gogBand), 0.0);
+    c = mix(c, g.rgb, g.a);
+  }
+  gl_FragColor = vec4(c, 1.0);
 }`;
 
 // Sun disc luminance in the cube (Sky.js disc scaled by the map's sky scale) is ~10-100× the
@@ -584,6 +605,9 @@ export class FpvCamera {
   private blurMat: THREE.ShaderMaterial;
   private tnrMat: THREE.ShaderMaterial;
   private postMat!: THREE.ShaderMaterial;
+  /** link / OSD composite at the video's own resolution, then scaled to the screen by outMat */
+  private linkRT!: THREE.WebGLRenderTarget;
+  private outMat: THREE.ShaderMaterial;
   /** cube face layouts for the current video system (cubeFaceRects) for a ladder of margins, the
    *  one this capture's motion needs, and what the face cameras use now (that, or grown towards the
    *  sun for the glare probe) */
@@ -659,6 +683,14 @@ export class FpvCamera {
     this.brightMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: blurFS(true), depthTest: false, uniforms: { src: U(null), expTex: U(null), stepUv: U(new THREE.Vector2()) } });
     this.blurMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: blurFS(false), depthTest: false, uniforms: { src: U(null), expTex: U(null), stepUv: U(new THREE.Vector2()) } });
     this.tnrMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: tnrFS, depthTest: false, uniforms: { cur: U(null), prev: U(null), expTex: U(null), noiseK: U(NOISE_K) } });
+    this.outMat = new THREE.ShaderMaterial({
+      vertexShader: quadVS, fragmentShader: outFS, depthTest: false,
+      uniforms: {
+        img: U<THREE.Texture | null>(null), osd: U<THREE.Texture | null>(null), gog: U<THREE.Texture | null>(null),
+        osdOn: U(0), gogOn: U(0), gogBand: U(1), scan: U(0), hdOsd: U(0), lost: U(0), frameH: U(480),
+        osdRect: U(new THREE.Vector4(0.03, 0.03, 0.97, 0.97)), screenFit: U(new THREE.Vector2(1, 1)),
+      },
+    });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fisheyeMat);
     this.quad.frustumCulled = false;
     this.quadScene.add(this.quad);
@@ -784,10 +816,13 @@ export class FpvCamera {
     // analog: the video standard's active lines (NTSC 480, PAL 576)
     const h = Math.round((v.kind === 'analog' ? (v.resolution[1] >= 576 ? 576 : 480) : 720) * renderScale);
     const w = Math.round(h * aspect);
-    this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose();
+    this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose(); this.linkRT?.dispose();
     this.frameRT = this.makeFrameRT(w, h); this.prevRT = this.makeFrameRT(w, h);
     // digital: the fisheye renders to a raw buffer that the temporal denoiser then feeds into frameRT
     this.rawRT = v.kind === 'digital' ? this.makeFrameRT(w, h) : null;
+    // the received picture (link artefacts, analog OSD) at the video's resolution: half float, so the
+    // screen pass clips after its scanlines exactly as the single full-screen pass did
+    this.linkRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false, depthBuffer: false });
     this.makeGlowRTs(w, h);
     const u = this.fisheyeMat.uniforms;
     u.aspect.value = aspect;
@@ -803,12 +838,14 @@ export class FpvCamera {
     this.postMat = new THREE.ShaderMaterial({
       vertexShader: quadVS, fragmentShader: v.kind === 'analog' ? analogFS : digitalFS, depthTest: false,
       uniforms: {
-        frame: { value: null }, prevFrame: { value: null }, glow: { value: null }, prevGlow: { value: null }, osd: { value: null }, gog: { value: null }, expTex: { value: null },
-        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, gogOn: { value: 0 }, glowK: { value: 0.3 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
+        frame: { value: null }, prevFrame: { value: null }, glow: { value: null }, prevGlow: { value: null }, osd: { value: null }, expTex: { value: null },
+        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, glowK: { value: 0.3 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
         frameW: { value: w }, frameH: { value: h }, oddField: { value: 0 }, interlaced: { value: v.interlaced ? 1 : 0 },
-        freeze: { value: 0 }, block: { value: 0 }, lost: { value: 0 }, hdz: { value: v.system === 'hdzero' ? 1 : 0 }, gammaOut: { value: 1 / 2.2 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) }, screenFit: { value: new THREE.Vector2(1, 1) },
+        freeze: { value: 0 }, block: { value: 0 }, lost: { value: 0 }, hdz: { value: v.system === 'hdzero' ? 1 : 0 }, gammaOut: { value: 1 / 2.2 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) },
       },
     });
+    const ou = this.outMat.uniforms;
+    ou.scan.value = v.kind === 'analog' ? 1 : 0; ou.hdOsd.value = v.kind === 'digital' ? 1 : 0; ou.frameH.value = h;
     this.layoutFaces(); // the cube faces this camera's field of view needs
   }
 
@@ -1008,38 +1045,50 @@ export class FpvCamera {
     tex.generateMipmaps = gm; r.xr.enabled = xr; scene.matrixWorldAutoUpdate = au;
   }
 
-  /** Composite to the screen with link artefacts, OSD and the goggles' overlay. */
-  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean, gog: { texture: THREE.Texture; boxes: Rect[] } | null = null) {
+  /**
+   * Composite to the screen with link artefacts, OSD and the goggles' overlay: the link (and an
+   * analog OSD, which the FC inserts into the video) at the video's own resolution, then one cheap
+   * screen pass that scales it up with the scanlines, an HD OSD (drawn by the goggles: crisp) and
+   * the goggles' overlay. 640x480 analog is 0.3 Mpx where the old single pass shaded every screen
+   * pixel (1.6 Mpx letterboxed at 1080p).
+   */
+  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean, gog: { texture: THREE.Texture; boxes: Rect[]; band: number } | null = null) {
     const gogTex = gog?.texture ?? null;
     const r = this.renderer;
-    const u = this.postMat.uniforms;
+    const u = this.postMat.uniforms, ou = this.outMat.uniforms;
     u.frame.value = this.frameRT.texture; u.prevFrame.value = this.prevRT.texture; u.expTex.value = this.expRT[this.expIdx].texture;
     u.glow.value = this.glowRT.texture; u.prevGlow.value = this.prevGlowRT.texture;
-    u.osd.value = osdTex; u.osdOn.value = osdOn && osdTex ? 1 : 0;
-    u.gog.value = gogTex; u.gogOn.value = gogTex ? 1 : 0;
+    u.osd.value = ou.osd.value = osdTex; u.osdOn.value = ou.osdOn.value = osdOn && osdTex ? 1 : 0;
+    ou.gog.value = gogTex; ou.gogOn.value = gogTex ? 1 : 0; ou.gogBand.value = gog?.band ?? 1;
     // analog noise and tearing change once per video field, not per monitor refresh; wrapped so the
     // fp32 shader time keeps its precision after hours of flying
     const tq = this.video.kind === 'analog' ? Math.floor(time * this.video.fps) / this.video.fps : time;
     u.time.value = tq % 1000;
-    u.cnr.value = link.cnr; u.freeze.value = link.freeze ? 1 : 0; u.block.value = link.block; u.lost.value = link.lost;
+    u.cnr.value = link.cnr; u.freeze.value = link.freeze ? 1 : 0; u.block.value = link.block; u.lost.value = ou.lost.value = link.lost;
     u.oddField.value = this.field;
     // letterbox to screen
-    const size = r.getSize(new THREE.Vector2());
+    const size = r.getSize(this.tmpSize);
     const fa = this.fisheyeMat.uniforms.aspect.value, sa = size.x / size.y;
-    u.screenFit.value.set(sa > fa ? fa / sa : 1, sa > fa ? 1 : sa / fa);
+    ou.screenFit.value.set(sa > fa ? fa / sa : 1, sa > fa ? 1 : sa / fa);
     // OSD rectangle: centred, keeping the character grid's aspect within the frame
     const m = 0.03;
     const frameAspect = fa;
     let ow = 1 - 2 * m, oh = ((1 - 2 * m) * frameAspect) / osdAspect;
     if (oh > 1 - 2 * m) { oh = 1 - 2 * m; ow = (oh * osdAspect) / frameAspect; }
-    u.osdRect.value.set(0.5 - ow / 2, 0.5 - oh / 2, 0.5 + ow / 2, 0.5 + oh / 2);
+    u.osdRect.value.set(0.5 - ow / 2, 0.5 - oh / 2, 0.5 + ow / 2, 0.5 + oh / 2); ou.osdRect.value.copy(u.osdRect.value);
     // same rectangles in CSS pixels for the HUD layout
     const cw = r.domElement.clientWidth || size.x, ch = r.domElement.clientHeight || size.y;
-    const fw = u.screenFit.value.x * cw, fh = u.screenFit.value.y * ch;
+    const fw = ou.screenFit.value.x * cw, fh = ou.screenFit.value.y * ch;
     const f = this.layout.frame; f.x = (cw - fw) / 2; f.y = (ch - fh) / 2; f.w = fw; f.h = fh;
     const o = this.layout.osd; o.w = ow * fw; o.h = oh * fh; o.x = f.x + (0.5 - ow / 2) * fw; o.y = f.y + (0.5 - oh / 2) * fh;
-    this.layout.goggle = (gog?.boxes ?? []).map((b) => ({ x: f.x + b.x * fw, y: f.y + b.y * fh, w: b.w * fw, h: b.h * fh }));
+    const boxes = gog?.boxes ?? [], lg = this.layout.goggle;
+    lg.length = boxes.length;
+    boxes.forEach((b, i) => { const g = (lg[i] ??= { x: 0, y: 0, w: 0, h: 0 }); g.x = f.x + b.x * fw; g.y = f.y + b.y * fh; g.w = b.w * fw; g.h = b.h * fh; });
     this.quad.material = this.postMat;
+    r.setRenderTarget(this.linkRT);
+    r.render(this.quadScene, this.quadCam);
+    ou.img.value = this.linkRT.texture;
+    this.quad.material = this.outMat;
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
     this.onPresent?.();
@@ -1047,9 +1096,9 @@ export class FpvCamera {
 
   dispose() {
     this.cubeRT.dispose(); this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose();
-    this.glowTmp.dispose(); this.glowRT.dispose(); this.prevGlowRT.dispose(); this.sunRT.dispose(); this.voidRT.dispose();
+    this.glowTmp.dispose(); this.glowRT.dispose(); this.prevGlowRT.dispose(); this.sunRT.dispose(); this.voidRT.dispose(); this.linkRT?.dispose();
     for (const e of this.expRT) e.dispose();
-    for (const m of [this.fisheyeMat, this.sunMat, this.expMat, this.brightMat, this.blurMat, this.tnrMat, this.postMat]) m?.dispose();
+    for (const m of [this.fisheyeMat, this.sunMat, this.expMat, this.brightMat, this.blurMat, this.tnrMat, this.postMat, this.outMat]) m?.dispose();
   }
 }
 
