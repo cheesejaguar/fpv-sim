@@ -25,7 +25,7 @@ import { MultiplayerClient } from './net/multiplayer';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
 import { buildDroneMesh } from './render/droneMesh';
-import { FpvCamera } from './render/fpvCamera';
+import { autoCubeSize, FpvCamera } from './render/fpvCamera';
 import { OsdRenderer } from './render/osdRenderer';
 import { RemoteQuads } from './render/remoteQuads';
 import { buildScene } from './render/scene';
@@ -110,7 +110,7 @@ const ctx: AppCtx = {
   build: build0, map: map0, world: new PrimitiveWorld(map0), scene: buildScene(map0, { timeOfDay: view0.timeOfDay }), drone: makeDroneModel(build0),
   mountQ: cameraMountQuat(spec0.cameraUptiltDeg),
   sh, send: bridge.send, renderer,
-  fpv: new FpvCamera(renderer, view0.cubeSize), osd: new OsdRenderer(), link: new VideoLink(), audio: new MotorAudio(),
+  fpv: new FpvCamera(renderer, view0.cubeSize || autoCubeSize(build0.info.components.video, view0.renderScale)), osd: new OsdRenderer(), link: new VideoLink(), audio: new MotorAudio(),
   input: new InputManager(), mp: new MultiplayerClient(), remotes: new RemoteQuads(), blackbox: new Blackbox(),
   tel: null, fwStatus: 'Loading Betaflight firmware…', menuOpen: false,
   rec: new Float64Array(REC), pilot: { x: 0, y: 0, z: 1.6 },
@@ -401,7 +401,7 @@ const gameMenu = new GameMenu({
 appEl.append(gameMenu.root);
 
 // ---------------------------------------------------------------------------------------------
-startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
+startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, dimmed: () => gameMenu.dimmed, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
 initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 
 // invite links: ?room=CODE joins that room on load

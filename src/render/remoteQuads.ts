@@ -4,7 +4,7 @@
 // name tags are on layer TAG_LAYER, which the FPV cameras don't render (a real video feed has no
 // labels). Paused pilots (menu open) are drawn as a dim ghost.
 import * as THREE from 'three';
-import type { MultiplayerClient, Peer } from '../net/multiplayer';
+import type { MultiplayerClient, Peer, PeerPose } from '../net/multiplayer';
 import { enuToThree, quatEnuToThree } from './coords';
 
 /** Spectator cameras (chase / line of sight / title orbit) enable this layer; FPV cameras render 0 only. */
@@ -15,7 +15,7 @@ const FRAME_SCALE: Record<string, number> = { whoop: 0.31, '3in': 0.62, '5in': 1
 // 1 rear-right, 2 front-right, 3 rear-left, 4 front-left (pose rpm arrives in this order)
 const MOTORS: [number, number][] = [[-1, 1], [1, 1], [-1, -1], [1, -1]];
 
-interface Remote { group: THREE.Group; discs: THREE.Mesh[]; tag: THREE.Sprite; solid: THREE.Material[]; paused: boolean | null; drawTag(paused: boolean): void; dispose(): void }
+interface Remote { group: THREE.Group; discs: THREE.Mesh[]; tag: THREE.Sprite; solid: THREE.Material[]; paused: boolean | null; pose: PeerPose; drawTag(paused: boolean): void; dispose(): void }
 
 function nameTag(name: string, color: string): { sprite: THREE.Sprite; draw(paused: boolean): void } {
   const c = document.createElement('canvas');
@@ -76,7 +76,7 @@ function buildRemote(peer: Peer): Remote {
   group.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; });
   const tag = nameTag(peer.info.name, peer.info.color); // world-positioned above the quad (see update)
   disp.push(tag.sprite.material.map!, tag.sprite.material);
-  return { group, discs, tag: tag.sprite, solid: [frameMat, accent], paused: null, drawTag: tag.draw, dispose() { for (const d of disp) d.dispose(); } };
+  return { group, discs, tag: tag.sprite, solid: [frameMat, accent], paused: null, pose: { at: 0, p: [0, 0, 0], q: [1, 0, 0, 0], r: [0, 0, 0, 0], a: 0, h: 0 }, drawTag: tag.draw, dispose() { for (const d of disp) d.dispose(); } };
 }
 
 /** Paused pilots: a see-through ghost (no shadow) with a "paused" tag. */
@@ -101,7 +101,7 @@ export class RemoteQuads {
     for (const [id, peer] of mp.peers) {
       let r = this.remotes.get(id);
       if (!r) { r = buildRemote(peer); this.remotes.set(id, r); scene.add(r.group, r.tag); }
-      const pose = mp.poseOf(peer, now);
+      const pose = mp.poseOf(peer, now, r.pose);
       r.group.visible = r.tag.visible = !!pose;
       if (!pose) continue;
       enuToThree(pose.p[0], pose.p[1], pose.p[2], r.group.position);

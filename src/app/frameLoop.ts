@@ -96,7 +96,8 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   // title-screen backdrop: a slow orbit around the quad sitting on the pad
   const orbitCam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 3000);
   chaseCam.layers.enable(TAG_LAYER); orbitCam.layers.enable(TAG_LAYER); // remote pilots' name tags: spectator views only
-  const resize = () => { renderer.setSize(innerWidth, innerHeight); chaseCam.aspect = orbitCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); orbitCam.updateProjectionMatrix(); presentDue = true; };
+  let viewH = innerHeight; // the canvas's CSS height (setSize below), so no frame reads layout for it
+  const resize = () => { renderer.setSize(innerWidth, innerHeight); viewH = innerHeight; chaseCam.aspect = orbitCam.aspect = innerWidth / innerHeight; chaseCam.updateProjectionMatrix(); orbitCam.updateProjectionMatrix(); presentDue = true; };
   window.addEventListener('resize', resize);
   // moving the window to a monitor with another pixel density fires no resize: watch the resolution
   // itself (re-armed for the new value each time); the loop below re-applies the pixel ratio
@@ -169,7 +170,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     // a replay opened / closed, or playback jumped: the camera's frames start over
     if (!!rp !== wasReplay || (rp && rp.seq !== lastSeq)) { wasReplay = !!rp; lastSeq = rp?.seq ?? -1; lastCap = -Infinity; presentDue = true; }
     // multiplayer: publish our newest pose, place the other pilots before anything is rendered
-    if (mp.connected && sampleRing(sh, newestTime(sh), mpRec)) {
+    if (mp.connected && mp.poseDue(now) && sampleRing(sh, newestTime(sh), mpRec)) {
       const rr = mpRec;
       mp.sendPose(now, [rr[R.px], rr[R.py], rr[R.pz]], [rr[R.qw], rr[R.qx], rr[R.qy], rr[R.qz]],
         [rr[R.rpm0], rr[R.rpm1], rr[R.rpm2], rr[R.rpm3]], rr[R.armed] > 0.5, ctx.menuOpen); // paused: sent at a trickle, shown parked
@@ -309,7 +310,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           const fovT = Math.max(14, Math.min(60, (60 * 10) / Math.max(1, d)));
           const fov = chaseCam.fov === 70 ? fovT : chaseCam.fov + (fovT - chaseCam.fov) * (1 - Math.exp(-dtv / 0.4));
           if (Math.abs(fov - chaseCam.fov) > 1e-3) { chaseCam.fov = fov; chaseCam.updateProjectionMatrix(); }
-          const H = renderer.domElement.clientHeight || innerHeight, tanH = Math.tan(THREE.MathUtils.degToRad(chaseCam.fov) / 2);
+          const H = viewH, tanH = Math.tan(THREE.MathUtils.degToRad(chaseCam.fov) / 2);
           const sizePx = ((wb * 1.4) / Math.max(0.1, d) / (2 * tanH)) * H;
           marker.visible = sizePx < 18;
           marker.position.copy(p);
