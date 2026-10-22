@@ -212,12 +212,9 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   const partsFor = (id: number) => { let g = gateParts.get(id); if (!g) { g = { frame: [], led: [], glow: [], cloth: [], top: 0 }; gateParts.set(id, g); } return g; };
   const gateById = new Map(map.gates.map((g) => [g.id, g]));
   const m4 = new THREE.Matrix4(), s3 = new THREE.Vector3(1, 1, 1);
-  const place = (geo: THREE.BufferGeometry, pr: SolidPrim) => {
-    geo.applyMatrix4(primMatrix(pr, m4));
-    if (!geo.index) return geo;
-    const flat = geo.toNonIndexed(); geo.dispose();
-    return flat;
-  };
+  // (kept indexed: every primitive geometry is, so they merge as such, and shared corners are shaded
+  // once instead of once per triangle: 1.5x fewer vertices for boxes, ~2-5x for cylinders / spheres)
+  const place = (geo: THREE.BufferGeometry, pr: SolidPrim) => geo.applyMatrix4(primMatrix(pr, m4));
   // gate frame + self-lit LED strip along each tube (on the faces the pilot sees) + a slightly
   // inflated copy that becomes the additive glow halo when the gate is highlighted
   const addGatePrim = (pr: SolidPrim, gid: number) => {

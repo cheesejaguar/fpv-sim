@@ -115,6 +115,26 @@ export function buildQuakeGeometry(level: QuakeLevel, brushes: BrushPrim[]): Qua
   return [...groups.values()].map((g) => ({ tex: g.tex, kind: g.kind, position: new Float32Array(g.pos), uv: new Float32Array(g.uv), color: new Float32Array(g.col) }));
 }
 
+/**
+ * Index a triangle soup: vertices with identical position, UV and colour (the corners shared by the
+ * ~2 m lighting cells of a face) become one, so each is shaded once rather than once per triangle
+ * (E1M1: ~240k -> ~60k vertices). The triangles, and so the picture, are unchanged.
+ */
+export function weldSoup(position: Float32Array, uv: Float32Array, color: Float32Array): { position: Float32Array; uv: Float32Array; color: Float32Array; index: Uint32Array } {
+  const n = position.length / 3, p32 = new Uint32Array(position.buffer, position.byteOffset, n * 3);
+  const u32 = new Uint32Array(uv.buffer, uv.byteOffset, n * 2), c32 = new Uint32Array(color.buffer, color.byteOffset, n * 3);
+  const ids = new Map<string, number>(), index = new Uint32Array(n), keep: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const key = `${p32[i * 3]},${p32[i * 3 + 1]},${p32[i * 3 + 2]},${u32[i * 2]},${u32[i * 2 + 1]},${c32[i * 3]},${c32[i * 3 + 1]},${c32[i * 3 + 2]}`;
+    let id = ids.get(key);
+    if (id === undefined) { id = keep.length; ids.set(key, id); keep.push(i); }
+    index[i] = id;
+  }
+  const m = keep.length, P = new Float32Array(m * 3), U = new Float32Array(m * 2), C = new Float32Array(m * 3);
+  keep.forEach((i, k) => { P.set(position.subarray(i * 3, i * 3 + 3), k * 3); U.set(uv.subarray(i * 2, i * 2 + 2), k * 2); C.set(color.subarray(i * 3, i * 3 + 3), k * 3); });
+  return { position: P, uv: U, color: C, index };
+}
+
 /** Add the level meshes to the scene; returns disposables. */
 export function addQuakeLevel(scene: THREE.Scene, map: MapDef): { dispose(): void }[] {
   const level = map.quake!;
@@ -133,10 +153,11 @@ export function addQuakeLevel(scene: THREE.Scene, map: MapDef): { dispose(): voi
     tex.anisotropy = 8;
     const liquid = g.kind === 'liquid';
     const mat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, transparent: liquid, opacity: liquid ? 0.7 : 1, side: liquid ? THREE.DoubleSide : THREE.FrontSide, depthWrite: !liquid, alphaTest: g.kind === 'masked' ? 0.5 : 0 });
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(g.position, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(g.uv, 2));
-    geo.setAttribute('color', new THREE.BufferAttribute(g.color, 3));
+    const w = weldSoup(g.position, g.uv, g.color), geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(w.position, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(w.uv, 2));
+    geo.setAttribute('color', new THREE.BufferAttribute(w.color, 3));
+    geo.setIndex(new THREE.BufferAttribute(w.position.length / 3 > 65535 ? w.index : Uint16Array.from(w.index), 1));
     geo.computeBoundingSphere();
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = !liquid; // keeps the sun off the drone indoors
