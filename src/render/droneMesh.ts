@@ -3,6 +3,7 @@
 // dimensions, camera at the configured uptilt). Built in three-mapped body space: +X forward,
 // +Y up, -Z left. Positions are relative to the CG so the object origin = physics origin.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { DerivedInfo, DroneSpec } from '../builder/derive';
 
 /** fpvHidden: parts hidden while rendering the FPV camera (the camera body around the lens) */
@@ -135,6 +136,7 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
   if (video.kind === 'digital') { const au = new THREE.Mesh(T(new THREE.BoxGeometry(0.03, 0.012, 0.03)), black); au.position.copy(B(-0.02, 0, st - 0.006)); root.add(au); }
   if (spec.extraMassG > 40) { const gp = new THREE.Mesh(T(new THREE.BoxGeometry(0.03, 0.045, 0.06)), black); gp.position.copy(B(0.02, 0, (spec.extraMassZmm + 15) / 1000 + 0.04)); gp.userData.fpvHide = true; root.add(gp); }
   root.traverse((o) => { if ((o as THREE.Mesh).isMesh) { o.castShadow = true; } });
+  mergeStatic(root, T);
   const fpvHidden: THREE.Object3D[] = [];
   root.traverse((o) => { if (o.userData.fpvHide) fpvHidden.push(o); });
   let damageKey = '';
@@ -155,6 +157,39 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
     });
   };
   return { root, props, propDirs: dirs, blur, fpvHidden, setDamage, dispose() { for (const d of disp) d.dispose(); } };
+}
+
+/**
+ * The parts that never move or change (plates, standoffs, arms, motor bells, ducts, battery, strap,
+ * antenna) merged into one mesh per material: ~36 meshes become ~20, and the quad is drawn in the
+ * shadow pass and in each cube face of the FPV near pass. Props (spin, damage), their blur discs and
+ * the camera (hidden in FPV) stay separate.
+ */
+function mergeStatic(root: THREE.Group, T: <X extends { dispose(): void }>(x: X) => X) {
+  root.updateMatrixWorld(true); // root is at the origin: world = relative to the model
+  const groups = new Map<THREE.Material, THREE.Mesh[]>();
+  // root's own mesh parts and their mesh children (a duct's lip); the hubs (props) and the camera
+  // are Groups, the extra-mass box is hidden in FPV: left alone
+  for (const c of root.children) {
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || m.userData.fpvHide || !m.children.every((k) => (k as THREE.Mesh).isMesh && (k as THREE.Mesh).material === m.material)) continue;
+    for (const x of [m, ...(m.children as THREE.Mesh[])]) {
+      let l = groups.get(x.material as THREE.Material);
+      if (!l) groups.set(x.material as THREE.Material, (l = []));
+      l.push(x);
+    }
+  }
+  for (const [mat, list] of groups) {
+    if (list.length < 2) continue;
+    const geos = list.map((m) => m.geometry.clone().applyMatrix4(m.matrixWorld));
+    const merged = mergeGeometries(geos, false);
+    for (const g of geos) g.dispose();
+    if (!merged) continue;
+    const mesh = new THREE.Mesh(T(merged), mat);
+    mesh.castShadow = true;
+    for (const m of list) m.removeFromParent();
+    root.add(mesh);
+  }
 }
 
 /** Lofted blade from hub to tip along +X, chord along Z, slight pitch twist. */
