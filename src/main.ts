@@ -392,6 +392,13 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+// The title backdrop's shaders, compiled in the background while the menu is up, so its first frame
+// (once the simulation runs) doesn't stall on them. Only where the driver links in parallel
+// (KHR_parallel_shader_compile): without it compileAsync blocks just like the first frame would.
+if (renderer.extensions.has('KHR_parallel_shader_compile')) {
+  const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 3000);
+  renderer.compileAsync(ctx.scene.scene, cam).catch(() => { /* the first frame compiles them */ });
+}
 // in the background once the menu is up: "Fly now"'s quad (the easiest one) gets its prop table,
 // and the settings panels that load on first use get their code
 setTimeout(() => {
