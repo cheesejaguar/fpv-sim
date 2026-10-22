@@ -45,7 +45,7 @@ export function bandoMap(): MapDef {
   const terrain = (x: number, y: number) => {
     const r = Math.max(Math.abs(x), Math.abs(y));
     const outer = Math.min(1, Math.max(0, (r - 80) / 60));
-    return outer * fbm(x / 60, y / 60, 3, 2) * 6 + fbm(x / 8, y / 8, 2, 7) * 0.04;
+    return (outer > 0 ? outer * fbm(x / 60, y / 60, 3, 2) * 6 : 0) + fbm(x / 8, y / 8, 2, 7) * 0.04; // (no hill noise inside the yard)
   };
   const prims: Prim[] = [];
   const box = (x: number, y: number, z: number, hx: number, hy: number, hz: number, yaw = 0, visual: BoxPrim['visual'] = 'concrete', mat: BoxPrim['mat'] = 'concrete', tag?: string) =>

@@ -94,8 +94,9 @@ export function worldCupMap(): MapDef {
   const rnd = seededRandom(2026);
   const terrain = (x: number, y: number) => {
     // flat bowl floor; gentle country beyond the stadium (mostly hidden behind the stands)
+    // (the country noise only outside the bowl: the physics asks for the floor height every step)
     const r = Math.max(Math.abs(x) - 100, Math.abs(y) - 80, 0);
-    return Math.min(1, r / 60) * (fbm(x / 90, y / 90, 4, 3) * 8 + 3) + fbm(x / 9, y / 9, 2, 5) * 0.02;
+    return (r > 0 ? Math.min(1, r / 60) * (fbm(x / 90, y / 90, 4, 3) * 8 + 3) : 0) + fbm(x / 9, y / 9, 2, 5) * 0.02;
   };
   const ground = () => 0;
   const gates = courseGates();
