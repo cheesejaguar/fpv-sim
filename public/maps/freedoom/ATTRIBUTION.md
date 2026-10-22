@@ -14,7 +14,8 @@ The level geometry and textures in this folder come from **Freedoom**
 - `map01.json`: the level's THINGS, LINEDEFS, SIDEDEFS, VERTEXES, SECTORS lumps, unmodified, base64-encoded.
 - `textures/`: the 51 wall textures and 28 flats this level uses. They
   were converted to PNG through Freedoom's PLAYPAL palette. Wall textures are composited from their patches
-  as defined in TEXTURE1 / PNAMES. Pixels are otherwise unmodified.
+  as defined in TEXTURE1 / PNAMES. Pixels are otherwise unmodified (the files are losslessly stored
+  as palette PNGs, `scripts/optimize-png.mjs`).
 
 At load time the simulator changes the level as follows:
 - It opens doors and scales the geometry to metres.

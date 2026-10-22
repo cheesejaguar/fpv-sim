@@ -4,7 +4,7 @@
 import { multiplayerUrl, setMultiplayerUrl } from '../net/config';
 import { MultiplayerClient, Peer, randomRoomCode } from '../net/multiplayer';
 import { PROTOCOL, versionNote } from '../net/protocol';
-import { el, section } from './dom';
+import { el, onUnmount, section } from './dom';
 
 export interface PilotPrefs { name: string; color: string }
 
@@ -152,9 +152,11 @@ export function multiplayerPanel(mp: MultiplayerClient, join: (code: string) => 
   ));
   drawServer();
   // update on room changes (and the ping readout once a second) until this panel leaves the page
-  let attached = false, waited = 0;
-  const live = () => { if (root.isConnected) { attached = true; refresh(); return true; } return !attached; };
+  // (the menu also unmounts it when it closes into flight: its screen stays in the page, hidden)
+  let attached = false, waited = 0, gone = false;
+  const live = () => { if (gone) return false; if (root.isConnected) { attached = true; refresh(); return true; } return !attached; };
   mp.listen(live);
   const tick = setInterval(() => { if (!live() || (!attached && ++waited > 10)) clearInterval(tick); }, 1000);
+  onUnmount(root, () => { gone = true; clearInterval(tick); });
   return root;
 }

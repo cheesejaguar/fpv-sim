@@ -10,6 +10,12 @@ export interface WorldUniforms {
   /** LOD centre: the rendering camera's position (set before every render, shadow pass included) */
   uLod: { value: THREE.Vector3 };
 }
+/**
+ * userData flag of a camera that must not move the LOD centre: the FPV camera's shadow-refresh
+ * render looks at nothing from far away, and binning the trees around it hid every near tree (and
+ * its shadow) just before the shadow pass. The LOD stays where the last real camera put it.
+ */
+export const NO_LOD = 'noLodCentre';
 export const makeWorldUniforms = (): WorldUniforms => ({ uWind: { value: new THREE.Vector4(1, 0, 0.35, 0) }, uLod: { value: new THREE.Vector3() } });
 
 /** Visual wind strength from a wind speed (m/s): 1 at a stiff 8 m/s breeze, capped at a gale. */
@@ -101,11 +107,11 @@ const VERTEX: Record<SwayKind, VertexCode> = {
     begin: 'transformed.x += flDisp;',
   },
   crowd: {
-    // aPart: x = skin (head), y = trousers, z = raised arm (kept for ~1 in 8); some bob up and down
+    // aPart: x = skin (head), y = trousers, z = raised arm (crowd.ts draws arms only for those who
+    // raise them); some bob up and down
     pars: 'attribute vec3 aPart;',
     begin: /* glsl */ `
       float crPh = swHash(instanceMatrix[3].xz);
-      if (aPart.z > 0.5 && swHash(instanceMatrix[3].xz * 0.37 + 1.7) > 0.12) transformed = vec3(0.0, 0.3, 0.0);
       transformed.y += step(0.8, crPh) * max(0.0, sin(uWind.w * (6.0 + 3.0 * crPh) + crPh * 40.0)) * 0.06;`,
     color: /* glsl */ `
       #ifdef USE_INSTANCING_COLOR

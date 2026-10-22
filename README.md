@@ -23,6 +23,12 @@ npm run dev        # http://localhost:5173
 The page must be cross-origin isolated, because it uses SharedArrayBuffer. `npm run dev` and
 `npm run preview` send the COOP/COEP headers.
 
+`npm run dev` and `npm run build` first precompute every catalogue prop's BEMT table into
+`public/bemt/` (gitignored, about 10–20 s, skipped while the physics sources are unchanged), so the
+page and the simulation worker don't each spend ~1.2 s building the table on load. Without them
+(or once `src/sim`, `src/builder` or `src/data` change) the app computes the tables itself, as
+before; `npm run bemt` rebuilds them by hand.
+
 On first boot the simulator configures Betaflight over its own CLI and `save`s:
 - DShot600 with bidirectional telemetry.
 - Motor poles and KV from the builder.
@@ -539,6 +545,7 @@ encoder are tested in `tests/share.test.ts`. Deploy the relay before a site that
 ```bash
 npm test               # physics validation + Betaflight closed loop (needs the firmware build)
 node scripts/bf-smoke.mjs   # firmware-only end-to-end checks
+npm run bench:sim -- [map] [preset] # µs per 8 kHz physics step, resting on the pad and in flight
 ```
 
 The physics tests check the generated quad against real-world numbers:

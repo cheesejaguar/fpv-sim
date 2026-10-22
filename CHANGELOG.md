@@ -6,6 +6,38 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Performance
+- **The physics needs far less CPU.**
+  - Collision queries, the prop-wash wake (now stepped once per ms, exactly) and the motor, battery, wind and rotor maths are cheaper.
+  - A quad resting on the pad costs ~4× less per 8 kHz step on the stadium; flight costs ~2× less.
+  - Slower computers keep the full 8 kHz.
+  - When a computer can't keep up, the lowered physics rate applies to that session only and is no longer saved.
+- **Faster loading.**
+  - Every prop's aerodynamic table is precomputed at build time. The page and the simulator used to spend ~1.2 s each building it on every load.
+  - Betaflight downloads and compiles while the map loads.
+  - The first-boot Betaflight setup takes a fraction of the time.
+  - The simulator worker is a third smaller.
+  - The Controller, Betaflight and Drone builder settings load on first use.
+  - The Quake and Freedoom maps' textures are less than half the size (losslessly).
+  - Map files and OSD fonts are cached between visits.
+- **Lighter rendering.**
+  - The FPV camera renders only the part of its cube map the frame can sample.
+  - The sky is drawn last, and the stadium crowd and Quake/Doom levels use far fewer vertices.
+  - The pitch markings are painted in the ground shader.
+  - Night Session lights each floodlight tower once.
+  - The analog video link is processed at the video's own resolution.
+  - The new default "Auto" cube map resolution matches the camera.
+  - The menus redraw the scene behind them about 10 times a second.
+  - Near trees cast shadows in the FPV view again.
+- **Lighter page.**
+  - The ~1 kHz controller poll no longer allocates. It slows down while a menu holds the controls.
+  - The HUD lays itself out only when something changes. Telemetry text updates about 12 times a second.
+  - Cards over the 3D view are darker instead of blurred.
+  - Motor-sound parameters are sent only when they change.
+  - A still, disarmed quad is sent to other pilots twice a second.
+  - Settings are saved once a slider stops moving.
+- `npm run bench:sim` measures the physics step cost.
+
 ### Sound
 - Betaflight's beeper and the ESCs' DShot beacon are much quieter (about 15 dB at the default),
   with a new **Beeper volume** slider under Settings → Audio.

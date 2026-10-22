@@ -101,6 +101,10 @@ export class QuadSim {
   private wakeTimer = 0;
   private wakeVel: V3[] = [];
   private wakeTurb: number[] = [];
+  private hubW: V3[] = []; // hub positions (world) for the 1 kHz wake sampling
+  private hubLift: number[] = []; // per rotor: height of the prop's imbalance above the hub (≈ R/4)
+  private misImb: number[] = []; private misV: number[] = []; // per rotor: blade mismatch for the imbalance it was computed at
+  private th = { vth: 0, rth: 0 }; private bus = { a: 0, b: 0, driven: false }; // bus solve scratch
   private hit: ContactHit = { depth: 0, nx: 0, ny: 0, nz: 1, material: MATERIALS.grass };
   // temporaries (no allocation in the hot loop)
   private t1 = v3(); private t2 = v3(); private t3 = v3(); private t4 = v3(); private t5 = v3();
@@ -167,6 +171,9 @@ export class QuadSim {
     this.ceilCache = p.rotors.map(() => Infinity);
     this.wakeVel = p.rotors.map(() => v3());
     this.wakeTurb = p.rotors.map(() => 0);
+    this.hubW = p.rotors.map(() => v3());
+    this.hubLift = p.rotors.map((rc) => 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)));
+    this.misImb = p.rotors.map(() => NaN); this.misV = p.rotors.map(() => 0);
     this.battery = new Battery(p.battery, soc, ambientC);
     this.imu = new Imu(p.imuChip, physicsHz, p.flex, p.seed ?? 42, p.rotors.map((r) => r.pos));
     this.rotorVib = p.rotors.map(() => v3());
@@ -201,7 +208,7 @@ export class QuadSim {
     this.evAge.fill(0); this.evProp.fill(0); this.evStrike.fill(0); this.evMotor.fill(0); this.evArm.fill(0); this.evTouch.fill(0);
     for (const v of this.wakeVel) { v.x = v.y = v.z = 0; }
     this.wakeTurb.fill(0);
-    for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = o.mAdv = o.mFront = o.flapLag = 0; }
+    for (const o of this.rotorOut) { o.thrust = o.torque = o.hForce = o.vi = o.vrs = o.mAdv = o.mFront = o.flapLag = o.flapTan = 0; }
     // IMU filter / flex states restart (a crash can saturate them); keep the chip's bias
     this.imu.resetState();
     if (!Number.isFinite(this.battery.s.voltage) || !Number.isFinite(this.battery.s.soc)) {
@@ -213,8 +220,9 @@ export class QuadSim {
   /** True if the state has gone non-finite (should never happen; guarded anyway). */
   private corrupt(): boolean {
     const s = this.s;
-    return !(Number.isFinite(s.pos.x + s.pos.y + s.pos.z + s.vel.x + s.vel.y + s.vel.z + s.w.x + s.w.y + s.w.z + s.q.w) &&
-      this.motors.every((m) => Number.isFinite(m.s.omega)));
+    if (!Number.isFinite(s.pos.x + s.pos.y + s.pos.z + s.vel.x + s.vel.y + s.vel.z + s.w.x + s.w.y + s.w.z + s.q.w)) return true;
+    for (let k = 0; k < this.motors.length; k++) if (!Number.isFinite(this.motors[k].s.omega)) return true;
+    return false;
   }
 
   /** Set the motors' commanded DShot values (called whenever the FC outputs). */
@@ -231,11 +239,11 @@ export class QuadSim {
     // ---------- electrical bus: Thevenin battery feeding all ESCs ----------
     // Each driven ESC draws I_k = a_k*V - b_k at its applied duty (an enabled current limiter acts
     // through that duty, with a lag, as the real PI does): V = vth - rth*sum(I) is linear in V.
-    const th = this.battery.thevenin();
+    const th = this.battery.thevenin(this.th);
     const iAux = p.auxPowerW / Math.max(6, s.vbus);
     let A = 0, B = 0;
     for (const m of this.motors) {
-      const c = m.busCoeffs();
+      const c = m.busCoeffs(this.bus);
       if (!c.driven) continue;
       A += c.a; B += c.b;
     }
@@ -281,6 +289,12 @@ export class QuadSim {
     const doWake = this.wakeTimer <= 0;
     if (doWake) this.wakeTimer = 0.001;
 
+    if (doWake) {
+      // the wake at every hub, in one pass over the puffs
+      for (let k = 0; k < n; k++) { const hw = rotate(this.hubW[k], s.q, p.rotors[k].pos); hw.x += s.pos.x; hw.y += s.pos.y; hw.z += s.pos.z; }
+      env.wake.sampleAll(this.hubW, this.wakeVel, this.wakeTurb);
+    }
+
     let busI = 0, floor2 = 0;
     const h = this.hTot; h.x = h.y = h.z = 0; // total rotor angular momentum (body); own storage: t5 is scratch for contacts()
     for (let k = 0; k < n; k++) {
@@ -291,7 +305,6 @@ export class QuadSim {
       // hub world position
       const hubW = rotate(this.t4, s.q, rc.pos);
       hubW.x += s.pos.x; hubW.y += s.pos.y; hubW.z += s.pos.z;
-      if (doWake) this.wakeTurb[k] = env.wake.sample(hubW, this.wakeVel[k], k);
       // air velocity at rotor (wind + wake), world -> body
       const aw = this.airTmp;
       const rw = this.rotorWind[k]; // per-rotor wind (see the wind block above)
@@ -327,8 +340,8 @@ export class QuadSim {
         // side part becomes blowback too) and keeps cos(lag) of it at the hub.
         const ix = ipx / vip, iy = ipy / vip, iz = ipz / vip, a = rc.axis;
         const yx = a.y * iz - a.z * iy, yy = a.z * ix - a.x * iz, yz = a.x * iy - a.y * ix;
-        const m0 = -rc.dir * o.mAdv, m1 = -o.mFront, g = Math.cos(o.flapLag);
-        const c = Math.cos(rc.dir * o.flapLag) * g, sn = Math.sin(rc.dir * o.flapLag) * g;
+        // turned by the lag ψ and scaled by cos ψ: cos ψ·(cos ψ, dir·sin ψ) = (1, dir·tan ψ) / (1 + tan² ψ)
+        const m0 = -rc.dir * o.mAdv, m1 = -o.mFront, ft = o.flapTan, c = 1 / (1 + ft * ft), sn = rc.dir * ft * c;
         const mx = m0 * c - m1 * sn, my = m0 * sn + m1 * c;
         Tq.x += mx * ix + my * yx; Tq.y += mx * iy + my * yy; Tq.z += mx * iz + my * yz;
       }
@@ -340,14 +353,17 @@ export class QuadSim {
       this.phase[k] += omega * rc.dir * dt;
       const ph = this.phase[k];
       const fImb = ro.damage.imbalance * omega * omega;
-      const imbRatio = ro.damage.imbalance / Math.max(1e-9, rc.imbalance ?? ro.damage.imbalance);
-      const mismatch = 0.017 * Math.sqrt(Math.max(1, imbRatio));
+      if (ro.damage.imbalance !== this.misImb[k]) {
+        const imbRatio = ro.damage.imbalance / Math.max(1e-9, rc.imbalance ?? ro.damage.imbalance);
+        this.misImb[k] = ro.damage.imbalance; this.misV[k] = 0.017 * Math.sqrt(Math.max(1, imbRatio));
+      }
+      const mismatch = this.misV[k];
       const ripple = o.thrust * (mismatch * Math.sin(ph + 1.3 * k) + 0.012 * Math.sin(rc.bladeCount * ph) + 0.006 * Math.sin(2 * ph + 0.7 * k));
       const vfx = fImb * Math.cos(ph), vfy = fImb * Math.sin(ph), vfz = ripple;
       fx += vfx; fy += vfy; fz += vfz;
       vibF.x += vfx; vibF.y += vfy; vibF.z += vfz;
       const ft = this.fTmp; ft.x = vfx; ft.y = vfy; ft.z = vfz;
-      const hubLift = 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)); // ≈ R/4
+      const hubLift = this.hubLift[k];
       const hp = this.hubTmp; hp.x = rc.pos.x; hp.y = rc.pos.y; hp.z = rc.pos.z + hubLift;
       const vt = cross(this.t3, hp, ft);
       // + broadband bearing / commutation / blade-turbulence noise (∝ rpm²): part excites the
@@ -366,7 +382,7 @@ export class QuadSim {
       const sgn = omega >= 0 ? 1 : -1;
       const propTorque = o.torque * (omegaAir >= 0 ? 1 : -1) + this.rotorExtraTorque[k] * sgn;
       this.rotorExtraTorque[k] = 0;
-      m.step(V, propTorque, rc.propInertia, dt, env.ambientC, Math.hypot(vc, vip));
+      m.step(V, propTorque, rc.propInertia, dt, env.ambientC, Math.sqrt(vc * vc + vip * vip));
       busI += m.s.busCurrent;
       // reaction torque on the stator (frame): -(J*omegaDot + tau_prop) about the spin vector
       const J = rc.motor.rotorInertia + rc.propInertia;
@@ -448,7 +464,9 @@ export class QuadSim {
     // pass 1: penetration queries (broadphase: one sphere around the whole airframe). A sphere whose
     // centre ends up inside an obstacle keeps the normal / plane it entered by: the least-penetration
     // axis of a thin bar or post flips at its mid-plane and used to spit the quad out the far side.
-    const any = env.world.sphere(s.pos, this.boundR, hit);
+    const world = env.world, any = world.sphere(s.pos, this.boundR, hit);
+    const near = any && world.near !== undefined && world.sphereNear !== undefined;
+    if (near) world.near!(s.pos, this.boundR); // the colliders below test only what is within reach
     let nTouch = 0;
     for (let i = 0; i < nc; i++) {
       this.hD[i] = 0;
@@ -456,7 +474,7 @@ export class QuadSim {
       const c = cs[i];
       const cw = rotate(this.t2, s.q, c.pos);
       pw.x = s.pos.x + cw.x; pw.y = s.pos.y + cw.y; pw.z = s.pos.z + cw.z;
-      if (!env.world.sphere(pw, c.radius, hit)) { this.cState[i] = 0; continue; }
+      if (!(near ? world.sphereNear!(pw, c.radius, hit) : world.sphere(pw, c.radius, hit))) { this.cState[i] = 0; continue; }
       const r = c.radius, i3 = i * 3, st = this.cState[i];
       const inside = hit.depth >= r;
       let depth = hit.depth, frozen = false;
@@ -549,7 +567,7 @@ export class QuadSim {
         rel.x = c.pos.x - rc.pos.x; rel.y = c.pos.y - rc.pos.y; rel.z = c.pos.z - rc.pos.z;
         const spin = this.fTmp; spin.x = rc.axis.x * om; spin.y = rc.axis.y * om; spin.z = rc.axis.z * om;
         const tv = cross(this.t5, spin, rel);
-        tipSpeed = Math.abs(om) * Math.hypot(rel.x, rel.y, rel.z);
+        tipSpeed = Math.abs(om) * Math.sqrt(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z);
         const tvW = rotate(this.t5, s.q, tv);
         vx += tvW.x; vy += tvW.y; vz += tvW.z;
       }
@@ -589,7 +607,7 @@ export class QuadSim {
       }
       Tq.x += tq.x; Tq.y += tq.y; Tq.z += tq.z;
       // rolling resistance: a small torque against the body rate while pressed on a surface
-      const wm = Math.hypot(s.w.x, s.w.y, s.w.z);
+      const wm = Math.sqrt(s.w.x * s.w.x + s.w.y * s.w.y + s.w.z * s.w.z);
       if (wm > 1e-6 && mat.rolling > 0) {
         const tr = (mat.rolling * c.radius * fn) / Math.max(wm, 1);
         Tq.x -= tr * s.w.x; Tq.y -= tr * s.w.y; Tq.z -= tr * s.w.z;
@@ -658,7 +676,7 @@ export class QuadSim {
     if (!env.world.foliage) return;
     const d = env.world.foliage(this.s.pos);
     if (d <= 0) return;
-    const v = this.s.vel, V = Math.hypot(v.x, v.y, v.z);
+    const v = this.s.vel, V = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     const kf = this.foliageDrag * Math.min(d, 1.5) * V;
     Fw.x -= kf * v.x; Fw.y -= kf * v.y; Fw.z -= kf * v.z;
     const dd = Math.min(d, 1);

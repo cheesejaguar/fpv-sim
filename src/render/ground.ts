@@ -1,8 +1,9 @@
 // Ground: the terrain heightfield cut into tiles (so each face of the FPV cube capture only draws
 // what it sees), a ground shader that hides the 3 m texture repeat (each tile of the detail texture
 // gets its own rotation and offset, blended across a narrow seam, under a large-scale brightness /
-// dryness variation), near-ground clutter (instanced grass tufts and pebbles around the spawn and
-// the gates, where low flying makes the ground's texture read as height), and painted pitch lines.
+// dryness variation, and painted pitch lines in the same pass), near-ground clutter (instanced grass
+// tufts and pebbles around the spawn and the gates, where low flying makes the ground's texture read
+// as height).
 import * as THREE from 'three';
 import { MapDef, Prim, seededRandom } from '../maps/world';
 import { patchMaterial, WorldUniforms } from './sway';
@@ -96,6 +97,10 @@ const GROUND_FS = /* glsl */ `
 uniform sampler2D uMacro;
 uniform float uRot;
 uniform vec3 uDry;
+#ifdef USE_PITCH
+uniform sampler2D uPitch;
+uniform vec4 uPitchRect; // ENU x0, y0 of the painted area, 1 / its width, 1 / its height
+#endif
 float gHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 // one detail-texture repeat with its tile's own rotation / offset (explicit gradients: no seams in the mips)
 vec4 gTile(vec2 uv, vec2 cell, vec2 dx, vec2 dy) {
@@ -118,18 +123,37 @@ const GROUND_MAP = /* glsl */ `
   vec2 gM = texture2D(uMacro, gUv * 0.0492).rg * 0.6 + texture2D(uMacro, gUv * 0.1304 + 0.37).rg * 0.4;
   gC.rgb *= 0.74 + 0.55 * gM.r;
   gC.rgb = mix(gC.rgb, gC.rgb * uDry, clamp((gM.g - 0.47) * 2.6, 0.0, 1.0));
+  #ifdef USE_PITCH
+    // painted pitch (lines + mowing stripes), alpha-blended into the albedo; was a transparent decal
+    // over the terrain, i.e. a second fully lit and shadowed pass over the whole pitch.
+    // uv = ENU metres / 3 (terrainTiles)
+    vec2 pUv = (gUv * 3.0 - uPitchRect.xy) * uPitchRect.zw;
+    vec4 paint = texture2D(uPitch, pUv);
+    paint.a *= step(0.0, pUv.x) * step(pUv.x, 1.0) * step(0.0, pUv.y) * step(pUv.y, 1.0);
+    gC.rgb = mix(gC.rgb, paint.rgb, paint.a);
+  #endif
   diffuseColor *= gC;
 #endif`;
 
-/** Terrain material: anti-repeat detail sampling (rotate = built-in isotropic textures only) × macro variation. */
-export function groundMaterial(map: THREE.Texture, macro: THREE.Texture, rotate: boolean, grass: boolean): THREE.MeshStandardMaterial {
+/** Painted pitch for the ground: texture (pitchTexture) over a w x h metre area centred on the origin. */
+export interface PitchPaint { tex: THREE.Texture; w: number; h: number }
+
+/**
+ * Terrain material: anti-repeat detail sampling (rotate = built-in isotropic textures only) × macro
+ * variation, and the painted pitch where there is one.
+ */
+export function groundMaterial(map: THREE.Texture, macro: THREE.Texture, rotate: boolean, grass: boolean, pitch?: PitchPaint): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ map, roughness: 0.95 });
-  const uniforms = { uMacro: { value: macro }, uRot: { value: rotate ? 1 : 0 }, uDry: { value: grass ? new THREE.Vector3(1.28, 1.12, 0.62) : new THREE.Vector3(0.86, 0.86, 0.92) } };
+  const uniforms = {
+    uMacro: { value: macro }, uRot: { value: rotate ? 1 : 0 }, uDry: { value: grass ? new THREE.Vector3(1.28, 1.12, 0.62) : new THREE.Vector3(0.86, 0.86, 0.92) },
+    uPitch: { value: pitch?.tex ?? null }, uPitchRect: { value: pitch ? new THREE.Vector4(-pitch.w / 2, -pitch.h / 2, 1 / pitch.w, 1 / pitch.h) : new THREE.Vector4() },
+  };
+  if (pitch) m.defines = { USE_PITCH: '' };
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
     sh.fragmentShader = sh.fragmentShader.replace('#include <map_pars_fragment>', '#include <map_pars_fragment>\n' + GROUND_FS).replace('#include <map_fragment>', GROUND_MAP);
   };
-  m.customProgramCacheKey = () => 'ground';
+  m.customProgramCacheKey = () => (pitch ? 'ground+pitch' : 'ground');
   return m;
 }
 
@@ -282,20 +306,4 @@ export function buildClutter(map: MapDef, u: WorldUniforms, tuftTex: THREE.Textu
     for (const im of meshes) im.visible = im.boundingSphere!.distanceToPoint(cam) < CLUTTER_RANGE;
   };
   return { meshes, update, dispose() { for (const d of disp) d.dispose(); } };
-}
-
-// ---------------------------------------------------------------------------------------------
-
-/** Painted pitch (lines + mowing stripes) on the terrain: a decal draped over the heightfield. */
-export function pitchDecal(map: MapDef, tex: THREE.Texture, w: number, h: number): THREE.Mesh {
-  const g = new THREE.PlaneGeometry(w, h, Math.round(w / 2), Math.round(h / 2));
-  g.rotateX(-Math.PI / 2);
-  const p = g.getAttribute('position');
-  for (let i = 0; i < p.count; i++) p.setY(i, map.terrain(p.getX(i), -p.getZ(i)) + 0.004);
-  g.computeVertexNormals();
-  const m = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthWrite: false, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
-  const mesh = new THREE.Mesh(g, m);
-  mesh.receiveShadow = true;
-  mesh.renderOrder = -1; // before other transparent things (nets, glows)
-  return mesh;
 }

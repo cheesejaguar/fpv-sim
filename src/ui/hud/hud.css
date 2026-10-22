@@ -4,7 +4,9 @@
  * Everything is absolutely positioned by hud.ts, which keeps it clear of the Betaflight OSD.
  */
 .ghud {
-  --h-bg: rgba(15, 15, 35, 0.72);
+  /* opaque enough to read over the picture without a backdrop blur: a backdrop-filter costs a
+     render pass per card on every frame the video changes */
+  --h-bg: rgba(15, 15, 35, 0.84);
   --h-bg-strong: rgba(15, 15, 35, 0.88);
   --h-border: rgba(167, 139, 250, 0.28);
   --h-fg: #e2e8f0;
@@ -24,7 +26,7 @@
 }
 .ghud .hw { position: absolute; left: 0; top: 0; transition: opacity 220ms ease, left 160ms ease, top 160ms ease; will-change: left, top; }
 .ghud .hw.off { display: none; }
-.ghud .card { background: var(--h-bg); border: 1px solid var(--h-border); border-radius: 12px; padding: 0.6em 0.8em; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.ghud .card { background: var(--h-bg); border: 1px solid var(--h-border); border-radius: 12px; padding: 0.6em 0.8em; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4); }
 
 /* race / drill panel */
 .ghud .race { min-width: 10.5em; }

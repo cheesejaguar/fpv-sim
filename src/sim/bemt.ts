@@ -238,7 +238,7 @@ export function buildBemtTable(g: PropGeometry, calib?: PropCalibration): BemtTa
 /** Bilinear lookup of (CT, CQ, CH, Cvi, CMs, CMc) at (beta, gamma); writes out[0..5] (unscaled). */
 export function tableLookup(t: BemtTable, beta: number, gamma: number, out: Float64Array): void {
   const bn = Math.max(0, Math.min(1, beta / (Math.PI / 2)));
-  const fi = Math.pow(bn, 1 / BETA_EXP) * (t.nb - 1);
+  const fi = Math.exp(Math.log(bn) / BETA_EXP) * (t.nb - 1); // (bn^(1/BETA_EXP): exp/log is cheaper than pow)
   const fj = Math.max(0, Math.min(t.ng - 1, ((gamma + Math.PI / 2) / Math.PI) * (t.ng - 1)));
   const i0 = Math.min(t.nb - 2, Math.floor(fi)), j0 = Math.min(t.ng - 2, Math.floor(fj));
   const u = fi - i0, v = fj - j0;

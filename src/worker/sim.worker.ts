@@ -12,9 +12,8 @@
 // at a time; any uncaught error posts { type: 'fatal' } (the bridge restarts the worker once).
 import { Betaflight, BF_PORT, armingFlagNames } from '../bf/bfModule';
 import { batteryCli, defaultCli, loopCli, osdGrid, osdLayout } from '../bf/defaults';
-import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec } from '../builder/derive';
-import { packageEntry, urlTableSource } from '../maps/mapFormat';
-import { hasMap, MAPS, preloadMap, registerMap } from '../maps/maps';
+import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec, preloadPropTable } from '../builder/derive';
+import { hasMap, MapEntry, MAPS, preloadMap, registerMap } from '../maps/maps';
 import { gatePassed } from '../maps/gates';
 import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ, withCourse } from '../maps/world';
 import { RcLink } from '../sim/rcLink';
@@ -80,6 +79,10 @@ let realtime = false; // inside loop(): sim time maps onto the wall clock (stick
 const rcLink = new RcLink();
 const pilotTmp = { x: 0, y: 0, z: 0 };
 let linkAcc = 0;
+/** prop-wash puffs: time not yet handed to WakeField.step (s), and its scratch wind vector */
+const WAKE_DT = 0.001 - 1e-9;
+let wakeAcc = 0;
+const wakeWind: V3 = { x: 0, y: 0, z: 0 };
 let rcAcc = 0, battAcc = 0, baroAcc = 0, ringAcc = 0, osdAcc = 0, telAcc = 0, cliAcc = 0, gpsAcc = 0, bblAcc = 0;
 let lastOsdFrame = -1;
 const motorCmd = new Uint16Array(4);
@@ -98,6 +101,9 @@ let simRate = 1;
 let lastPos = { x: 0, y: 0, z: 0 };
 let nextGate = 0;
 let cliOutBuf = '';
+/** EEPROM dirty-check pacing (pumpSideChannels): CLI traffic seen within the last CLI_HOT_S seconds */
+const CLI_HOT_S = 2;
+let cliHot = 0, eepAcc = 0, eepAfterDisarm = false;
 // beeper / beacon seen since the last telemetry message (their patterns are faster than 20 Hz)
 let beeperSeen = false, beaconSeen = false;
 
@@ -116,6 +122,12 @@ let imuHold = 0, imuFresh = true;
 const kv = new IdbKv(undefined, (why) => post({ type: 'log', text: `Settings storage unavailable (${why}): Betaflight changes won't be kept after a reload` }));
 const eeprom = new EepromStore(kv);
 
+// Started the moment the worker runs, before the main thread's init arrives: the firmware download
+// and compile, and the stored configuration, come in while the map and the drone are prepared.
+const fwPrefetch = Betaflight.prefetch(FW_URL);
+const storedConfig = Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY)]);
+storedConfig.catch(() => {}); // (the store never rejects; bootFirmware awaits it)
+
 // Noise-spectrum analyser: raw IMU gyro vs Betaflight's filtered gyro (debug_mode GYRO_FILTERED),
 // sampled every physics step into rings, FFT'd ~10 times a second while the overlay is shown.
 const SPEC_N = 2048, SPEC_MAX_HZ = 1000, SPEC_PERIOD = 0.1;
@@ -133,6 +145,23 @@ function makeEnv(): QuadEnv {
   const w = new Wind({ speed20ft: settings.wind.speed * ws, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 * ws }); // calm air: no gusts
   w.zones = map.wakeZones; w.indoor = map.indoor ?? [];
   return { world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
+}
+
+/**
+ * A map package from disk, as mapFormat.packageEntry builds it, but the package loader (~30 kB) is
+ * imported when the map is first loaded instead of with the worker: most sessions never use it.
+ */
+function localPackageEntry(id: string, info: { name: string; author: string; license: string }, urls: Record<string, string>): MapEntry {
+  return {
+    name: info.name,
+    credit: `Loaded from disk by ${info.author} (${info.license})`,
+    community: { author: info.author, license: info.license, local: true },
+    build: () => { throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`); },
+    prepare: async () => {
+      const mf = await import('../maps/mapFormat');
+      return mf.packageEntry(id, { ...info, local: true }, () => mf.urlTableSource(urls)).prepare!();
+    },
+  };
 }
 
 /** Load a map for the physics; on failure fly 'field'. Tells the main thread what it got. */
@@ -194,7 +223,7 @@ function respawn() {
   const sp = map.spawn;
   const z = spawnGroundZ(map) + 0.06 - Math.min(...build.params.colliders.map((c) => c.pos.z - c.radius));
   quad.reset({ x: sp.pos.x, y: sp.pos.y, z }, sp.yaw);
-  env.wake.reset();
+  env.wake.reset(); wakeAcc = 0;
   lastPos = { ...quad.s.pos };
   nextGate = 0;
 }
@@ -216,7 +245,8 @@ async function loadFirmware(): Promise<Betaflight> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const ac = new AbortController();
     try {
-      return await withTimeout(Betaflight.load(FW_URL, { signal: ac.signal, bust: attempt ? String(Date.now()) : undefined }), FW_TIMEOUT_MS, `no answer within ${FW_TIMEOUT_MS / 1000} s`);
+      // the first attempt uses the download started at worker start; the retry bypasses the cache
+      return await withTimeout(Betaflight.load(FW_URL, { signal: ac.signal, bust: attempt ? String(Date.now()) : undefined, prefetched: attempt ? undefined : fwPrefetch }), FW_TIMEOUT_MS, `no answer within ${FW_TIMEOUT_MS / 1000} s`);
     } catch (e) {
       ac.abort(); last = e;
       if (attempt === 0) post({ type: 'log', text: `Betaflight download failed (${(e as Error).message}); retrying` });
@@ -244,7 +274,7 @@ async function bootFirmware() {
     return;
   }
   try {
-    const [saved, applied, fwSeen, accKey] = await Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY)]);
+    const [saved, applied, fwSeen, accKey] = await storedConfig;
     accCalKey = typeof accKey === 'string' ? accKey : undefined;
     if (saved) bf.eepromSet(saved);
     powerOnFirmware();
@@ -256,7 +286,10 @@ async function bootFirmware() {
       : applied !== DEFAULTS_VERSION ? 'New simulator defaults' : FW_VERSION !== 'dev' && fwSeen !== FW_VERSION ? 'Firmware updated' : null;
     if (why) {
       post({ type: 'log', text: `${why}: applying fpv-sim defaults over the Betaflight CLI` });
-      await cliBatch(defaultCli(build), true);
+      // on the held plant, as every later batch: the quad sits disarmed on the ground either way, and
+      // the ~2.1 s of firmware time (the `save` reboot included) then costs ~0.3 s instead of ~1.5 s
+      // of flying physics at 8 kHz
+      await cliBatch(defaultCli(build));
       await kv.set('bf-defaults-version', DEFAULTS_VERSION);
     }
     // new defaults, another board, or trims from before the level calibration (ACC_CAL_REV)
@@ -304,20 +337,21 @@ async function calibrateAcc(): Promise<boolean> {
 /** The stored trims don't fit the simulated board: never calibrated, another build's IMU errors, or an older calibration. */
 const accCalStale = () => !!bf && (!bf.accCalibrated() || accCalKey !== accBoardKey(quad.imu));
 
-/** Firmware time passes by ms; live: the plant flies (boot), else it holds still (CLI batches). */
-function advanceFirmware(ms: number, live: boolean) {
+/** Firmware time passes by ms while the plant holds still (CLI batches). */
+function advanceFirmware(ms: number) {
   const dt = 1 / settings.physicsHz;
-  for (let i = 0, n = Math.round(ms / 1000 / dt); i < n; i++) { if (live) physicsStep(dt); else heldStep(dt); }
+  for (let i = 0, n = Math.round(ms / 1000 / dt); i < n; i++) heldStep(dt);
 }
 
 /**
- * Run CLI lines on the firmware, persist the EEPROM if they saved. After boot the plant is held at
- * rest meanwhile: opening Settings -> Betaflight (~44 `get`s) or importing a diff must not let a
- * quad that is paused in the air fall and crash.
+ * Run CLI lines on the firmware, persist the EEPROM if they saved. The plant is held at rest
+ * meanwhile: opening Settings -> Betaflight (~44 `get`s) or importing a diff must not let a quad
+ * that is paused in the air fall and crash (and the first boot's defaults run on a quad that sits on
+ * the ground anyway).
  */
-async function cliBatch(lines: string[], live = false): Promise<string> {
+async function cliBatch(lines: string[]): Promise<string> {
   if (!bf) return '';
-  const out = runCliBatch(bf, lines, (ms) => advanceFirmware(ms, live));
+  const out = runCliBatch(bf, lines, advanceFirmware);
   eeprom.check(bf);
   await eeprom.flush();
   resyncClock();
@@ -400,8 +434,9 @@ function stepFirmware(dt: number) {
   }
   bf.step(Math.round(dt * 1e6));
   fcT += dt;
-  if (bf.beeper()) beeperSeen = true;
-  if (bf.beacon()) beaconSeen = true;
+  // (once seen, not asked again until the next telemetry message reports and clears it)
+  if (!beeperSeen && bf.beeper()) beeperSeen = true;
+  if (!beaconSeen && bf.beacon()) beaconSeen = true;
 }
 
 /** Track whether the IMU sample taken this step is a new one (call after every imu.sample). */
@@ -455,7 +490,13 @@ function physicsStep(dt: number) {
   if (specOn) sampleSpectrum(dt);
   quad.step(dt, env);
   noteImuSample(dt);
-  env.wake.step(dt, env.wind.meanAt(quad.s.pos.z, { x: 0, y: 0, z: 0 }), map.terrain(quad.s.pos.x, quad.s.pos.y));
+  // the prop-wash puffs drift with the mean wind: advanced once per ms with the time gathered, not
+  // every 125 µs step (their motion is far slower than that; WakeField.step takes any dt)
+  wakeAcc += dt;
+  if (wakeAcc >= WAKE_DT) {
+    env.wake.step(wakeAcc, env.wind.meanAt(quad.s.pos.z, wakeWind), map.terrain(quad.s.pos.x, quad.s.pos.y));
+    wakeAcc = 0;
+  }
   simT += dt;
 
   // state ring at 1 kHz
@@ -472,7 +513,7 @@ function physicsStep(dt: number) {
     impactLastT = simT;
     if (v > impactPeak) {
       impactPeak = v;
-      if (v > CRASH_MIN_MPS) { impactMsg = `Impact ${v.toFixed(1)} m/s`; damageMsg = ''; crashMsgUntil = simT + 2; }
+      if (v > CRASH_MIN_MPS) { impactMsg = `Impact ${v.toFixed(1)} m/s`; damageMsg = ''; crashMsgUntil = simT + 2; crashMsg = impactMsg; }
     }
   }
   // damage from this crash (rolled by the quad once per impact event): name it on the banner
@@ -490,9 +531,9 @@ function physicsStep(dt: number) {
       damageMsg = bits.join(' · ');
       if (simT >= crashMsgUntil) impactMsg = 'Crash';
       crashMsgUntil = simT + 3;
+      crashMsg = `${impactMsg} · ${damageMsg}`;
     }
   }
-  crashMsg = impactMsg ? (damageMsg ? `${impactMsg} · ${damageMsg}` : impactMsg) : null;
 }
 
 /** A browned-out FC draws no OSD (its OSD chip / displayport is dead too). */
@@ -606,11 +647,21 @@ function pumpSideChannels(dt: number) {
   }
   cliAcc += dt;
   if (cliAcc >= 0.01) {
+    const dtc = cliAcc;
     cliAcc = 0;
     const r = bf.serialRead(0);
-    if (r.length) cliOutBuf += dec.decode(r, { stream: true });
+    if (r.length) { cliOutBuf += dec.decode(r, { stream: true }); cliHot = CLI_HOT_S; }
     if (cliOutBuf) { post({ type: 'cliOut', text: cliOutBuf }); cliOutBuf = ''; }
-    if (eeprom.check(bf)) accRecheck = true; // CLI / OSD-menu / MSP `save`: store the new image
+    // CLI / OSD-menu `save`: store the new image. The check hashes the whole 32 KB image (~43 µs):
+    // every 10 ms while the CLI console is in use, else 10 times a second, never while armed (no
+    // save is possible then; checked once right after the disarm instead)
+    cliHot = Math.max(0, cliHot - dtc);
+    eepAcc += dtc;
+    if (armed) eepAfterDisarm = true;
+    else if (cliHot > 0 || eepAfterDisarm || eepAcc >= 0.1) {
+      eepAcc = 0; eepAfterDisarm = false;
+      if (eeprom.check(bf)) accRecheck = true;
+    }
   }
 }
 
@@ -652,14 +703,23 @@ function tick(): number {
     accRecheck = false;
     if (accCalStale()) fwOps = fwOps.then(() => guarded(async () => { if (bf && fwState === 2 && !armed && accCalStale()) await calibrateAcc(); }));
   }
+  // behind, or a millisecond of steps is due already (this tick took that long): go on at once
+  if (behind || simAtWallStart + ((performance.now() - wallStart) / 1000) * settings.timeScale - simT >= 0.001) return 0;
   return 1;
 }
 
+/**
+ * Next loop iteration: delay 0 yields through a MessageChannel (a task, so messages still get in,
+ * without the timer's 1 ms minimum, which becomes 4 ms once timeouts nest five deep: a worker that
+ * is behind would idle 4 ms per iteration and the overload governor would see a slower machine).
+ */
+const loopChannel = new MessageChannel();
+loopChannel.port1.onmessage = () => loop();
 function loop() {
   if (dead) return;
   let delay: number;
   try { delay = tick(); } catch (e) { fatal(e); return; }
-  setTimeout(loop, delay);
+  if (delay <= 0) loopChannel.port2.postMessage(0); else setTimeout(loop, delay);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -694,7 +754,8 @@ async function init(m: Extract<ToWorker, { type: 'init' }>) {
   settings = m.settings;
   spec = (m.spec as DroneSpec) ?? DEFAULT_SPEC;
   simT = m.t0 ?? 0;
-  await loadMap(settings.mapId);
+  // the prop's precomputed BEMT table comes in alongside the map (else buildQuad spends ~1.2 s on it)
+  await Promise.all([loadMap(settings.mapId), preloadPropTable(spec.prop)]);
   buildQuad();
   resyncClock();
   await bootFirmware();
@@ -708,6 +769,7 @@ async function init(m: Extract<ToWorker, { type: 'init' }>) {
 async function firmwareOp(m: ToWorker) {
   switch (m.type) {
     case 'spec': {
+      await preloadPropTable((m.spec as DroneSpec).prop);
       const old = spec;
       spec = m.spec as DroneSpec;
       buildQuad();
@@ -729,7 +791,7 @@ async function firmwareOp(m: ToWorker) {
       break;
     }
     case 'cli': {
-      if (bf && fwState === 2) bf.serialWrite(0, enc.encode(m.text)); // replies come back through pumpSideChannels
+      if (bf && fwState === 2) { bf.serialWrite(0, enc.encode(m.text)); cliHot = CLI_HOT_S; } // replies come back through pumpSideChannels
       break;
     }
     case 'cliBatch': {
@@ -770,8 +832,9 @@ async function handle(m: ToWorker) {
       break;
     }
     case 'registerMap': {
-      // a map package loaded from disk (blob: URLs from the main thread)
-      registerMap(m.id, packageEntry(m.id, { ...m.info, local: true }, () => urlTableSource(m.urls)));
+      // a map package loaded from disk (blob: URLs from the main thread); registered at once, so a
+      // settings message right behind it finds the map
+      registerMap(m.id, localPackageEntry(m.id, m.info, m.urls));
       if (settings.mapId === m.id && quad) { if (await loadMap(m.id)) respawn(); }
       break;
     }

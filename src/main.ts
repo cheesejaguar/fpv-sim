@@ -15,8 +15,7 @@ import { courseOf, LapBoard } from './app/leaderboard';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
-import { simHardwareCli } from './bf/defaults';
-import { buildDrone, DroneBuild, DroneSpec } from './builder/derive';
+import { buildDrone, DroneBuild, DroneSpec, hasPropTable, preloadPropTable } from './builder/derive';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
@@ -26,17 +25,14 @@ import { MultiplayerClient } from './net/multiplayer';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
 import { buildDroneMesh } from './render/droneMesh';
-import { FpvCamera } from './render/fpvCamera';
+import { autoCubeSize, FpvCamera } from './render/fpvCamera';
 import { OsdRenderer } from './render/osdRenderer';
 import { RemoteQuads } from './render/remoteQuads';
 import { buildScene } from './render/scene';
 import { VideoLink } from './render/videoLink';
 import { PbShots } from './share/capture';
-import { bfPanel } from './ui/bfPanel';
 import { Blackbox } from './ui/blackbox';
-import { builderPanel } from './ui/builderPanel';
 import { el } from './ui/dom';
-import { inputPanel } from './ui/inputPanel';
 import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
 import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { settingsPanel, ViewSettings } from './ui/settingsPanel';
@@ -47,8 +43,19 @@ import { createShared, newestTime, R, REC, sampleRing, SimSettings } from './wor
 const debug = import.meta.env.DEV || new URLSearchParams(location.search).has('debug') || (() => { try { return localStorage.getItem('fpv-debug') === '1'; } catch { return false; } })();
 
 // ---------------------------------------------------------------------------------------------
-// saved settings are versioned and validated (src/app/persist.ts)
-const store = (k: string, v: unknown) => save(k, v);
+// saved settings are versioned and validated (src/app/persist.ts). A slider drag changes them on
+// every input event: each key is written once it has been still for 250 ms (last value wins), and at
+// once when the page is hidden or closed.
+const unsaved = new Map<string, unknown>();
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+function flushStore() { clearTimeout(saveTimer); saveTimer = undefined; for (const [k, v] of unsaved) save(k, v); unsaved.clear(); }
+const store = (k: string, v: unknown) => { unsaved.set(k, v); clearTimeout(saveTimer); saveTimer = setTimeout(flushStore, 250); };
+addEventListener('pagehide', flushStore);
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushStore(); });
+/** The physics rate the overload governor lowered to this session (not saved), and the pilot's own. */
+let governedHz: number | null = null, chosenHz = 0;
+/** Save simulation settings, with the pilot's own physics rate in place of a governed one. */
+const storeSim = (s: SimSettings) => store(KEYS.sim, governedHz !== null && s.physicsHz === governedHz ? { ...s, physicsHz: chosenHz } : s);
 
 const appEl = document.getElementById('app')!;
 
@@ -56,6 +63,7 @@ const appEl = document.getElementById('app')!;
 // (a saved build with parts this version doesn't have falls back to the whoop too)
 const spec0: DroneSpec = load(KEYS.spec, (r) => validSpec(r, EASY_SPEC));
 const sim0: SimSettings = load(KEYS.sim, validSim);
+chosenHz = sim0.physicsHz;
 const view0: ViewSettings = load(KEYS.view, validView);
 
 // ---------------------------------------------------------------------------------------------
@@ -63,6 +71,7 @@ const view0: ViewSettings = load(KEYS.view, validView);
 const sh = createShared();
 const bridge = new WorkerBridge();
 onBeforeReset(() => bridge.worker.terminate()); // it holds the EEPROM database open
+onBeforeReset(() => { clearTimeout(saveTimer); unsaved.clear(); }); // a pending save must not bring settings back
 bridge.send({ type: 'init', sab: sh.sab, spec: spec0, settings: sim0 });
 
 // Rendering
@@ -86,7 +95,11 @@ renderer.domElement.addEventListener('webglcontextlost', () => {
 });
 
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
-await preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; });
+// the map's data and the prop's precomputed BEMT table (else buildDrone spends ~1.2 s building it)
+await Promise.all([
+  preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; }),
+  preloadPropTable(spec0.prop),
+]);
 const map0 = withCourse(MAPS[sim0.mapId](), sim0.courseId);
 const build0 = buildDrone(spec0);
 const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })), b.info.cgMm);
@@ -97,7 +110,7 @@ const ctx: AppCtx = {
   build: build0, map: map0, world: new PrimitiveWorld(map0), scene: buildScene(map0, { timeOfDay: view0.timeOfDay }), drone: makeDroneModel(build0),
   mountQ: cameraMountQuat(spec0.cameraUptiltDeg),
   sh, send: bridge.send, renderer,
-  fpv: new FpvCamera(renderer, view0.cubeSize), osd: new OsdRenderer(), link: new VideoLink(), audio: new MotorAudio(),
+  fpv: new FpvCamera(renderer, view0.cubeSize || autoCubeSize(build0.info.components.video, view0.renderScale)), osd: new OsdRenderer(), link: new VideoLink(), audio: new MotorAudio(),
   input: new InputManager(), mp: new MultiplayerClient(), remotes: new RemoteQuads(), blackbox: new Blackbox(),
   tel: null, fwStatus: 'Loading Betaflight firmware…', menuOpen: false,
   rec: new Float64Array(REC), pilot: { x: 0, y: 0, z: 1.6 },
@@ -131,8 +144,10 @@ bridge.onMessage = (m) => {
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
     case 'mapLoaded': onWorkerMap(m.id, m.requested, m.ok, m.error); break;
     case 'overload': {
-      // the worker already flies at the lower rate: settings follow, so later messages don't undo it
-      ctx.sim = { ...ctx.sim, physicsHz: m.physicsHz }; store(KEYS.sim, ctx.sim);
+      // the worker already flies at the lower rate: settings follow, so later messages don't undo it,
+      // but it is not saved: a slow moment (a busy tab, a first visit's downloads) must not lower the
+      // rate for every later session; the next page load starts from the chosen rate again
+      ctx.sim = { ...ctx.sim, physicsHz: m.physicsHz }; governedHz = m.physicsHz;
       ctx.log(`This computer can't run the simulation in real time (${Math.round(m.simRate * 100)} %): physics rate lowered to ${m.physicsHz} Hz`);
       break;
     }
@@ -143,16 +158,24 @@ bridge.onMessage = (m) => {
 // Settings changes
 function sendReset(fullBattery = false) { ctx.input.disarm(); onRespawn(ctx); ctx.send({ type: 'reset', repair: true, fullBattery }); }
 
+let specSeq = 0;
 function applySpec(s: DroneSpec) {
   ctx.replay?.close(); // a replay on screen puts the live quad back first
   ctx.spec = s; store(KEYS.spec, s);
+  ctx.mountQ = cameraMountQuat(s.cameraUptiltDeg);
+  ctx.input.disarm();
+  ctx.send({ type: 'spec', spec: s });
+  // the rendered quad: a prop whose precomputed BEMT table isn't here yet waits for it (a short
+  // download) instead of building it on the main thread (~1.2 s); the newest spec wins
+  const n = ++specSeq;
+  if (hasPropTable(s.prop)) showBuild(s);
+  else void preloadPropTable(s.prop).then(() => { if (n === specSeq) showBuild(s); });
+}
+function showBuild(s: DroneSpec) {
   ctx.build = buildDrone(s);
   ctx.scene.scene.remove(ctx.drone.root); ctx.drone.dispose();
   ctx.drone = makeDroneModel(ctx.build); ctx.scene.scene.add(ctx.drone.root);
   ctx.fpv.setVideo(ctx.build.info.components.video, ctx.view.renderScale);
-  ctx.mountQ = cameraMountQuat(s.cameraUptiltDeg);
-  ctx.input.disarm();
-  ctx.send({ type: 'spec', spec: s });
 }
 
 let applyingRoomMap = false;
@@ -171,7 +194,9 @@ function showMap(id: string) {
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
   const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '');
-  ctx.sim = s; store(KEYS.sim, s);
+  // the pilot picked another physics rate: that one is theirs (and the governor's no longer applies)
+  if (s.physicsHz !== ctx.sim.physicsHz) { chosenHz = s.physicsHz; governedHz = null; }
+  ctx.sim = s; storeSim(s);
   // loading is async (Quake maps fetch their sources): remember now whether the room asked for it
   const fromRoom = applyingRoomMap;
   if (mapChanged) void preloadMap(s.mapId).then(() => {
@@ -182,7 +207,7 @@ function applySim(s: SimSettings, reloadMap = false) {
     if (ctx.sim.mapId !== s.mapId) return;
     // physics and render must never disagree: stay on the map on screen and send the worker back to it
     ctx.log(`Map ${s.mapId} failed to load (${(e as Error)?.message ?? e}); staying on ${ctx.map.name}`);
-    ctx.sim = { ...ctx.sim, mapId: hasMap(shown) ? shown : 'field' }; store(KEYS.sim, ctx.sim);
+    ctx.sim = { ...ctx.sim, mapId: hasMap(shown) ? shown : 'field' }; storeSim(ctx.sim);
     if (ctx.sim.mapId !== ctx.map.id) showMap(ctx.sim.mapId);
     ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: ctx.menuOpen } });
   });
@@ -192,7 +217,7 @@ function applySim(s: SimSettings, reloadMap = false) {
 function onWorkerMap(id: string, requested: string, ok: boolean, error?: string) {
   if (id === ctx.sim.mapId) return; // physics flies what we show (or are about to)
   if (!ok && requested === ctx.sim.mapId) {
-    ctx.sim = { ...ctx.sim, mapId: id }; store(KEYS.sim, ctx.sim);
+    ctx.sim = { ...ctx.sim, mapId: id }; storeSim(ctx.sim);
     void preloadMap(id).then(() => {
       if (ctx.sim.mapId !== id) return;
       showMap(id);
@@ -233,7 +258,10 @@ function simAction(a: SimAction) {
   if (a === 'battery') sendReset(true);
   if (a === 'spectrum') ctx.send({ type: 'spectrum', on: spectrum.toggle() });
 }
-WorkerBridge.pollSticks(sh, () => input.poll(), () => input.active); // ~1 kHz, timestamped samples into the shared stick ring
+// ~1 kHz, timestamped samples into the shared stick ring (~125 Hz while a menu has the controls and the
+// simulation is paused; back to full rate the moment the menu hands them back)
+const stickPoller = WorkerBridge.pollSticks(sh, () => input.poll(), () => input.active, { slow: () => input.suspended });
+input.onResume = stickPoller.wake;
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
   if (ctx.menuOpen) return; // the menu handles its own keys
@@ -309,6 +337,37 @@ function startFlight(mode: GameMode) {
   resetLaps(ctx);
   sendReset(true);
 }
+/**
+ * A settings tab whose code loads the first time it is opened (the Controller, Betaflight and Drone
+ * builder panels are ~45 kB that the menu doesn't need to open): a "Loading…" placeholder that the
+ * panel replaces once its chunk is in; from then on the panel renders at once, as before. A tab left
+ * before its chunk arrived is not rendered into the detached placeholder (its listeners would never
+ * be unmounted). The chunks are fetched in the background a few seconds after the menu is up.
+ */
+function lazyTab<M>(load: () => Promise<M>, render: (m: M) => HTMLElement): { render: () => HTMLElement; warm: () => void } {
+  let mod: M | undefined, pending: Promise<M> | undefined;
+  const get = () => (pending ??= load().then((m) => (mod = m), (e) => { pending = undefined; throw e; }));
+  return {
+    render: () => {
+      if (mod) return render(mod);
+      const box = el('div', { class: 'panel', 'aria-busy': 'true' }, el('p', { class: 'note' }, 'Loading…'));
+      get().then((m) => { if (box.isConnected) box.replaceWith(render(m)); },
+        (e) => { if (box.isConnected) box.replaceChildren(el('p', {}, `This panel failed to load: ${(e as Error)?.message ?? e}. Check the connection and open it again.`)); });
+      return box;
+    },
+    warm: () => { get().catch(() => { /* retried when opened */ }); },
+  };
+}
+const controllerLazy = lazyTab(() => import('./ui/inputPanel'), (m) => m.inputPanel(input));
+const bfLazy = lazyTab(() => Promise.all([import('./ui/bfPanel'), import('./bf/defaults')]), ([p, d]) => p.bfPanel(bridge, {
+  hardwareCli: (keepOsdLayout, propsOut) => d.simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
+  propsOut: () => ctx.spec.propDirection === 'props-out',
+  setPropsOut: (out) => applySpec({ ...ctx.spec, propDirection: out ? 'props-out' : 'props-in' }),
+  factoryReset: () => ctx.send({ type: 'factoryReset' }),
+}));
+const builderLazy = lazyTab(() => import('./ui/builderPanel'), (m) => m.builderPanel(() => ctx.spec, (s) => { applySpec(s); gameMenu.resume(); }));
+const controllerTab = controllerLazy.render, bfTab = bfLazy.render, builderTab = builderLazy.render;
+
 const gameMenu = new GameMenu({
   input, mp: ctx.mp,
   spec: () => ctx.spec, applySpec,
@@ -320,14 +379,9 @@ const gameMenu = new GameMenu({
       video: () => ctx.build.info.components.video,
       effectiveLatencyMs: () => (ctx.fpv as { effectiveLatencyMs?: number }).effectiveLatencyMs,
     }) },
-    { id: 'controller', label: 'Controller', icon: 'gamepad', render: () => inputPanel(input) },
-    { id: 'bf', label: 'Betaflight', icon: 'cpu', render: () => bfPanel(bridge, {
-      hardwareCli: (keepOsdLayout, propsOut) => simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
-      propsOut: () => ctx.spec.propDirection === 'props-out',
-      setPropsOut: (out) => applySpec({ ...ctx.spec, propDirection: out ? 'props-out' : 'props-in' }),
-      factoryReset: () => ctx.send({ type: 'factoryReset' }),
-    }) },
-    { id: 'builder', label: 'Drone builder', icon: 'wrench', render: () => builderPanel(() => ctx.spec, (s) => { applySpec(s); gameMenu.resume(); }) },
+    { id: 'controller', label: 'Controller', icon: 'gamepad', render: controllerTab },
+    { id: 'bf', label: 'Betaflight', icon: 'cpu', render: bfTab },
+    { id: 'builder', label: 'Drone builder', icon: 'wrench', render: builderTab },
     { id: 'mp', label: 'Multiplayer', icon: 'users', render: () => multiplayerPanel(ctx.mp, joinRoom) },
     { id: 'blackbox', label: 'Blackbox', icon: 'database', render: blackboxPanel },
   ],
@@ -347,7 +401,7 @@ const gameMenu = new GameMenu({
 appEl.append(gameMenu.root);
 
 // ---------------------------------------------------------------------------------------------
-startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
+startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, dimmed: () => gameMenu.dimmed, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
 initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 
 // invite links: ?room=CODE joins that room on load
@@ -357,6 +411,19 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+// The title backdrop's shaders, compiled in the background while the menu is up, so its first frame
+// (once the simulation runs) doesn't stall on them. Only where the driver links in parallel
+// (KHR_parallel_shader_compile): without it compileAsync blocks just like the first frame would.
+if (renderer.extensions.has('KHR_parallel_shader_compile')) {
+  const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 3000);
+  renderer.compileAsync(ctx.scene.scene, cam).catch(() => { /* the first frame compiles them */ });
+}
+// in the background once the menu is up: "Fly now"'s quad (the easiest one) gets its prop table,
+// and the settings panels that load on first use get their code
+setTimeout(() => {
+  if (EASY_SPEC.prop !== spec0.prop) void preloadPropTable(EASY_SPEC.prop);
+  controllerLazy.warm(); bfLazy.warm(); builderLazy.warm();
+}, 3000);
 // replay permalinks: ?replay=<entry id>[&t=<s>] plays that leaderboard lap over the title screen
 {
   const rl = parseReplayLink(location.search);

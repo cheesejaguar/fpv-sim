@@ -33,6 +33,13 @@ type HIDDeviceLike = {
   addEventListener(t: 'inputreport', cb: (e: { reportId: number; data: DataView }) => void): void;
 };
 
+/** Standard-layout button i: its bit in the report (0 = analog trigger: 6 left, 7 right). */
+const BUTTON_MASKS = [
+  B.A, B.B, B.X, B.Y, B.L, B.R, 0, 0,
+  B.VIEW, B.MENU, B.L3, B.R3, B.UP, B.DOWN, B.LEFT, B.RIGHT,
+  B.STEAM, B.QAM, B.L4, B.R4, B.L5, B.R5, B.LPAD_CLICK, B.RPAD_CLICK,
+];
+
 const hid = (): any => (navigator as any).hid;
 export const webHidSupported = () => !!hid();
 
@@ -40,6 +47,7 @@ export class SteamHidController {
   private devices: HIDDeviceLike[] = [];
   private keepalive: number | undefined;
   pad: HidPad | null = null;
+  private ids = new WeakMap<object, string>();
   status = '';
   lastReportAt = 0;
 
@@ -102,23 +110,26 @@ export class SteamHidController {
     const s16 = (o: number) => v.getInt16(o, true) / 32768;
     const buttons = v.getUint32(1, true);
     const trigL = Math.max(0, v.getInt16(5, true)) / 32767, trigR = Math.max(0, v.getInt16(7, true)) / 32767;
-    // Sticks: raw +Y is up; the standard Gamepad layout has +Y down.
-    const lx = s16(9), ly = -s16(11), rx = s16(13), ry = -s16(15);
-    const lpx = s16(padOff), lpy = -s16(padOff + 2), rpx = s16(padOff + 6), rpy = -s16(padOff + 8);
-    const btn = (m: number): HidPadButton => { const p = (buttons & m) !== 0; return { pressed: p, touched: p, value: p ? 1 : 0 }; };
-    const ana = (x: number): HidPadButton => ({ pressed: x > 0.5, touched: x > 0.02, value: x });
     this.lastReportAt = performance.now();
-    this.pad = {
-      id: `Steam Controller (2026) — WebHID ${d.productName || ''} (Vendor: 28de Product: ${d.productId.toString(16)})`,
-      index: 100, mapping: 'standard', connected: true, timestamp: this.lastReportAt,
-      // standard: 0 LX, 1 LY, 2 RX, 3 RY; extras: 4/5 right trackpad, 6/7 left trackpad
-      axes: [lx, ly, rx, ry, (buttons & B.RPAD_TOUCH) ? rpx : 0, (buttons & B.RPAD_TOUCH) ? rpy : 0, (buttons & B.LPAD_TOUCH) ? lpx : 0, (buttons & B.LPAD_TOUCH) ? lpy : 0],
-      buttons: [
-        btn(B.A), btn(B.B), btn(B.X), btn(B.Y), btn(B.L), btn(B.R), ana(trigL), ana(trigR),
-        btn(B.VIEW), btn(B.MENU), btn(B.L3), btn(B.R3), btn(B.UP), btn(B.DOWN), btn(B.LEFT), btn(B.RIGHT),
-        btn(B.STEAM), btn(B.QAM), btn(B.L4), btn(B.R4), btn(B.L5), btn(B.R5), btn(B.LPAD_CLICK), btn(B.RPAD_CLICK),
-      ],
-    };
+    // one pad object, updated in place: reports arrive at up to ~1 kHz and every reader copies what it
+    // keeps (edge detection, the setup wizard, menu navigation)
+    const pad = (this.pad ??= { id: '', index: 100, mapping: 'standard', connected: true, timestamp: 0, axes: new Array<number>(8).fill(0), buttons: Array.from({ length: 24 }, () => ({ pressed: false, touched: false, value: 0 })) });
+    let id = this.ids.get(d);
+    if (id === undefined) { id = `Steam Controller (2026) — WebHID ${d.productName || ''} (Vendor: 28de Product: ${d.productId.toString(16)})`; this.ids.set(d, id); }
+    pad.id = id; pad.timestamp = this.lastReportAt;
+    // Sticks: raw +Y is up; the standard Gamepad layout has +Y down.
+    // standard: 0 LX, 1 LY, 2 RX, 3 RY; extras: 4/5 right trackpad, 6/7 left trackpad
+    const ax = pad.axes, rpad = (buttons & B.RPAD_TOUCH) !== 0, lpad = (buttons & B.LPAD_TOUCH) !== 0;
+    ax[0] = s16(9); ax[1] = -s16(11); ax[2] = s16(13); ax[3] = -s16(15);
+    ax[4] = rpad ? s16(padOff + 6) : 0; ax[5] = rpad ? -s16(padOff + 8) : 0;
+    ax[6] = lpad ? s16(padOff) : 0; ax[7] = lpad ? -s16(padOff + 2) : 0;
+    const bt = pad.buttons;
+    for (let i = 0; i < 24; i++) {
+      const m = BUTTON_MASKS[i];
+      if (m === 0) { const x = i === 6 ? trigL : trigR; bt[i].pressed = x > 0.5; bt[i].touched = x > 0.02; bt[i].value = x; continue; }
+      const on = (buttons & m) !== 0;
+      bt[i].pressed = on; bt[i].touched = on; bt[i].value = on ? 1 : 0;
+    }
     this.status = '';
   }
 

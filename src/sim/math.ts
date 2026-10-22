@@ -48,7 +48,7 @@ export function qmul(o: Quat, a: Quat, b: Quat): Quat {
   o.w = w; o.x = x; o.y = y; o.z = z; return o;
 }
 export function qnormalize(q: Quat): Quat {
-  const l = Math.hypot(q.w, q.x, q.y, q.z) || 1;
+  const l = Math.sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z) || 1;
   q.w /= l; q.x /= l; q.y /= l; q.z /= l; return q;
 }
 /** Integrate body-frame angular velocity w over dt (exact exponential map). */
@@ -57,8 +57,13 @@ export function qintegrate(q: Quat, w: V3, dt: number): Quat {
   const th = Math.sqrt(wx * wx + wy * wy + wz * wz);
   let s: number, c: number;
   if (th < 1e-9) { s = 0.5; c = 1; } else { s = Math.sin(th / 2) / th; c = Math.cos(th / 2); }
-  const d: Quat = { w: c, x: wx * s, y: wy * s, z: wz * s };
-  qmul(q, q, d);
+  // q = q * (c, w·s): qmul without a temporary quaternion
+  const bx = wx * s, by = wy * s, bz = wz * s;
+  const rw = q.w * c - q.x * bx - q.y * by - q.z * bz;
+  const rx = q.w * bx + q.x * c + q.y * bz - q.z * by;
+  const ry = q.w * by - q.x * bz + q.y * c + q.z * bx;
+  const rz = q.w * bz + q.x * by - q.y * bx + q.z * c;
+  q.w = rw; q.x = rx; q.y = ry; q.z = rz;
   return qnormalize(q);
 }
 export function qFromAxisAngle(ax: number, ay: number, az: number, ang: number): Quat {
@@ -77,7 +82,9 @@ export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 /** Seeded PRNG (mulberry32) + Gaussian, so runs are reproducible. */
 export class Rng {
   private s: number;
-  private spare: number | null = null;
+  // the second normal of the last pair (a plain number field: storing a double into a `number | null`
+  // field boxes it on every store)
+  private spare = 0; private hasSpare = false;
   constructor(seed = 0x9e3779b9) { this.s = seed >>> 0; }
   next(): number {
     let t = (this.s = (this.s + 0x6d2b79f5) >>> 0);
@@ -86,11 +93,11 @@ export class Rng {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
   gauss(): number {
-    if (this.spare !== null) { const s = this.spare; this.spare = null; return s; }
+    if (this.hasSpare) { this.hasSpare = false; return this.spare; }
     let u = 0, v = 0, r = 0;
     do { u = this.next() * 2 - 1; v = this.next() * 2 - 1; r = u * u + v * v; } while (r >= 1 || r === 0);
     const m = Math.sqrt((-2 * Math.log(r)) / r);
-    this.spare = v * m; return u * m;
+    this.spare = v * m; this.hasSpare = true; return u * m;
   }
 }
 

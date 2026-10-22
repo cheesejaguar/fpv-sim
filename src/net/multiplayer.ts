@@ -30,6 +30,9 @@ export interface MpDeps { url?: () => string | null; socket?: (url: string) => W
 
 const SEND_HZ = 30;
 const PAUSED_HZ = 2;              // a paused pilot's pose doesn't change: just keep it from going stale
+// a disarmed quad holding still within the message's own resolution (mm, 1e-4, 1 rpm) is sent at the
+// paused rate as well (shown flying, not parked): a lobby full of pilots on their pads costs 2 Hz each
+const STILL_M = 0.001, STILL_Q = 1e-4, STILL_RPM = 1;
 const INTERP_DELAY_MS = 100;
 export const JOIN_TIMEOUT_MS = 8000;
 export const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 16000];
@@ -71,6 +74,12 @@ export class MultiplayerClient {
   private live = false;        // the current socket got its welcome
   private welcomed = false;    // this join was welcomed at least once: only then is a drop retried
   private lastSend = 0;
+  // the last pose sent (as sent: rounded), and when a still pose was last held back since then
+  private lastP: number[] = [NaN, NaN, NaN];
+  private lastQ: number[] = [NaN, NaN, NaN, NaN];
+  private lastR: number[] = [NaN, NaN, NaN, NaN];
+  private lastA = true;
+  private heldAt = -1;
   private pingAt: number | null = null; // when the outstanding ping went out (one at a time: the pong has no id)
   private pingTimer: ReturnType<typeof setInterval> | undefined;
   private attemptTimer: ReturnType<typeof setTimeout> | undefined;
@@ -210,6 +219,7 @@ export class MultiplayerClient {
         this.peers.clear();
         this.live = true; this.welcomed = true; this.attempt = 0;
         this.myId = m.id; this.relayV = m.v; this.status = 'connected'; this.error = ''; this.failure = null;
+        this.lastA = true; this.heldAt = -1; // (re)joined: the next pose goes out at once, still or not
         for (const p of m.players) this.addPeer(p);
         this.map = m.map;
         const me = this.joined?.me;
@@ -273,16 +283,40 @@ export class MultiplayerClient {
   private sendRaw(s: string) { if (this.ws && this.ws.readyState === OPEN) try { this.ws.send(s); } catch { /* closing */ } }
   private send(o: object) { this.sendRaw(JSON.stringify(o)); }
 
+  /** A pose would be sent now (the 30 Hz rate allows it): the caller can skip sampling one otherwise. */
+  poseDue(now: number): boolean { return this.connected && now - this.lastSend >= 1000 / SEND_HZ; }
+
   /** Send our pose (ENU position m, body->world quaternion w,x,y,z, rpm per motor or one mean, armed,
-   *  paused = menu open); throttled to 30 Hz, 2 Hz while paused. */
+   *  paused = menu open); throttled to 30 Hz, 2 Hz while paused or disarmed and holding still. */
   sendPose(now: number, p: number[], q: number[], rpm: number | number[], armed: boolean, paused = false) {
-    if (!this.connected || now - this.lastSend < 1000 / (paused ? PAUSED_HZ : SEND_HZ)) return;
+    if (!this.connected) return;
+    const since = now - this.lastSend;
+    if (since < 1000 / SEND_HZ) return;
+    const still = !paused && !armed && !this.lastA && this.samePose(p, q, rpm);
+    if ((paused || still) && since < 1000 / PAUSED_HZ) { if (still) this.heldAt = now; return; }
     const rs = (Array.isArray(rpm) ? rpm : [rpm, rpm, rpm, rpm]).slice(0, 4).map((v) => Math.round(Math.abs(v)));
     if (rs.length !== 4 || ![...p, ...q, ...rs].every(Number.isFinite)) return; // the relay would drop it anyway
+    // moving again after a quiet stretch: the still pose first, stamped when it was last seen, so the
+    // other pilots' interpolation doesn't spread the first move over the whole stretch
+    if (!still && !paused && this.heldAt > this.lastSend) this.poseMsg(this.heldAt, this.lastP, this.lastQ, this.lastR, this.lastA, false);
+    this.heldAt = -1;
     this.lastSend = now;
+    this.poseMsg(now, p, q, rs, armed, paused);
+  }
+
+  /** Same pose as the last one sent, to the resolution it is sent with. */
+  private samePose(p: number[], q: number[], rpm: number | number[]): boolean {
+    for (let i = 0; i < 3; i++) if (!(Math.abs(p[i] - this.lastP[i]) < STILL_M)) return false;
+    for (let i = 0; i < 4; i++) if (!(Math.abs(q[i] - this.lastQ[i]) < STILL_Q)) return false;
+    for (let i = 0; i < 4; i++) if (!(Math.abs(Math.abs(Array.isArray(rpm) ? rpm[i] : rpm) - this.lastR[i]) < STILL_RPM)) return false;
+    return true;
+  }
+
+  private poseMsg(at: number, p: number[], q: number[], rs: number[], armed: boolean, paused: boolean) {
     const base = { t: 's', p: p.map((v) => Math.round(v * 1000) / 1000), q: q.map((v) => Math.round(v * 10000) / 10000), a: armed ? 1 : 0 };
+    this.lastP = base.p; this.lastQ = base.q; this.lastR = rs; this.lastA = armed;
     // v1 relays relay one mean rpm and drop unknown fields
-    this.send(this.relayV >= 2 ? { ...base, r: rs, c: Math.round(now), h: paused ? 1 : 0 } : { ...base, r: Math.round(rs.reduce((s, x) => s + x, 0) / 4) });
+    this.send(this.relayV >= 2 ? { ...base, r: rs, c: Math.round(at), h: paused ? 1 : 0 } : { ...base, r: Math.round(rs.reduce((s, x) => s + x, 0) / 4) });
   }
 
   sendMap(map: string) {
@@ -293,8 +327,10 @@ export class MultiplayerClient {
   }
   sendLap(lap: number, last: number, best: number) { if (this.connected) this.send({ t: 'lap', lap, last, best: Number.isFinite(best) ? best : 0 }); }
 
-  /** Interpolated pose of a peer at (now - delay); null if nothing received recently. */
-  poseOf(peer: Peer, now: number): PeerPose | null {
+  /** Interpolated pose of a peer at (now - delay); null if nothing received recently. Between two
+   *  samples the result is written into `out` when one is given (a renderer calling this for every
+   *  peer every frame passes its own), else into a new object. A held sample is returned as is. */
+  poseOf(peer: Peer, now: number, out?: PeerPose): PeerPose | null {
     const ps = peer.poses;
     if (!ps.length || now - ps[ps.length - 1].at > 3000) return null;
     const t = now - INTERP_DELAY_MS;
@@ -304,12 +340,19 @@ export class MultiplayerClient {
       if (t >= a.at) {
         if (t >= b.at) return b; // no newer sample yet: hold
         const u = (t - a.at) / Math.max(1, b.at - a.at);
+        const o = out ?? { at: 0, p: [0, 0, 0], q: [0, 0, 0, 0], r: [0, 0, 0, 0], a: 0, h: 0 };
         // shortest-path nlerp for the quaternion
         const d = a.q[0] * b.q[0] + a.q[1] * b.q[1] + a.q[2] * b.q[2] + a.q[3] * b.q[3];
         const s = d < 0 ? -1 : 1;
-        const q = a.q.map((v, k) => v + (s * b.q[k] - v) * u);
-        const n = Math.hypot(...q) || 1;
-        return { at: t, p: a.p.map((v, k) => v + (b.p[k] - v) * u), q: q.map((v) => v / n), r: a.r.map((v, k) => v + (b.r[k] - v) * u), a: b.a, h: b.h };
+        const q0 = a.q[0] + (s * b.q[0] - a.q[0]) * u, q1 = a.q[1] + (s * b.q[1] - a.q[1]) * u;
+        const q2 = a.q[2] + (s * b.q[2] - a.q[2]) * u, q3 = a.q[3] + (s * b.q[3] - a.q[3]) * u;
+        const n = Math.hypot(q0, q1, q2, q3) || 1;
+        o.q[0] = q0 / n; o.q[1] = q1 / n; o.q[2] = q2 / n; o.q[3] = q3 / n;
+        for (let k = 0; k < 3; k++) o.p[k] = a.p[k] + (b.p[k] - a.p[k]) * u;
+        o.r.length = a.r.length;
+        for (let k = 0; k < a.r.length; k++) o.r[k] = a.r[k] + (b.r[k] - a.r[k]) * u;
+        o.at = t; o.a = b.a; o.h = b.h;
+        return o;
       }
     }
     return ps[ps.length - 1];

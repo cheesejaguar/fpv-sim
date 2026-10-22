@@ -9,7 +9,7 @@ import { checkbox, el, onUnmount, section, select, slider } from './dom';
 export interface ViewSettings {
   osdFont: string;
   renderScale: number;
-  cubeSize: number;
+  cubeSize: number; // px per cube face; 0 = automatic from the video system (autoCubeSize)
   displayCompMs: number;   // subtract the monitor/browser pipeline from the emulated latency
   displayCompAuto: boolean; // estimate it from the measured frame interval instead
   latencyOverrideMs: number; // 0 = from video system
@@ -30,7 +30,7 @@ export const TIMES_OF_DAY: { value: TimeOfDay; label: string }[] = [
 ];
 
 // the training telemetry overlay is opt-in (H / D-pad down): new pilots see the OSD, not a wall of numbers
-export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 768, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map', goggleOverlay: true, beeperVolume: 0.6 };
+export const DEFAULT_VIEW: ViewSettings = { osdFont: 'betaflight', renderScale: 1, cubeSize: 0, displayCompMs: 18, displayCompAuto: true, latencyOverrideMs: 0, audio: true, volume: 0.4, telemetry: false, osd: true, view: 'fpv', linkEffects: true, highlightGate: true, timeOfDay: 'map', goggleOverlay: true, beeperVolume: 0.6 };
 
 /** What the latency readout needs from the running app (no readout without it). */
 export interface LatencySource {
@@ -115,7 +115,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
           checkbox('Video link degradation (range, walls, multipath)', v.linkEffects, (x) => { v.linkEffects = x; pushV(); }),
           el('p', { class: 'note photo' }, '⚠ Photosensitivity: analog snow, static and 1S brownout dropouts flicker rapidly. If flashing images affect you, turn video link degradation off.'),
           slider({ label: 'Render scale', min: 0.5, max: 2, step: 0.25, value: v.renderScale, onInput: (x) => { v.renderScale = x; pushV(); } }).row,
-          select('Cube map resolution', [{ value: '512', label: '512' }, { value: '768', label: '768' }, { value: '1024', label: '1024' }, { value: '1536', label: '1536' }], String(v.cubeSize), (x) => { v.cubeSize = +x; pushV(); }),
+          select('Cube map resolution', [{ value: '0', label: 'Auto (from the camera)' }, { value: '512', label: '512' }, { value: '768', label: '768' }, { value: '1024', label: '1024' }, { value: '1536', label: '1536' }], String(v.cubeSize), (x) => { v.cubeSize = +x; pushV(); }),
           lat.el,
           slider({ label: 'Latency override (0 = system)', min: 0, max: 150, step: 1, value: v.latencyOverrideMs, unit: 'ms', onInput: (x) => { v.latencyOverrideMs = x; pushV(); } }).row,
           checkbox('Auto-measure display latency', v.displayCompAuto, (x) => { v.displayCompAuto = x; pushV(); }),

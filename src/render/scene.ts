@@ -8,10 +8,10 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { gateIdOf, isFlagBanner } from '../maps/gates';
 import { BoxPrim, MapDef, Prim } from '../maps/world';
 import { buildCrowd } from './crowd';
-import { buildClutter, groundMaterial, pitchDecal, terrainTiles } from './ground';
+import { buildClutter, groundMaterial, terrainTiles } from './ground';
 import { addQuakeLevel } from './quakeScene';
 import { buildLights, buildSky, courseCentre, Environment, environment, skyDir, TimeOfDay } from './sky';
-import { flowDir, makeWorldUniforms, windStrength } from './sway';
+import { flowDir, makeWorldUniforms, NO_LOD, windStrength } from './sway';
 import { brickTexture, concreteTexture, dirtTexture, foliageAtlas, gateTexture, grassTexture, grassTuftTexture, macroNoiseTexture, metalTexture, netTexture, padTexture, pitchTexture, textTexture, woodTexture } from './textures';
 import { buildTrees } from './trees';
 import { buildWindsock, clothMaterials, flagCloth, windsockSpot } from './windVisuals';
@@ -187,16 +187,13 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   if (map.ground !== false) {
     const builtin = !map.groundTexture, grass = map.groundMat === 'grass';
     const groundTex = track(builtin ? (grass ? grassTexture() : dirtTexture()) : imageTexture(map.groundTexture!));
-    const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass));
+    // the stadium's painted pitch is part of the ground's own shading (no second lit pass over it)
+    const pitch = map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch ? { tex: track(pitchTexture(120, 73)), w: 120, h: 73 } : undefined;
+    const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass, pitch));
     for (const g of terrainTiles(map)) {
       const tile = new THREE.Mesh(track(g), mat);
       tile.receiveShadow = true; tile.name = 'terrain';
       scene.add(tile);
-    }
-    if (map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch) {
-      const decal = pitchDecal(map, track(pitchTexture(120, 73)), 120, 73);
-      track(decal.geometry); track(decal.material as THREE.Material); decal.name = 'pitch';
-      scene.add(decal);
     }
   }
   if (map.quake) for (const d of addQuakeLevel(scene, map)) track(d);
@@ -215,12 +212,9 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   const partsFor = (id: number) => { let g = gateParts.get(id); if (!g) { g = { frame: [], led: [], glow: [], cloth: [], top: 0 }; gateParts.set(id, g); } return g; };
   const gateById = new Map(map.gates.map((g) => [g.id, g]));
   const m4 = new THREE.Matrix4(), s3 = new THREE.Vector3(1, 1, 1);
-  const place = (geo: THREE.BufferGeometry, pr: SolidPrim) => {
-    geo.applyMatrix4(primMatrix(pr, m4));
-    if (!geo.index) return geo;
-    const flat = geo.toNonIndexed(); geo.dispose();
-    return flat;
-  };
+  // (kept indexed: every primitive geometry is, so they merge as such, and shared corners are shaded
+  // once instead of once per triangle: 1.5x fewer vertices for boxes, ~2-5x for cylinders / spheres)
+  const place = (geo: THREE.BufferGeometry, pr: SolidPrim) => geo.applyMatrix4(primMatrix(pr, m4));
   // gate frame + self-lit LED strip along each tube (on the faces the pilot sees) + a slightly
   // inflated copy that becomes the additive glow halo when the gate is highlighted
   const addGatePrim = (pr: SolidPrim, gid: number) => {
@@ -391,8 +385,12 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   if (clutter) { track(clutter); for (const m of clutter.meshes) { m.name = 'clutter'; scene.add(m); } }
   const sockAt = windsockSpot(map), sock = sockAt ? buildWindsock(sockAt) : null;
   if (sock) { track(sock); sock.object.name = 'windsock'; scene.add(sock.object); }
-  // LOD centre = whichever camera renders (the cube faces, the chase camera); runs before the shadow pass
-  scene.onBeforeRender = (_r, _s, camera) => { u.uLod.value.setFromMatrixPosition(camera.matrixWorld); trees?.update(u.uLod.value); clutter?.update(u.uLod.value); };
+  // LOD centre = whichever camera renders (the cube faces, the chase camera); runs before the shadow
+  // pass. The FPV shadow refresh (a camera looking at nothing) keeps the lens's LOD (sway.ts NO_LOD).
+  scene.onBeforeRender = (_r, _s, camera) => {
+    if (camera.userData[NO_LOD]) return;
+    u.uLod.value.setFromMatrixPosition(camera.matrixWorld); trees?.update(u.uLod.value); clutter?.update(u.uLod.value);
+  };
 
   // ---- glTF meshes (map packages); they load asynchronously, like the Quake textures ----
   let disposed = false;

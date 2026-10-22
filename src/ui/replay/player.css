@@ -20,15 +20,16 @@
 .rp-title .lb-time { font-size: 22px; }
 .rp-meta { color: #cbd5e1; font-size: 14px; }
 .rp-toggles { display: flex; gap: 6px; flex-wrap: wrap; }
-.rp-chip { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--gm-border-soft); background: var(--gm-bg-glass); color: var(--gm-fg-muted);
-  font: 600 13px var(--gm-font); letter-spacing: 0.04em; cursor: pointer; backdrop-filter: blur(8px); transition: background 150ms, color 150ms, border-color 150ms; }
+/* (no backdrop blurs over the replay: each would be a render pass per frame; more opaque instead) */
+.rp-chip { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--gm-border-soft); background: rgba(15, 15, 35, 0.88); color: var(--gm-fg-muted);
+  font: 600 13px var(--gm-font); letter-spacing: 0.04em; cursor: pointer; transition: background 150ms, color 150ms, border-color 150ms; }
 .rp-chip:hover { color: var(--gm-fg); border-color: var(--gm-secondary); }
 .rp-chip[aria-pressed='true'] { background: rgba(124, 58, 237, 0.55); border-color: var(--gm-secondary); color: #fff; }
 .rp-btn { min-height: 44px; padding: 0 14px; }
 .rp-btn svg { width: 20px; height: 20px; }
 
 /* ---- overlays ---- */
-.rp-card { padding: 12px 14px; min-width: 150px; background: rgba(15, 15, 35, 0.62); }
+.rp-card { padding: 12px 14px; min-width: 150px; background: rgba(15, 15, 35, 0.8); backdrop-filter: none; -webkit-backdrop-filter: none; }
 .rp-card h3 { font-size: 12px; margin: 0 0 6px; }
 .rp-cards { position: absolute; z-index: 1; left: clamp(12px, 3vw, 36px); bottom: 150px; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; max-width: calc(100% - 300px); pointer-events: none; }
 .rp-cards > * { pointer-events: auto; }
@@ -50,11 +51,12 @@
 .rp-timeline { position: relative; height: 28px; cursor: pointer; touch-action: none; margin: 0 0 8px; }
 .rp-timeline:focus-visible { outline: 3px solid var(--gm-ring); outline-offset: 2px; border-radius: 8px; }
 .rp-rail { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.3); }
-.rp-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--gm-primary), var(--gm-accent)); }
+.rp-fill { position: absolute; inset: 0; border-radius: 999px; background: linear-gradient(90deg, var(--gm-primary), var(--gm-accent)); transform-origin: 0 50%; transform: scaleX(0); }
+.rp-headtrack { position: absolute; inset: 0; pointer-events: none; }
 .rp-marks { position: absolute; inset: 0; }
 .rp-mark { position: absolute; top: -5px; width: 2px; height: 16px; margin-left: -1px; border-radius: 1px; background: #c4b5fd; opacity: 0.9; }
 .rp-mark.end { width: 4px; margin-left: -2px; background: #5dff3a; }
-.rp-head { position: absolute; top: 5px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.45), 0 2px 8px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.rp-head { position: absolute; left: 0; top: 5px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.45), 0 2px 8px rgba(0, 0, 0, 0.5); pointer-events: none; }
 .rp-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rp-play { min-width: 60px; }
 .rp-btn[aria-pressed='true'] { background: rgba(124, 58, 237, 0.55); border-color: var(--gm-secondary); }
@@ -71,8 +73,8 @@
 .rp.idle .rp-stage { cursor: none; }
 .rp-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .rp-toast { position: absolute; z-index: 3; left: 50%; top: 120px; transform: translateX(-50%); max-width: min(92vw, 620px); padding: 10px 16px; border-radius: 12px;
-  background: var(--gm-bg-glass); border: 1px solid var(--gm-border); color: var(--gm-fg); font: 600 14px/1.35 var(--gm-font); text-align: center; overflow-wrap: anywhere;
-  backdrop-filter: blur(8px); opacity: 0; transition: opacity 200ms var(--gm-ease); pointer-events: none; }
+  background: rgba(15, 15, 35, 0.9); border: 1px solid var(--gm-border); color: var(--gm-fg); font: 600 14px/1.35 var(--gm-font); text-align: center; overflow-wrap: anywhere;
+  opacity: 0; transition: opacity 200ms var(--gm-ease); pointer-events: none; }
 .rp-toast.show { opacity: 1; }
 .rp-toast.sel.show { pointer-events: auto; user-select: all; -webkit-user-select: all; cursor: text; }
 

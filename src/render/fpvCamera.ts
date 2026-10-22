@@ -15,6 +15,7 @@
 //     the goggles' own overlay.
 import * as THREE from 'three';
 import type { VideoSpec } from '../data/catalog';
+import { NO_LOD } from './sway';
 
 // ---------------------------------------------------------------------------------------------
 // Camera maths shared by the shaders and the frame loop (plain numbers: unit-tested)
@@ -54,6 +55,112 @@ export function projectFisheye(d: { x: number; y: number; z: number }, halfFovDi
   const r = (kbDistort(theta, k) / halfFovDiag) * (Math.hypot(aspect, 1) / 2);
   return { x: r * Math.cos(ph), y: r * Math.sin(ph), theta };
 }
+/** Inverse of kbDistort (Newton, as the fisheye shader does): incidence angle θ for a distorted θ_d. */
+export function kbTheta(td: number, k: readonly number[]): number {
+  let t = td;
+  for (let i = 0; i < 8; i++) {
+    const t2 = t * t;
+    const f = t * (1 + k[0] * t2 + k[1] * t2 * t2 + k[2] * t2 ** 3 + k[3] * t2 ** 4) - td;
+    const df = 1 + 3 * k[0] * t2 + 5 * k[1] * t2 * t2 + 7 * k[2] * t2 ** 3 + 9 * k[3] * t2 ** 4;
+    t -= f / df;
+  }
+  return t;
+}
+
+/** How far (rad) the fisheye's rolling-shutter / motion-blur samples may turn away from the frame
+ *  (rotate() in fisheyeFS caps the rotation at this). */
+export const ROT_CAP = 0.5;
+/** Extra angle the cube keeps rendered around that: jitter within a pixel and the filter footprint
+ *  (mips, anisotropy) of a sample at the cap. */
+export const FACE_GUARD = 0.06;
+/** A sample's reach per radian of rotation: the rotation itself plus its filter footprint (the
+ *  anisotropic footprint spans its share of the motion arc, <= 2 rotation / 4 samples, and its mip
+ *  texels another quarter of that). */
+export const MOTION_REACH = 1.4;
+/** Margins (rad) of the cube layouts a capture picks from: the smallest that covers its motion
+ *  (MOTION_REACH x rotation + FACE_GUARD). The last one is for anything faster: the rotation cap,
+ *  as safe as the old fixed layout (which drew 4.1 faces' worth of pixels for every camera; this one
+ *  4.1-4.25 for 4:3 analog, 3.75-4.0 for 16:9). Gentle flight (< ~0.04 rad over the exposure window)
+ *  needs 2.8-3.0 (analog) / 2.25-2.6 (digital). */
+const FACE_MARGINS = [0.08, 0.11, 0.15, 0.2, 0.27, 0.36, 0.46, ROT_CAP];
+/** Part of one cube face (its camera's NDC, -1..1) that has to be rendered. */
+export interface FaceRect { x0: number; x1: number; y0: number; y1: number }
+/** The six face cameras of a cube camera at the origin, in three's WebGL convention (CubeCamera
+ *  children order: +x, -x, +y, -y, +z, -z; the lens looks down -z). Their fov is -90° (three's
+ *  cube-map convention): NDC (u, v) shows the camera-space direction (-u, -v, -1). */
+function faceCameras(): THREE.PerspectiveCamera[] {
+  const cc = new THREE.CubeCamera(1, 2, { texture: {} } as unknown as THREE.WebGLCubeRenderTarget);
+  cc.coordinateSystem = THREE.WebGLCoordinateSystem; cc.updateCoordinateSystem(); cc.updateMatrixWorld(true);
+  return cc.children as THREE.PerspectiveCamera[];
+}
+
+/**
+ * The part of each cube face the fisheye can sample for a camera (rated diagonal FOV, Kannala–Brandt
+ * k, frame aspect): every direction within `margin` of the frame (rotation cap + guard). Faces are
+ * grid-sampled (grid² cells); a sample counts as needed within margin + half a cell diagonal + half
+ * the border sampling step of the frame, and the box of needed samples grows by a cell, so every
+ * needed direction is inside its face's box. null: nothing of the face is needed (the back face).
+ * Index = cube camera child.
+ */
+export function cubeFaceRects(fovDeg: number, k: readonly number[], aspect: number, margin = ROT_CAP + FACE_GUARD, grid = 64): (FaceRect | null)[] {
+  const half = THREE.MathUtils.degToRad(fovDeg) / 2, hd = kbDistort(half, k), rc = Math.hypot(aspect, 1) / 2;
+  // the frame border as unit directions (lens frame)
+  const NB = 96, bx: number[] = [], by: number[] = [], bz: number[] = [];
+  const dir = (x: number, y: number) => {
+    const th = kbTheta((Math.hypot(x, y) / rc) * hd, k), ph = Math.atan2(y, x);
+    bx.push(Math.sin(th) * Math.cos(ph)); by.push(Math.sin(th) * Math.sin(ph)); bz.push(-Math.cos(th));
+  };
+  // walked round the frame: top left -> right, right side down, bottom right -> left, left side up
+  for (let i = 0; i < NB; i++) dir(-aspect / 2 + (aspect * i) / NB, 0.5);
+  for (let i = 0; i < NB; i++) dir(aspect / 2, 0.5 - i / NB);
+  for (let i = 0; i < NB; i++) dir(aspect / 2 - (aspect * i) / NB, -0.5);
+  for (let i = 0; i < NB; i++) dir(-aspect / 2, -0.5 + i / NB);
+  // largest angle between consecutive border samples: every border point is within step / 2 of one
+  let step = 0;
+  for (let i = 0, n = bx.length; i < n; i++) {
+    const j = (i + 1) % n;
+    step = Math.max(step, Math.acos(Math.min(1, bx[i] * bx[j] + by[i] * by[j] + bz[i] * bz[j])));
+  }
+  const cosR = Math.cos(margin + Math.SQRT2 / grid + step / 2);
+  const needed = (x: number, y: number, z: number) => {
+    const th = Math.acos(Math.max(-1, Math.min(1, -z)));
+    if (th <= half) {
+      const r = (kbDistort(th, k) / hd) * rc, ph = Math.atan2(y, x);
+      if (Math.abs(r * Math.cos(ph)) <= aspect / 2 && Math.abs(r * Math.sin(ph)) <= 0.5) return true;
+    }
+    for (let j = 0; j < bx.length; j++) if (x * bx[j] + y * by[j] + z * bz[j] >= cosR) return true;
+    return false;
+  };
+  const v = new THREE.Vector3(), cell = 2 / grid;
+  return faceCameras().map((cam) => {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let j = 0; j <= grid; j++) for (let i = 0; i <= grid; i++) {
+      const u = -1 + i * cell, w = -1 + j * cell;
+      v.set(-u, -w, -1).transformDirection(cam.matrixWorld);
+      if (!needed(v.x, v.y, v.z)) continue;
+      x0 = Math.min(x0, u); x1 = Math.max(x1, u); y0 = Math.min(y0, w); y1 = Math.max(y1, w);
+    }
+    if (x0 > x1) return null;
+    return { x0: Math.max(-1, x0 - cell), x1: Math.min(1, x1 + cell), y0: Math.max(-1, y0 - cell), y1: Math.min(1, y1 + cell) };
+  });
+}
+
+/** Rendered share of the cube (face-equivalents) for a set of face rects. */
+export const faceArea = (rects: readonly (FaceRect | null)[]) => rects.reduce((a, r) => a + (r ? ((r.x1 - r.x0) * (r.y1 - r.y0)) / 4 : 0), 0);
+
+/**
+ * Cube map size for "auto" (Settings → cube map resolution = 0): about two cube texels per frame
+ * pixel along the axis, i.e. a face-centre density (size / 2 per radian) at least the frame's
+ * (frame height / vertical angle, ~296 px/rad for NTSC at 160°). Analog only drops below today's
+ * 768 (NTSC 640, a 165° whoop 576, PAL stays 768); digital keeps 768.
+ */
+export function autoCubeSize(v: Pick<VideoSpec, 'kind' | 'resolution' | 'fovDeg' | 'fisheyeK'>, renderScale = 1): number {
+  if (v.kind !== 'analog') return 768;
+  const h = Math.round((v.resolution[1] >= 576 ? 576 : 480) * renderScale);
+  const pxPerRad = h / ((2 * kbDistort(THREE.MathUtils.degToRad(v.fovDeg) / 2, v.fisheyeK)) / Math.hypot(4 / 3, 1));
+  return Math.min(768, Math.max(512, Math.ceil((2 * pxPerRad) / 64) * 64));
+}
+
 /** Rotation vector (axis · angle, rad) of a unit quaternion, shortest way round. */
 export function quatToRotVec(q: { x: number; y: number; z: number; w: number }, out: ArrayLike<number> & { [i: number]: number }, o = 0) {
   const sg = q.w < 0 ? -1 : 1, x = q.x * sg, y = q.y * sg, z = q.z * sg, w = q.w * sg;
@@ -65,8 +172,8 @@ export function quatToRotVec(q: { x: number; y: number; z: number; w: number }, 
  *  a whoop and a 7" behave alike). A healthy prop barely moves a soft-mounted camera; a chipped one
  *  rocks it a fraction of a degree and a broken one about a degree, which a short exposure's rolling
  *  shutter turns into jello and a long one into a shaky blur. amp in rad, freq in Hz. */
-export function mountVibration(rpm: readonly number[], damage: readonly { thrust: number; broken: boolean }[] | undefined, hoverRpm: number) {
-  const amp = [0, 0, 0, 0], freq = [0, 0, 0, 0];
+export function mountVibration(rpm: readonly number[], damage: readonly { thrust: number; broken: boolean }[] | undefined, hoverRpm: number, out = { amp: [0, 0, 0, 0], freq: [0, 0, 0, 0] }) {
+  const { amp, freq } = out;
   for (let k = 0; k < 4; k++) {
     const w = Math.abs(rpm[k] ?? 0), d = damage?.[k];
     const dmg = d ? (d.broken ? 1 : Math.max(0, Math.min(1, 1 - d.thrust))) : 0;
@@ -74,7 +181,7 @@ export function mountVibration(rpm: readonly number[], damage: readonly { thrust
     amp[k] = Math.min(0.025, s * (0.0002 + 0.02 * dmg));
     freq[k] = w / 60;
   }
-  return { amp, freq };
+  return out;
 }
 /** Blade solidity: share of the prop disc the blades cover (B · blade area / πR²) from the chord
  *  distribution (chord / R at evenly spaced stations from hub to tip). */
@@ -115,6 +222,7 @@ uniform vec4 kb;
 uniform vec3 rotTab[${ROT_N}];  // camera rotation (rotation vectors, camera frame) through the frame
 uniform float tab0, tabDt;     // time of rotTab[0] relative to the frame's middle row, and spacing (s)
 uniform vec4 vibAmp, vibFreq, vibPhase;
+uniform float rotCap;          // largest rotation a sample may take (the cube is rendered for it)
 uniform float vibOn;
 uniform vec3 sunCam, sunColor; // sun direction in camera space; its colour
 uniform vec2 sunImg;           // sun position in centred frame coordinates
@@ -157,7 +265,7 @@ vec3 rotate(vec3 d, vec3 r) {
   // Rodrigues; capped so a sample never leaves the part of the cube that was rendered
   float a = length(r);
   if (a < 1e-7) return d;
-  vec3 k = r / a; a = min(a, 0.5);
+  vec3 k = r / a; a = min(a, rotCap);
   float c = cos(a), s = sin(a);
   return d * c + cross(k, d) * s + k * dot(k, d) * (1.0 - c);
 }
@@ -312,13 +420,20 @@ void main() {
   gl_FragColor = vec4(clamp(mix(c.rgb, p, k), 0.0, 6e4), c.a);
 }`;
 
+// OSD texel at frame uv (osdRect: the character grid's rectangle in the frame)
+const OSD_AT = /* glsl */ `
+vec4 osdAt(vec2 uv) {
+  vec2 o = (uv - osdRect.xy) / (osdRect.zw - osdRect.xy);
+  if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) return vec4(0.0);
+  return textureLod(osd, vec2(o.x, o.y), 0.0) * osdOn;
+}`;
+
 const commonPost = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
-uniform sampler2D frame, prevFrame, glow, prevGlow, osd, gog, expTex;
-uniform float time, cnr, osdOn, gogOn, glowK, wdr, frameH, frameW, oddField, interlaced, freeze, block, lost, hdz, gammaOut;
+uniform sampler2D frame, prevFrame, glow, prevGlow, osd, expTex;
+uniform float time, cnr, osdOn, glowK, wdr, frameH, frameW, oddField, interlaced, freeze, block, lost, hdz, gammaOut;
 uniform vec4 osdRect;   // x0,y0,x1,y1 in frame uv
-uniform vec2 screenFit; // scale of frame quad on screen (letterbox)
 // Texture reads below use explicit LOD 0: they happen inside per-line / per-block choices (interlaced
 // fields, macroblocks), where implicit derivatives are undefined. Apple GPUs (Metal, every Mac
 // browser) then pick a far-too-blurry mip on alternate lines, which showed as heavy banding.
@@ -338,24 +453,15 @@ vec3 tone(vec3 c, float e) {
 }
 // camera transfer curve (Rec.709-like gamma): the frame buffers are linear light
 vec3 oetf(vec3 c) { return pow(max(c, 0.0), vec3(gammaOut)); }
-vec4 osdAt(vec2 uv) {
-  vec2 o = (uv - osdRect.xy) / (osdRect.zw - osdRect.xy);
-  if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) return vec4(0.0);
-  return textureLod(osd, vec2(o.x, o.y), 0.0) * osdOn;
-}
-// the goggles' own overlay (signal, recording ...) is drawn after the link, over the whole frame
-vec3 goggle(vec3 c, vec2 uv) {
-  vec4 g = textureLod(gog, uv, 0.0) * gogOn;
-  return mix(c, g.rgb, g.a);
-}
+${OSD_AT}
 `;
 
+// at the video's resolution (one fragment per video pixel); outFS scales it to the screen
 const analogFS = commonPost + /* glsl */ `
 vec3 rgb2yiq(vec3 c) { return vec3(dot(c, vec3(0.299, 0.587, 0.114)), dot(c, vec3(0.596, -0.274, -0.322)), dot(c, vec3(0.211, -0.523, 0.312))); }
 vec3 yiq2rgb(vec3 y) { return vec3(y.x + 0.956*y.y + 0.621*y.z, y.x - 0.272*y.y - 0.647*y.z, y.x - 1.106*y.y + 1.703*y.z); }
 void main() {
-  vec2 uv = (vUv - 0.5) / screenFit + 0.5;
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec2 uv = vUv;
   float bad = clamp((22.0 - cnr) / 16.0, 0.0, 1.0);      // 0 clean .. 1 terrible
   float line = floor(uv.y * frameH);
   // sync problems: per-line horizontal tearing and vertical roll when the carrier drops
@@ -402,17 +508,15 @@ void main() {
   // total loss: snow
   float snow = smoothstep(4.0, -2.0, cnr);
   rgb = mix(rgb, vec3(hash(uv * 731.0 + time * 61.0)), snow);
-  // faint scanline structure
-  rgb *= 0.94 + 0.06 * cos(uv.y * frameH * 3.14159);
-  gl_FragColor = vec4(goggle(clamp(rgb, 0.0, 1.0), uv), 1.0);
+  // (unclipped: the screen pass adds the scanlines, then clips)
+  gl_FragColor = vec4(rgb, 1.0);
 }`;
 
 const digitalFS = commonPost + /* glsl */ `
 void main() {
-  vec2 uv = (vUv - 0.5) / screenFit + 0.5;
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(vec3(0.0), 1.0); return; }
+  vec2 uv = vUv;
   // no signal: goggles show black (the HD OSD travels over the same link, so it is gone too)
-  if (lost > 0.5) { gl_FragColor = vec4(goggle(vec3(0.0), uv), 1.0); return; }
+  if (lost > 0.5) { gl_FragColor = vec4(vec3(0.0), 1.0); return; }
   float e = max(textureLod(expTex, vec2(0.5), 0.0).r, 0.06); // (0 before the first metering)
   vec2 suv = uv;
   vec3 c;
@@ -439,10 +543,35 @@ void main() {
   }
   c = tone(c, e);
   c = oetf(c);
-  // HD OSD is drawn by the VTX/goggles after decoding: crisp
-  vec4 o = osdAt(uv);
-  c = mix(c, o.rgb, o.a);
-  gl_FragColor = vec4(goggle(clamp(c, 0.0, 1.0), uv), 1.0);
+  // (the HD OSD is drawn by the VTX/goggles after decoding, crisp, at screen resolution: outFS)
+  gl_FragColor = vec4(c, 1.0);
+}`;
+
+// Screen pass: the received picture scaled to the screen (letterboxed), analog scanline structure,
+// an HD OSD (digital: drawn by the goggles, so at the display's resolution) and the goggles' own
+// overlay (its canvas covers the top gogBand of the frame).
+const outFS = /* glsl */ `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D img, osd, gog;
+uniform float osdOn, gogOn, gogBand, scan, hdOsd, lost, frameH;
+uniform vec4 osdRect;
+uniform vec2 screenFit; // scale of frame quad on screen (letterbox)
+${OSD_AT}
+void main() {
+  vec2 uv = (vUv - 0.5) / screenFit + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec3 c = textureLod(img, uv, 0.0).rgb;
+  // analog: faint scanline structure
+  if (scan > 0.5) c *= 0.94 + 0.06 * cos(uv.y * frameH * 3.14159);
+  if (hdOsd > 0.5 && lost < 0.5) { vec4 o = osdAt(uv); c = mix(c, o.rgb, o.a); }
+  c = clamp(c, 0.0, 1.0);
+  // the goggles' own overlay (signal, recording ...) is drawn after the link, over the frame's top band
+  if (gogOn > 0.5 && uv.y >= 1.0 - gogBand) {
+    vec4 g = textureLod(gog, vec2(uv.x, 1.0 - (1.0 - uv.y) / gogBand), 0.0);
+    c = mix(c, g.rgb, g.a);
+  }
+  gl_FragColor = vec4(c, 1.0);
 }`;
 
 // Sun disc luminance in the cube (Sky.js disc scaled by the map's sky scale) is ~10-100× the
@@ -476,6 +605,30 @@ export class FpvCamera {
   private blurMat: THREE.ShaderMaterial;
   private tnrMat: THREE.ShaderMaterial;
   private postMat!: THREE.ShaderMaterial;
+  /** link / OSD composite at the video's own resolution, then scaled to the screen by outMat */
+  private linkRT!: THREE.WebGLRenderTarget;
+  private outMat: THREE.ShaderMaterial;
+  /** cube face layouts for the current video system (cubeFaceRects) for a ladder of margins, the
+   *  one this capture's motion needs, and what the face cameras use now (that, or grown towards the
+   *  sun for the glare probe) */
+  private ladder: { margin: number; rects: (FaceRect | null)[] }[] = [];
+  private baseRects: (FaceRect | null)[] = [];
+  private rects: (FaceRect | null)[] = [];
+  /** world -> face-camera rotation of each cube face (lens frame) */
+  private faceInv: THREE.Matrix4[] = [];
+  // scratch (no allocations per capture)
+  private tmpQ = new THREE.Quaternion();
+  private tmpQ2 = new THREE.Quaternion();
+  private tmpV = new THREE.Vector3();
+  private tmpV2 = new THREE.Vector3();
+  private tmpV3 = new THREE.Vector3();
+  private tmpV4 = new THREE.Vector3();
+  private tmpColor = new THREE.Color();
+  private tmpSize = new THREE.Vector2();
+  private tmpMat = new THREE.Matrix4();
+  private frustum = new THREE.Frustum();
+  private hidden: THREE.Object3D[] = [];
+  private nearMeshes: THREE.Mesh[] = [];
   // shadow-map refresh: an empty render (camera looking at nothing) with the whole scene visible
   private voidCam = new THREE.PerspectiveCamera(1, 1, 1, 2);
   private voidRT = new THREE.WebGLRenderTarget(1, 1);
@@ -506,7 +659,6 @@ export class FpvCamera {
     // the quad's own props / ducts pass within a centimetre of the lens: a second pass with a
     // 3 mm near plane draws them, so the world pass keeps its depth precision
     this.nearCam = new THREE.CubeCamera(0.003, 2, this.cubeRT);
-    this.layoutFaces();
     this.frameRT = this.makeFrameRT(640, 480);
     this.prevRT = this.makeFrameRT(640, 480);
     this.makeGlowRTs(640, 480);
@@ -522,7 +674,7 @@ export class FpvCamera {
         halfFovDiag: U(1.4), aspect: U(4 / 3), kb: U(new THREE.Vector4()), readout: U(0.016), shutterMax: U(SHUTTER_MAX),
         nSamples: U(4), footprint: U(0.6), seed: U(0), noiseK: U(NOISE_K), hasNear: U(0),
         rotTab: U(Array.from({ length: ROT_N }, () => new THREE.Vector3())), tab0: U(-0.02), tabDt: U(0.04 / (ROT_N - 1)),
-        vibAmp: U(new THREE.Vector4()), vibFreq: U(new THREE.Vector4()), vibPhase: U(new THREE.Vector4()), vibOn: U(0),
+        vibAmp: U(new THREE.Vector4()), vibFreq: U(new THREE.Vector4()), vibPhase: U(new THREE.Vector4()), vibOn: U(0), rotCap: U(ROT_CAP),
         sunCam: U(new THREE.Vector3(0, 0, -1)), sunColor: U(new THREE.Color()), sunImg: U(new THREE.Vector2()), sunGain: U(0), ghostGain: U(0), veil: U(0.014),
       },
     });
@@ -531,10 +683,19 @@ export class FpvCamera {
     this.brightMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: blurFS(true), depthTest: false, uniforms: { src: U(null), expTex: U(null), stepUv: U(new THREE.Vector2()) } });
     this.blurMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: blurFS(false), depthTest: false, uniforms: { src: U(null), expTex: U(null), stepUv: U(new THREE.Vector2()) } });
     this.tnrMat = new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: tnrFS, depthTest: false, uniforms: { cur: U(null), prev: U(null), expTex: U(null), noiseK: U(NOISE_K) } });
+    this.outMat = new THREE.ShaderMaterial({
+      vertexShader: quadVS, fragmentShader: outFS, depthTest: false,
+      uniforms: {
+        img: U<THREE.Texture | null>(null), osd: U<THREE.Texture | null>(null), gog: U<THREE.Texture | null>(null),
+        osdOn: U(0), gogOn: U(0), gogBand: U(1), scan: U(0), hdOsd: U(0), lost: U(0), frameH: U(480),
+        osdRect: U(new THREE.Vector4(0.03, 0.03, 0.97, 0.97)), screenFit: U(new THREE.Vector2(1, 1)),
+      },
+    });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fisheyeMat);
     this.quad.frustumCulled = false;
     this.quadScene.add(this.quad);
     this.voidCam.position.set(0, 1e7, 0); this.voidCam.lookAt(1, 1e7, 0); this.voidCam.updateMatrixWorld();
+    this.voidCam.userData[NO_LOD] = true; // the trees stay binned around the lens for the shadow pass
   }
 
   get cubeSize() { return this.cubeRT.width; }
@@ -552,49 +713,91 @@ export class FpvCamera {
   private makeCubeRT(n: number) {
     // mipmapped + anisotropic: each fisheye sample is filtered over its own footprint (the periphery
     // compresses the cube several times), which is what keeps fences and wires from shimmering
+    // (anisotropy 4: the fisheye already spreads 4-8 samples over each pixel and its motion arc, and
+    // in fast motion 8 probes per sample made up to ~130 trilinear taps per pixel)
     const rt = new THREE.WebGLCubeRenderTarget(n, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter });
-    rt.texture.anisotropy = 8;
+    rt.texture.anisotropy = 4;
     return rt;
   }
 
   /**
-   * The cube turns with the lens. Its back face is never sampled (a ≤165° fisheye stays within 83°
-   * of the axis; rolling shutter / blur samples are capped at 29° beyond that), so it is skipped,
-   * and each side face renders only the part facing forward: an off-axis frustum over that part of
-   * the face, so culling drops what lies behind as well: ~32 % fewer cube pixels than 6 full faces.
+   * The cube turns with the lens. Each face renders only the part of it the fisheye can sample for
+   * this camera and this frame's motion (cubeFaceRects for a ladder of margins, FACE_MARGINS; the
+   * capture picks one): an off-axis frustum over that part, so culling drops what lies outside it as
+   * well. The back face is never needed.
    */
   private layoutFaces() {
-    const r = this.renderer, n = this.cubeRT.width;
+    const r = this.renderer;
     for (const cc of [this.cubeCam, this.nearCam]) {
-      cc.coordinateSystem = r.coordinateSystem; cc.updateCoordinateSystem();
+      // at the origin first: the face cameras' lookAt() works from their current world position
+      // (after a capture, the lens's), so re-orienting them there scrambled the faces
       cc.position.set(0, 0, 0); cc.quaternion.identity(); cc.updateMatrixWorld(true);
-      for (const c of cc.children as THREE.PerspectiveCamera[]) c.updateProjectionMatrix(); // full faces again
+      if (cc.coordinateSystem !== r.coordinateSystem) { cc.coordinateSystem = r.coordinateSystem; cc.updateCoordinateSystem(); cc.updateMatrixWorld(true); }
     }
-    const M = 0.55; // margin past 90° (tan of the extra angle: 0.55 → ~29°)
-    const look = new THREE.Vector3(), v = new THREE.Vector3();
+    this.faceInv = (this.cubeCam.children as THREE.Camera[]).map((c) => c.matrixWorld.clone().invert());
+    const v = this.video;
+    // ~6 ms each (grid 32): computed once per video system
+    this.ladder = v ? FACE_MARGINS.map((margin) => ({ margin, rects: cubeFaceRects(v.fovDeg, v.fisheyeK, v.kind === 'analog' ? 4 / 3 : 16 / 9, margin, 32) })) : [];
+    this.baseRects = this.ladder.length ? this.ladder[this.ladder.length - 1].rects : [];
+    this.rects = [];
+    this.applyRects(this.baseRects);
+  }
+
+  /** Point the face cameras (world and near pass) at these face rects. */
+  private applyRects(rects: (FaceRect | null)[]) {
+    const n = this.cubeRT.width;
     this.faces = [];
-    const cams = this.cubeCam.children as THREE.PerspectiveCamera[];
-    cams.forEach((cam, i) => {
-      cam.getWorldDirection(look);
-      if (look.z > 0.9) return; // behind the lens
-      let x0 = -1, x1 = 1, y0 = -1, y1 = 1;
-      if (look.z > -0.9) {
-        // side face: which edge of it points forward (cube -Z)?
-        v.copy(look).add(new THREE.Vector3(0, 0, -0.5)).project(cam);
-        if (Math.abs(v.x) > Math.abs(v.y)) { if (v.x > 0) x0 = -M; else x1 = M; } else { if (v.y > 0) y0 = -M; else y1 = M; }
-      }
-      const px0 = Math.floor(((x0 + 1) / 2) * n), px1 = Math.ceil(((x1 + 1) / 2) * n), py0 = Math.floor(((y0 + 1) / 2) * n), py1 = Math.ceil(((y1 + 1) / 2) * n);
+    rects.forEach((rc, i) => {
+      if (!rc) return;
+      const px0 = Math.floor(((rc.x0 + 1) / 2) * n), px1 = Math.ceil(((rc.x1 + 1) / 2) * n), py0 = Math.floor(((rc.y0 + 1) / 2) * n), py1 = Math.ceil(((rc.y1 + 1) / 2) * n);
       this.faces.push({ i, vp: new THREE.Vector4(px0, py0, px1 - px0, py1 - py0) });
       // projection of the sub-rectangle: NDC [a, b] of the full face mapped to [-1, 1]
       const a0 = (px0 / n) * 2 - 1, a1 = (px1 / n) * 2 - 1, b0 = (py0 / n) * 2 - 1, b1 = (py1 / n) * 2 - 1;
       const sx = 2 / (a1 - a0), sy = 2 / (b1 - b0);
-      const S = new THREE.Matrix4().set(sx, 0, 0, -sx * (a0 + a1) / 2, 0, sy, 0, -sy * (b0 + b1) / 2, 0, 0, 1, 0, 0, 0, 0, 1);
+      const S = this.tmpMat.set(sx, 0, 0, -sx * (a0 + a1) / 2, 0, sy, 0, -sy * (b0 + b1) / 2, 0, 0, 1, 0, 0, 0, 0, 1);
       for (const cc of [this.cubeCam, this.nearCam]) {
         const c = cc.children[i] as THREE.PerspectiveCamera;
+        c.updateProjectionMatrix(); // the full face, then its part
         c.projectionMatrix.premultiply(S);
         c.projectionMatrixInverse.copy(c.projectionMatrix).invert();
       }
     });
+    this.rects = rects;
+  }
+
+  /**
+   * The glare probe reads the sun's disc out of the cube (sunProbeFS: 16 taps within `radius` of it,
+   * level 0) while the sun is within 110° of the axis, i.e. also outside the picture and beyond the
+   * part of the cube the fisheye needs: grow the face(s) under those taps to cover them (3 texels of
+   * padding), for as long as that lasts. Returns the base layout otherwise.
+   */
+  private rectsForSun(sunCam: THREE.Vector3, radius: number): (FaceRect | null)[] {
+    const base = this.baseRects, pad = 6 / this.cubeRT.width;
+    let out: (FaceRect | null)[] | null = null;
+    const t1 = this.tmpV.set(0, 1, 0);
+    if (Math.abs(sunCam.y) >= 0.9) t1.set(1, 0, 0);
+    t1.crossVectors(sunCam, t1).normalize();
+    const t2 = this.tmpV2.crossVectors(sunCam, t1);
+    const d = this.tmpV3, c = this.tmpV4;
+    for (let i = -1; i < 16; i++) {
+      // (i = -1: the centre)
+      const a = i * 2.39996, rr = i < 0 ? 0 : radius * Math.sqrt((i + 0.5) / 16);
+      d.copy(sunCam).addScaledVector(t1, Math.cos(a) * rr).addScaledVector(t2, Math.sin(a) * rr).normalize();
+      // the face whose camera looks most along d, and where d lands in its NDC
+      let f = 0, best = -Infinity;
+      this.faceInv.forEach((m, k) => { c.copy(d).transformDirection(m); if (-c.z > best) { best = -c.z; f = k; } });
+      c.copy(d).transformDirection(this.faceInv[f]);
+      const u = c.x / c.z, w = c.y / c.z; // (fov -90°: NDC = -camera x, y over depth)
+      const rc = (out ?? base)[f];
+      if (rc && u - pad >= rc.x0 && u + pad <= rc.x1 && w - pad >= rc.y0 && w + pad <= rc.y1) continue;
+      out ??= base.slice();
+      const g = out[f] ?? { x0: u, x1: u, y0: w, y1: w };
+      out[f] = { x0: Math.max(-1, Math.min(g.x0, u - pad)), x1: Math.min(1, Math.max(g.x1, u + pad)), y0: Math.max(-1, Math.min(g.y0, w - pad)), y1: Math.min(1, Math.max(g.y1, w + pad)) };
+    }
+    if (!out) return base;
+    // unchanged since the last capture: keep the cameras as they are
+    const same = (a: FaceRect | null, b: FaceRect | null) => a === b || (!!a && !!b && a.x0 === b.x0 && a.x1 === b.x1 && a.y0 === b.y0 && a.y1 === b.y1);
+    return out.every((rc, i) => same(rc, this.rects[i])) && out.length === this.rects.length ? this.rects : out;
   }
 
   private makeFrameRT(w: number, h: number) {
@@ -613,10 +816,13 @@ export class FpvCamera {
     // analog: the video standard's active lines (NTSC 480, PAL 576)
     const h = Math.round((v.kind === 'analog' ? (v.resolution[1] >= 576 ? 576 : 480) : 720) * renderScale);
     const w = Math.round(h * aspect);
-    this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose();
+    this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose(); this.linkRT?.dispose();
     this.frameRT = this.makeFrameRT(w, h); this.prevRT = this.makeFrameRT(w, h);
     // digital: the fisheye renders to a raw buffer that the temporal denoiser then feeds into frameRT
     this.rawRT = v.kind === 'digital' ? this.makeFrameRT(w, h) : null;
+    // the received picture (link artefacts, analog OSD) at the video's resolution: half float, so the
+    // screen pass clips after its scanlines exactly as the single full-screen pass did
+    this.linkRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false, depthBuffer: false });
     this.makeGlowRTs(w, h);
     const u = this.fisheyeMat.uniforms;
     u.aspect.value = aspect;
@@ -632,12 +838,15 @@ export class FpvCamera {
     this.postMat = new THREE.ShaderMaterial({
       vertexShader: quadVS, fragmentShader: v.kind === 'analog' ? analogFS : digitalFS, depthTest: false,
       uniforms: {
-        frame: { value: null }, prevFrame: { value: null }, glow: { value: null }, prevGlow: { value: null }, osd: { value: null }, gog: { value: null }, expTex: { value: null },
-        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, gogOn: { value: 0 }, glowK: { value: 0.3 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
+        frame: { value: null }, prevFrame: { value: null }, glow: { value: null }, prevGlow: { value: null }, osd: { value: null }, expTex: { value: null },
+        time: { value: 0 }, cnr: { value: 40 }, osdOn: { value: 1 }, glowK: { value: 0.3 }, wdr: { value: v.kind === 'analog' ? 0.3 : 0.15 },
         frameW: { value: w }, frameH: { value: h }, oddField: { value: 0 }, interlaced: { value: v.interlaced ? 1 : 0 },
-        freeze: { value: 0 }, block: { value: 0 }, lost: { value: 0 }, hdz: { value: v.system === 'hdzero' ? 1 : 0 }, gammaOut: { value: 1 / 2.2 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) }, screenFit: { value: new THREE.Vector2(1, 1) },
+        freeze: { value: 0 }, block: { value: 0 }, lost: { value: 0 }, hdz: { value: v.system === 'hdzero' ? 1 : 0 }, gammaOut: { value: 1 / 2.2 }, osdRect: { value: new THREE.Vector4(0.03, 0.03, 0.97, 0.97) },
       },
     });
+    const ou = this.outMat.uniforms;
+    ou.scan.value = v.kind === 'analog' ? 1 : 0; ou.hdOsd.value = v.kind === 'digital' ? 1 : 0; ou.frameH.value = h;
+    this.layoutFaces(); // the cube faces this camera's field of view needs
   }
 
   /** Shutter time the camera is using now (s). */
@@ -655,22 +864,23 @@ export class FpvCamera {
    * in the camera's frame (the cube is rendered at the middle row's pose).
    */
   setMotion(lensAt: (t: number, q: THREE.Quaternion) => void) {
-    const { t0, dt } = this.motionWindow();
-    const q0 = new THREE.Quaternion(), q = new THREE.Quaternion();
+    const half = (this.video.rollingShutterMs / 1000 + Math.min(SHUTTER_MAX, 1 / this.video.fps)) / 2;
+    const t0 = -half, dt = (2 * half) / (ROT_N - 1);
+    const q0 = this.tmpQ, q = this.tmpQ2;
     lensAt(0, q0); q0.invert();
     const tab = this.rotTab;
     for (let k = 0; k < ROT_N; k++) { lensAt(t0 + k * dt, q); quatToRotVec(q.premultiply(q0), tab, k * 3); }
-    const u = this.fisheyeMat.uniforms;
-    (u.rotTab.value as THREE.Vector3[]).forEach((v, k) => v.fromArray(tab, k * 3));
+    const u = this.fisheyeMat.uniforms, rv = u.rotTab.value as THREE.Vector3[];
+    for (let k = 0; k < ROT_N; k++) rv[k].fromArray(tab, k * 3);
     u.tab0.value = t0; u.tabDt.value = dt;
   }
 
   /** Mount vibration (mountVibration()): amplitude rad, frequency Hz per motor; t = capture time (s) for continuous phase. */
   setVibration(v: { amp: number[]; freq: number[] }, t: number) {
-    const u = this.fisheyeMat.uniforms;
-    u.vibAmp.value.fromArray(v.amp); u.vibFreq.value.fromArray(v.freq);
-    u.vibPhase.value.set(...(v.freq.map((f, k) => ((2 * Math.PI * f * t) % (2 * Math.PI)) + k * 1.7) as [number, number, number, number]));
-    u.vibOn.value = v.amp.some((a) => a > 2e-5) ? 1 : 0;
+    const u = this.fisheyeMat.uniforms, f = v.freq, ph = (k: number) => ((2 * Math.PI * f[k] * t) % (2 * Math.PI)) + k * 1.7;
+    u.vibAmp.value.fromArray(v.amp); u.vibFreq.value.fromArray(f);
+    u.vibPhase.value.set(ph(0), ph(1), ph(2), ph(3));
+    u.vibOn.value = v.amp[0] > 2e-5 || v.amp[1] > 2e-5 || v.amp[2] > 2e-5 || v.amp[3] > 2e-5 ? 1 : 0;
   }
 
   /**
@@ -692,20 +902,35 @@ export class FpvCamera {
     // keep previous field/frame for interlacing & digital freeze/smear / denoise
     let t = this.prevRT; this.prevRT = this.frameRT; this.frameRT = t;
     t = this.prevGlowRT; this.prevGlowRT = this.glowRT; this.glowRT = t;
-    this.renderCube(scene, lensPos, lensQuat, near);
-    this.fisheyeMat.uniforms.hasNear.value = near ? 1 : 0;
-    const expTex = this.expRT[this.expIdx].texture; // last frame's exposure (gain, shutter)
     const u = this.fisheyeMat.uniforms;
     // sun in camera space: is it in (or near) the picture, and how much of it does the cube show?
-    const sunCam = u.sunCam.value.copy(this.sunDir).applyQuaternion(new THREE.Quaternion().copy(lensQuat).invert()).normalize();
+    const sunCam = u.sunCam.value.copy(this.sunDir).applyQuaternion(this.tmpQ.copy(lensQuat).invert()).normalize();
     const sp = projectFisheye(sunCam, u.halfFovDiag.value, this.video.fisheyeK, u.aspect.value);
-    // glare from the front element fades once the sun is well outside the field of view; the cube
-    // only exists up to ~110° off the axis
+    // glare from the front element fades once the sun is well outside the field of view (up to 110°
+    // off the axis, where the cube is grown to cover the sun's disc for the probe)
     const deg = THREE.MathUtils.radToDeg(sp.theta);
     u.sunGain.value = smooth(110, 85, deg); u.ghostGain.value = 0.08 * smooth(100, 78, deg);
     u.sunImg.value.set(sp.x, sp.y);
     const sc = this.sunColor, sl = 0.2126 * sc.r + 0.7152 * sc.g + 0.0722 * sc.b;
     u.sunColor.value.copy(sc).multiplyScalar(1 / Math.max(1e-3, sl)); // tint only: S carries the brightness
+    // the part of the cube this frame's motion can reach: rotations from the table (|mix| <= the
+    // larger end) plus the vibration whirl (<= sqrt 2 * sum of amplitudes per axis), and a sample's
+    // filter footprint, about half of its share of the arc (MOTION_REACH); the fisheye's rotation cap
+    // follows the layout, so no sample can leave it (and with the top layout it is the old 0.5 rad)
+    let rot = 0;
+    for (let k = 0; k < ROT_N; k++) rot = Math.max(rot, Math.hypot(this.rotTab[k * 3], this.rotTab[k * 3 + 1], this.rotTab[k * 3 + 2]));
+    const amp = u.vibAmp.value as THREE.Vector4;
+    rot += u.vibOn.value ? Math.SQRT2 * (Math.abs(amp.x) + Math.abs(amp.y) + Math.abs(amp.z) + Math.abs(amp.w)) : 0;
+    const need = MOTION_REACH * rot + FACE_GUARD, top = this.ladder.length - 1;
+    let li = 0;
+    while (li < top && this.ladder[li].margin < need) li++;
+    this.baseRects = this.ladder[li].rects;
+    u.rotCap.value = li < top ? (this.ladder[li].margin - FACE_GUARD) / MOTION_REACH : ROT_CAP;
+    const rects = u.sunGain.value > 0 ? this.rectsForSun(sunCam, this.sunMat.uniforms.radius.value) : this.baseRects;
+    if (rects !== this.rects) this.applyRects(rects);
+    this.renderCube(scene, lensPos, lensQuat, near);
+    u.hasNear.value = near ? 1 : 0;
+    const expTex = this.expRT[this.expIdx].texture; // last frame's exposure (gain, shutter)
     if (u.sunGain.value > 0) {
       this.sunMat.uniforms.sunCam.value.copy(sunCam);
       this.quad.material = this.sunMat;
@@ -757,83 +982,113 @@ export class FpvCamera {
     }
   }
 
+  /**
+   * World pass (each face part), then the quad's own parts in a near pass. The quad's pixels are
+   * tagged in alpha for the fisheye (which keeps them out of the motion blur): the world pass clears
+   * alpha to 0 and draws with alpha writes off, the near pass then writes the quad's alpha (opaque
+   * parts 1, a spinning prop disc only its opacity, so the world behind it still smears). Faces whose
+   * near frustum holds no part of the quad skip the near pass (no depth clear, no draws).
+   */
   private renderCube(scene: THREE.Scene, lensPos: THREE.Vector3, lensQuat: THREE.Quaternion, near?: THREE.Object3D) {
     const r = this.renderer, rt = this.cubeRT, tex = rt.texture, n = rt.width;
     for (const cc of [this.cubeCam, this.nearCam]) { cc.position.copy(lensPos); cc.quaternion.copy(lensQuat); cc.updateMatrixWorld(true); }
-    const gm = tex.generateMipmaps, xr = r.xr.enabled, au = scene.matrixWorldAutoUpdate;
+    const gm = tex.generateMipmaps, xr = r.xr.enabled, au = scene.matrixWorldAutoUpdate, ac = r.autoClear;
     r.xr.enabled = false;
     tex.generateMipmaps = false; // once, after the last face
     // every render() would walk the whole scene to update world matrices: once is enough
     scene.updateMatrixWorld(); scene.matrixWorldAutoUpdate = false;
-    const faces = this.faces, last = faces.length - 1;
-    if (near) near.visible = false;
+    const faces = this.faces;
+    // which faces' near frusta hold a part of the quad (the test three's own culling makes)
+    let nearMask = 0;
+    if (near) {
+      const meshes = this.nearMeshes; meshes.length = 0;
+      near.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+      faces.forEach((f, k) => {
+        const c = this.nearCam.children[f.i] as THREE.Camera;
+        this.frustum.setFromProjectionMatrix(this.tmpMat.multiplyMatrices(c.projectionMatrix, c.matrixWorldInverse), r.coordinateSystem);
+        for (const m of meshes) if (!m.frustumCulled || this.frustum.intersectsObject(m)) { nearMask |= 1 << k; break; }
+      });
+      near.visible = false;
+    }
+    const lastNear = nearMask ? 31 - Math.clz32(nearMask) : -1, lastWorld = lastNear < 0 ? faces.length - 1 : -1;
+    const gl = r.getContext(), color = r.state.buffers.color, cc = r.getClearColor(this.tmpColor), ca = r.getClearAlpha();
+    r.setClearColor(cc, 0); r.autoClear = false;
     faces.forEach((f, k) => {
-      if (!near && k === last) tex.generateMipmaps = gm;
+      if (k === lastWorld) tex.generateMipmaps = gm;
       rt.viewport.copy(f.vp); rt.scissor.copy(f.vp); rt.scissorTest = true;
       r.setRenderTarget(rt, f.i);
+      r.clear(true, true, true);
+      if (near) { color.setMask(true); gl.colorMask(true, true, true, false); color.setLocked(true); }
       r.render(scene, this.cubeCam.children[f.i] as THREE.Camera);
+      if (near) { color.setLocked(false); gl.colorMask(true, true, true, true); }
     });
-    if (near) {
-      near.visible = true;
+    if (near) near.visible = true;
+    if (near && nearMask) {
       // near pass: only the quad (and the lights), depth cleared per face so it sits on top
-      const hidden: THREE.Object3D[] = [];
+      const hidden = this.hidden; hidden.length = 0;
       for (const c of scene.children) if (c !== near && c.visible && !(c as THREE.Light).isLight) { c.visible = false; hidden.push(c); }
-      const bg = scene.background, ac = r.autoClear;
-      scene.background = null; r.autoClear = false;
-      // its pixels are tagged in alpha: the world's alpha is cleared to 0 together with the depth,
-      // the quad's opaque parts then write 1 (a spinning prop disc only its opacity, so the world
-      // behind it still smears), and the fisheye keeps them out of the motion blur
-      const gl = r.getContext(), cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha();
-      r.setClearColor(cc, 0);
+      const bg = scene.background;
+      scene.background = null;
       faces.forEach((f, k) => {
-        if (k === last) tex.generateMipmaps = gm;
+        if (!(nearMask & (1 << k))) return;
+        if (k === lastNear) tex.generateMipmaps = gm;
         rt.viewport.copy(f.vp); rt.scissor.copy(f.vp); rt.scissorTest = true;
         r.setRenderTarget(rt, f.i);
-        gl.colorMask(false, false, false, true);
-        r.clear(true, true, false);
-        gl.colorMask(true, true, true, true);
+        r.clear(false, true, false);
         r.render(scene, this.nearCam.children[f.i] as THREE.Camera);
       });
-      r.setClearColor(cc, ca);
-      r.autoClear = ac; scene.background = bg;
+      scene.background = bg;
       for (const c of hidden) c.visible = true;
     }
+    r.setClearColor(cc, ca); r.autoClear = ac;
     rt.viewport.set(0, 0, n, n); rt.scissor.set(0, 0, n, n); rt.scissorTest = false;
     tex.generateMipmaps = gm; r.xr.enabled = xr; scene.matrixWorldAutoUpdate = au;
   }
 
-  /** Composite to the screen with link artefacts, OSD and the goggles' overlay. */
-  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean, gog: { texture: THREE.Texture; boxes: Rect[] } | null = null) {
+  /**
+   * Composite to the screen with link artefacts, OSD and the goggles' overlay: the link (and an
+   * analog OSD, which the FC inserts into the video) at the video's own resolution, then one cheap
+   * screen pass that scales it up with the scanlines, an HD OSD (drawn by the goggles: crisp) and
+   * the goggles' overlay. 640x480 analog is 0.3 Mpx where the old single pass shaded every screen
+   * pixel (1.6 Mpx letterboxed at 1080p).
+   */
+  present(osdTex: THREE.Texture | null, osdAspect: number, time: number, link: { cnr: number; freeze: boolean; block: number; lost: number }, osdOn: boolean, gog: { texture: THREE.Texture; boxes: Rect[]; band: number } | null = null) {
     const gogTex = gog?.texture ?? null;
     const r = this.renderer;
-    const u = this.postMat.uniforms;
+    const u = this.postMat.uniforms, ou = this.outMat.uniforms;
     u.frame.value = this.frameRT.texture; u.prevFrame.value = this.prevRT.texture; u.expTex.value = this.expRT[this.expIdx].texture;
     u.glow.value = this.glowRT.texture; u.prevGlow.value = this.prevGlowRT.texture;
-    u.osd.value = osdTex; u.osdOn.value = osdOn && osdTex ? 1 : 0;
-    u.gog.value = gogTex; u.gogOn.value = gogTex ? 1 : 0;
+    u.osd.value = ou.osd.value = osdTex; u.osdOn.value = ou.osdOn.value = osdOn && osdTex ? 1 : 0;
+    ou.gog.value = gogTex; ou.gogOn.value = gogTex ? 1 : 0; ou.gogBand.value = gog?.band ?? 1;
     // analog noise and tearing change once per video field, not per monitor refresh; wrapped so the
     // fp32 shader time keeps its precision after hours of flying
     const tq = this.video.kind === 'analog' ? Math.floor(time * this.video.fps) / this.video.fps : time;
     u.time.value = tq % 1000;
-    u.cnr.value = link.cnr; u.freeze.value = link.freeze ? 1 : 0; u.block.value = link.block; u.lost.value = link.lost;
+    u.cnr.value = link.cnr; u.freeze.value = link.freeze ? 1 : 0; u.block.value = link.block; u.lost.value = ou.lost.value = link.lost;
     u.oddField.value = this.field;
     // letterbox to screen
-    const size = r.getSize(new THREE.Vector2());
+    const size = r.getSize(this.tmpSize);
     const fa = this.fisheyeMat.uniforms.aspect.value, sa = size.x / size.y;
-    u.screenFit.value.set(sa > fa ? fa / sa : 1, sa > fa ? 1 : sa / fa);
+    ou.screenFit.value.set(sa > fa ? fa / sa : 1, sa > fa ? 1 : sa / fa);
     // OSD rectangle: centred, keeping the character grid's aspect within the frame
     const m = 0.03;
     const frameAspect = fa;
     let ow = 1 - 2 * m, oh = ((1 - 2 * m) * frameAspect) / osdAspect;
     if (oh > 1 - 2 * m) { oh = 1 - 2 * m; ow = (oh * osdAspect) / frameAspect; }
-    u.osdRect.value.set(0.5 - ow / 2, 0.5 - oh / 2, 0.5 + ow / 2, 0.5 + oh / 2);
+    u.osdRect.value.set(0.5 - ow / 2, 0.5 - oh / 2, 0.5 + ow / 2, 0.5 + oh / 2); ou.osdRect.value.copy(u.osdRect.value);
     // same rectangles in CSS pixels for the HUD layout
     const cw = r.domElement.clientWidth || size.x, ch = r.domElement.clientHeight || size.y;
-    const fw = u.screenFit.value.x * cw, fh = u.screenFit.value.y * ch;
+    const fw = ou.screenFit.value.x * cw, fh = ou.screenFit.value.y * ch;
     const f = this.layout.frame; f.x = (cw - fw) / 2; f.y = (ch - fh) / 2; f.w = fw; f.h = fh;
     const o = this.layout.osd; o.w = ow * fw; o.h = oh * fh; o.x = f.x + (0.5 - ow / 2) * fw; o.y = f.y + (0.5 - oh / 2) * fh;
-    this.layout.goggle = (gog?.boxes ?? []).map((b) => ({ x: f.x + b.x * fw, y: f.y + b.y * fh, w: b.w * fw, h: b.h * fh }));
+    const boxes = gog?.boxes ?? [], lg = this.layout.goggle;
+    lg.length = boxes.length;
+    boxes.forEach((b, i) => { const g = (lg[i] ??= { x: 0, y: 0, w: 0, h: 0 }); g.x = f.x + b.x * fw; g.y = f.y + b.y * fh; g.w = b.w * fw; g.h = b.h * fh; });
     this.quad.material = this.postMat;
+    r.setRenderTarget(this.linkRT);
+    r.render(this.quadScene, this.quadCam);
+    ou.img.value = this.linkRT.texture;
+    this.quad.material = this.outMat;
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
     this.onPresent?.();
@@ -841,9 +1096,9 @@ export class FpvCamera {
 
   dispose() {
     this.cubeRT.dispose(); this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose();
-    this.glowTmp.dispose(); this.glowRT.dispose(); this.prevGlowRT.dispose(); this.sunRT.dispose(); this.voidRT.dispose();
+    this.glowTmp.dispose(); this.glowRT.dispose(); this.prevGlowRT.dispose(); this.sunRT.dispose(); this.voidRT.dispose(); this.linkRT?.dispose();
     for (const e of this.expRT) e.dispose();
-    for (const m of [this.fisheyeMat, this.sunMat, this.expMat, this.brightMat, this.blurMat, this.tnrMat, this.postMat]) m?.dispose();
+    for (const m of [this.fisheyeMat, this.sunMat, this.expMat, this.brightMat, this.blurMat, this.tnrMat, this.postMat, this.outMat]) m?.dispose();
   }
 }
 

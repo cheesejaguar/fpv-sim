@@ -5,7 +5,10 @@
 // triangle, a box per one-sided wall), so PrimitiveWorld's contacts, rays and video obstruction work
 // unchanged. Render data reuses the Quake level format (textured convex faces, here with per-sector
 // light instead of light entities).
-import { ShapeUtils, Vector2 } from 'three';
+// ShapeUtils / Vector2 straight from their source files: the 'three' entry point would drag ~90 kB of
+// three.js core (Object3D, animation, textures) into the simulation worker, which only needs earcut.
+import { ShapeUtils } from 'three/src/extras/ShapeUtils.js';
+import { Vector2 } from 'three/src/math/Vector2.js';
 import type { QuakeFace, QuakeLevel } from './quakeMap';
 import type { BrushPrim, MapDef, Material } from './world';
 

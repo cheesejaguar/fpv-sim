@@ -1,7 +1,7 @@
 // Watching a lap replay: the replay's map (and course), time of day and drone are put in place of
 // the live session's for the frame loop to render, without touching anything the pilot saved; the
 // live sim stays paused behind the menu. Loaded with the replay player.
-import { buildDrone } from '../builder/derive';
+import { buildDrone, preloadPropTable } from '../builder/derive';
 import { hasMap, MAPS, preloadMap } from '../maps/maps';
 import { MapDef, PrimitiveWorld, withCourse } from '../maps/world';
 import { cameraMountQuat } from '../render/coords';
@@ -22,7 +22,8 @@ export async function replayWorld(track: ReplayTrack): Promise<{ map: MapDef; sp
   const spec = parseSpec(h.spec);
   if (!spec) throw new Error('This replay was flown with drone parts this version of FPV Sim doesn’t have.');
   if (!hasMap(h.map)) throw new Error(`This replay was flown on a map this version of FPV Sim doesn’t have (${h.map}).`);
-  await preloadMap(h.map);
+  // the map's data and the prop's precomputed BEMT table (else enterReplay's buildDrone spends ~1.2 s on it)
+  await Promise.all([preloadMap(h.map), preloadPropTable(spec.prop)]);
   const map = withCourse(MAPS[h.map](), h.course);
   if (courseOf(map) !== h.course && h.course) throw new Error(`This replay was flown on a course this map doesn’t have any more (${h.course}).`);
   return { map, spec };

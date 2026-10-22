@@ -5,6 +5,9 @@
 // a second failure is surfaced as { type: 'fatal' }.
 import { createShared, newestTime, writeStick, type FromWorker, type Shared, type ToWorker } from '../worker/shared';
 
+/** Stops the stick poller; wake() returns it to the full rate at once (see WorkerBridge.pollSticks). */
+export type StickPoller = (() => void) & { wake(): void };
+
 export interface BfBridge {
   cliBatch(lines: string[]): Promise<string>;
   cliSend(text: string): void;
@@ -101,10 +104,16 @@ export class WorkerBridge implements BfBridge {
    * hop between the timeouts resets the nesting, so this ticks at ~1-2 ms without spinning.
    * (Measured in headless Edge on the running sim: ~500-800 polls/s vs 243 for setInterval(4); a
    * Windows timer can't go finer without spinning, Atomics.waitAsync timeouts included.)
+   *
+   * opts.slow: while it says so (a menu is open and the simulation paused) the poll runs every
+   * opts.slowMs (8 ms, ~125 Hz: menu buttons and the Controller tab's live view) instead of ~1 kHz.
+   * The returned stop function carries wake(): call it when the controls are handed back, so the
+   * full rate resumes at once instead of after the pending slow tick.
    */
-  static pollSticks(sh: Shared, poll: () => Float32Array, pad: () => { timestamp?: number } | null): () => void {
+  static pollSticks(sh: Shared, poll: () => Float32Array, pad: () => { timestamp?: number } | null, opts: { slow?: () => boolean; slowMs?: number } = {}): StickPoller {
     const mc = new MessageChannel();
-    let on = true;
+    const slow = opts.slow ?? (() => false), slowMs = opts.slowMs ?? 8;
+    let on = true, slowTimer: ReturnType<typeof setTimeout> | undefined;
     const sample = () => {
       const ch = poll();
       sh.rc.set(ch); Atomics.add(sh.ctrl, 0, 1);
@@ -113,11 +122,21 @@ export class WorkerBridge implements BfBridge {
       const t = ts && ts > now - 100 && ts <= now ? ts : now;
       writeStick(sh, performance.timeOrigin + t, ch);
     };
+    const post = () => mc.port2.postMessage(0);
+    const fireSlow = () => { slowTimer = undefined; post(); };
     mc.port1.onmessage = () => {
       if (!on) return;
-      try { sample(); } finally { setTimeout(() => mc.port2.postMessage(0), 1); } // a throwing pad must not stop the input
+      try { sample(); } finally {
+        // a throwing pad must not stop the input
+        let s = false;
+        try { s = slow(); } catch { /* full rate */ }
+        if (s) slowTimer = setTimeout(fireSlow, slowMs); else setTimeout(post, 1);
+      }
     };
-    mc.port2.postMessage(0);
-    return () => { on = false; mc.port1.close(); };
+    post();
+    const stop = () => { on = false; clearTimeout(slowTimer); slowTimer = undefined; mc.port1.close(); };
+    // only a pending slow tick is cut short (one chain of polls at a time, never two)
+    const wake = () => { if (on && slowTimer !== undefined) { clearTimeout(slowTimer); slowTimer = undefined; post(); } };
+    return Object.assign(stop, { wake });
   }
 }

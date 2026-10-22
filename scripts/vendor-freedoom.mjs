@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
+import { optimizePng } from './optimize-png.mjs';
 
 const WAD = 'freedoom2.wad';
 const LEVEL = 'MAP01';
@@ -66,6 +67,8 @@ const chunk = (type, data) => {
   b.writeUInt32BE(crc32(b.subarray(4, 8 + data.length)), 8 + data.length);
   return b;
 };
+/** The PNG re-encoded losslessly where that is smaller (palette PNG: ~1/3 of the RGBA bytes). */
+const smallest = (buf) => optimizePng(buf) ?? buf;
 /** idx: palette index per pixel, -1 = transparent. */
 function png(w, h, idx) {
   const raw = Buffer.alloc(h * (1 + w * 4));
@@ -89,7 +92,7 @@ for (const f of [...flats].sort()) {
   const d = flatLump(f);
   if (!d) { missing.push(`flat ${f}`); continue; }
   const file = `flat_${fileName(f)}`;
-  await writeFile(new URL(`textures/${file}`, out), png(64, 64, Int16Array.from(d)));
+  await writeFile(new URL(`textures/${file}`, out), smallest(png(64, 64, Int16Array.from(d))));
   manifest[`f/${f}`] = { file, w: 64, h: 64 };
 }
 
@@ -129,7 +132,7 @@ for (const t of [...walls].sort()) {
   const idx = new Int16Array(def.w * def.h).fill(-1);
   for (const pp of def.patches) { const p = lump(pp.name); if (p) drawPatch(p, idx, def.w, def.h, pp.x, pp.y); else missing.push(`patch ${pp.name}`); }
   const file = fileName(t);
-  await writeFile(new URL(`textures/${file}`, out), png(def.w, def.h, idx));
+  await writeFile(new URL(`textures/${file}`, out), smallest(png(def.w, def.h, idx)));
   manifest[`w/${t}`] = { file, w: def.w, h: def.h };
 }
 await writeFile(new URL('textures/manifest.json', out), JSON.stringify(manifest, null, 1) + '\n');

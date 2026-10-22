@@ -112,13 +112,14 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
 
   // timeline
   const span = Math.max(1e-6, track.t1 - track.t0), frac = (t: number) => (t - track.t0) / span;
-  const fill = el('div', { class: 'rp-fill' }), head = el('div', { class: 'rp-head' });
+  // played part and playhead move by transform (compositor only, no layout per frame)
+  const fill = el('div', { class: 'rp-fill' }), head = el('div', { class: 'rp-head' }), headTrack = el('div', { class: 'rp-headtrack' }, head);
   const marks = el('div', { class: 'rp-marks' }, ...h.gates.map((g, i) => el('span', {
     class: `rp-mark${i === 0 || i === h.gates.length - 1 ? ' end' : ''}`, style: { left: `${frac(g.t) * 100}%` },
     title: i === 0 ? 'Start' : i === h.gates.length - 1 ? `Finish · ${lapClock(g.t)}` : `Gate ${i + 1} · ${lapClock(g.t)}`,
   })));
   const timeline = el('div', { class: 'rp-timeline', role: 'slider', tabindex: '0', 'aria-label': 'Replay position', 'aria-valuemin': track.t0.toFixed(2), 'aria-valuemax': track.t1.toFixed(2) },
-    el('div', { class: 'rp-rail' }, fill, marks), head);
+    el('div', { class: 'rp-rail' }, fill, marks), headTrack);
   const timeTxt = el('span', { class: 'rp-time', 'aria-live': 'off' });
   const playBtn = btn('rp-play', 'Play', 'play', () => { clock.toggle(); }, 'gm-btn primary rp-btn rp-play');
   const loopBtn = btn('rp-loop', 'Loop', 'repeat', () => { clock.loop = prefs.loop = !clock.loop; loopBtn.setAttribute('aria-pressed', String(clock.loop)); });
@@ -233,8 +234,12 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
   };
 
   // ---- drawing (every frame, from the frame loop) -------------------------------------------
-  const shown = { play: '', speed: -1, cam: '' as Cam | '', time: '', lap: '', split: -2, pad: null as boolean | null, sticks: '', flight: '', batt: '' };
+  const shown = { play: '', speed: -1, cam: '' as Cam | '', time: '', lap: '', split: -2, pad: null as boolean | null, sticks: '', flight: '', batt: '', pos: -1 };
+  const drawnRc = new Float64Array(4).fill(NaN);
   const drawSticks = () => {
+    // only when a stick moved (a paused replay, or a held stick, draws nothing new)
+    if (rec[R.rc0] === drawnRc[0] && rec[R.rc1] === drawnRc[1] && rec[R.rc2] === drawnRc[2] && rec[R.rc3] === drawnRc[3]) return;
+    drawnRc[0] = rec[R.rc0]; drawnRc[1] = rec[R.rc1]; drawnRc[2] = rec[R.rc2]; drawnRc[3] = rec[R.rc3];
     const c = sticksCv.getContext('2d')!, w = sticksCv.width, hh = sticksCv.height, r = hh / 2 - 6;
     c.clearRect(0, 0, w, hh);
     const gimbal = (cx: number, x: number, y: number) => {
@@ -263,8 +268,9 @@ export async function openPlayer(ctx: AppCtx, bytes: Uint8Array, label: ReplayLa
     }
     if (clock.speedIdx !== shown.speed) { shown.speed = clock.speedIdx; speedSeg.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === clock.speedIdx))); }
     if (prefs.cam !== shown.cam) { shown.cam = prefs.cam; camSeg.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(CAMS[i] === prefs.cam))); root.dataset.cam = prefs.cam; }
-    const f = frac(t) * 100;
-    fill.style.width = `${f}%`; head.style.left = `${f}%`;
+    // (in 1/20 % steps: a long lap on a wide screen still moves less than a pixel per step)
+    const pos = Math.round(Math.max(0, Math.min(1, frac(t))) * 2000);
+    if (pos !== shown.pos) { shown.pos = pos; fill.style.transform = `scaleX(${pos / 2000})`; headTrack.style.transform = `translateX(${pos / 20}%)`; }
     const tt = `${lapClock(t)} / ${formatLap(h.lapMs)}`;
     if (tt !== shown.time) { shown.time = tt; timeTxt.textContent = tt; timeline.setAttribute('aria-valuenow', t.toFixed(2)); timeline.setAttribute('aria-valuetext', lapClock(t)); }
     if (prefs.show.splits) {

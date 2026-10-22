@@ -90,9 +90,18 @@ export class Battery {
   s: BatteryState;
   private capF: number[] = []; // per-cell capacity factor
   private resF: number[] = []; // per-cell resistance factor
+  // Memos of exact results (the physics asks for each of these twice per step, or with the same
+  // inputs every step): a value is reused only while every input is identical.
+  private ocvSoc: Float64Array; private ocvU: Float64Array; private ocvV: Float64Array; // cellOcv(k) per (soc, cold derate)
+  private rfSoc: Float64Array; private rfT: Float64Array; private rfPf: Float64Array; private rfV: Float64Array; // rFactor(k, pf)
+  private pfT = NaN; private pfDmg = NaN; private pfV = 0; // packFactor() per (temperature, heat damage)
+  private rcDt = NaN; private rcF = 0; private rc1 = 0; private rc2 = 0; // RC-branch decays exp(-dt/tau) per dt
   constructor(p: BatteryParams, soc = 1, ambientC = 20) {
     this.p = p;
     const n = p.cellsSeries, sp = p.cellSpread ?? 0.05, rng = new Rng(((p.seed ?? 0) ^ 0xba77e2) >>> 0);
+    const nan = () => new Float64Array(n).fill(NaN);
+    this.ocvSoc = nan(); this.ocvU = nan(); this.ocvV = nan();
+    this.rfSoc = nan(); this.rfT = nan(); this.rfPf = nan(); this.rfV = nan();
     for (let k = 0; k < n; k++) { this.capF.push(1 + sp * (2 * rng.next() - 1)); this.resF.push(1 + sp * (2 * rng.next() - 1)); }
     const z = () => new Array<number>(n).fill(0);
     this.s = { soc, cellSoc: new Array<number>(n).fill(soc), cellV: z(), vf: z(), v1: z(), v2: z(), tempC: ambientC, mAhDrawn: 0, whDrawn: 0, current: 0, voltage: 0, ocvPack: 0, sagV: 0, heatDamage: 0 };
@@ -102,32 +111,50 @@ export class Battery {
   }
 
   /** State of charge cell k behaves at: a cold cell runs out early (coldUnavailable). */
-  private usableSoc(soc: number): number { const u = coldUnavailable(this.s.tempC); return (soc - u) / (1 - u); }
+  private usableSoc(soc: number, u = coldUnavailable(this.s.tempC)): number { return (soc - u) / (1 - u); }
   /** OCV of series cell k at the state of charge it can reach at the present temperature. */
-  private cellOcv(k: number): number { return ocvPerCell(this.p.chemistry, this.usableSoc(this.s.cellSoc[k])); }
+  private cellOcv(k: number, u = coldUnavailable(this.s.tempC)): number {
+    const soc = this.s.cellSoc[k];
+    if (soc === this.ocvSoc[k] && u === this.ocvU[k]) return this.ocvV[k];
+    const v = ocvPerCell(this.p.chemistry, this.usableSoc(soc, u));
+    this.ocvSoc[k] = soc; this.ocvU[k] = u; this.ocvV[k] = v;
+    return v;
+  }
   ocv(): number { let v = 0; for (let k = 0; k < this.p.cellsSeries; k++) v += this.cellOcv(k); return v; }
 
   /** Resistance multiplier from temperature (Arrhenius), age and heat damage (common to all cells). */
   private packFactor(): number {
+    if (this.s.tempC === this.pfT && this.s.heatDamage === this.pfDmg) return this.pfV;
     const T = this.s.tempC + 273.15;
-    return Math.exp((this.p.activationEnergyJmol / RG) * (1 / T - 1 / 298.15)) * this.p.ageFactor * (1 + this.s.heatDamage);
+    this.pfT = this.s.tempC; this.pfDmg = this.s.heatDamage;
+    return (this.pfV = Math.exp((this.p.activationEnergyJmol / RG) * (1 / T - 1 / 298.15)) * this.p.ageFactor * (1 + this.s.heatDamage));
+  }
+  /** rFactor(k, pf) of a series cell, memoised: thevenin() keeps it (keep = true) for step() to reuse */
+  private cellRf(k: number, pf: number, u: number, keep: boolean): number {
+    const soc = this.s.cellSoc[k], T = this.s.tempC;
+    if (soc === this.rfSoc[k] && T === this.rfT[k] && pf === this.rfPf[k]) return this.rfV[k];
+    const v = this.rFactor(k, pf, u);
+    if (keep) { this.rfSoc[k] = soc; this.rfT[k] = T; this.rfPf[k] = pf; this.rfV[k] = v; }
+    return v;
   }
   /** Resistance multiplier of cell k (k < 0: the pack mean) incl. its scatter and low-SoC rise. */
-  rFactor(k = -1, pack = this.packFactor()): number {
+  rFactor(k = -1, pack = this.packFactor(), u = coldUnavailable(this.s.tempC)): number {
     // DCIR rises gradually below ~30 % and steeply once the cell is over-discharged: the voltage
     // collapses under load, which is what forces a landing (or ends in a cut-out)
-    const soc = this.usableSoc(k < 0 ? this.s.soc : this.s.cellSoc[k]);
+    const soc = this.usableSoc(k < 0 ? this.s.soc : this.s.cellSoc[k], u);
     const low = Math.min(1, Math.max(0, 0.3 - soc) / 0.3);
     const over = Math.min(1, Math.max(0, -soc) / OVERDISCHARGE);
     return pack * (1 + 1.2 * low * low + 6 * over * over) * (k < 0 ? 1 : this.resF[k]);
   }
 
-  /** Thevenin source seen by the load: V = vth - rth * I. */
-  thevenin(): { vth: number; rth: number } {
+  /** Thevenin source seen by the load: V = vth - rth * I (written to `out` when given). */
+  thevenin(out: { vth: number; rth: number } = { vth: 0, rth: 0 }): { vth: number; rth: number } {
     const n = this.p.cellsSeries, m = this.p.cellsParallel, s = this.s, r0 = this.p.r0CellOhm * (this.p.ohmicFrac ?? 0.7), pf = this.packFactor();
     let vth = 0, rth = this.p.wiringOhm;
-    for (let k = 0; k < n; k++) { vth += this.cellOcv(k) - s.vf[k] - s.v1[k] - s.v2[k]; rth += (r0 * this.rFactor(k, pf)) / m; }
-    return { vth, rth };
+    const u = coldUnavailable(s.tempC);
+    for (let k = 0; k < n; k++) { vth += this.cellOcv(k, u) - s.vf[k] - s.v1[k] - s.v2[k]; rth += (r0 * this.cellRf(k, pf, u, true)) / m; }
+    out.vth = vth; out.rth = rth;
+    return out;
   }
 
   /** Advance with pack current I (A, + discharge) over dt seconds. */
@@ -136,19 +163,20 @@ export class Battery {
     const iCell = I / m;
     const fo = p.ohmicFrac ?? 0.7;
     // exact discretisation of the RC branches
-    const af = Math.exp(-dt / (p.tauFastS ?? 0.05)), a1 = Math.exp(-dt / p.tau1S), a2 = Math.exp(-dt / p.tau2S);
+    if (dt !== this.rcDt) { this.rcDt = dt; this.rcF = Math.exp(-dt / (p.tauFastS ?? 0.05)); this.rc1 = Math.exp(-dt / p.tau1S); this.rc2 = Math.exp(-dt / p.tau2S); }
+    const af = this.rcF, a1 = this.rc1, a2 = this.rc2;
     const capAh = p.capacityAh / p.ageFactor;
     let qGen = I * I * p.wiringOhm * 0.5, socSum = 0, ocvSum = 0, vSum = 0;
-    const pf = this.packFactor();
+    const pf = this.packFactor(), u = coldUnavailable(s.tempC); // (the temperature moves after the loop)
     for (let k = 0; k < n; k++) {
-      const rf = this.rFactor(k, pf);
+      const rf = this.cellRf(k, pf, u, false); // (its SoC changes below: no use keeping it)
       const r0 = p.r0CellOhm * fo * rf, rfst = p.r0CellOhm * (1 - fo) * rf, r1 = p.r1CellOhm * rf, r2 = p.r2CellOhm * rf;
       s.vf[k] = s.vf[k] * af + rfst * iCell * (1 - af);
       s.v1[k] = s.v1[k] * a1 + r1 * iCell * (1 - a1);
       s.v2[k] = s.v2[k] * a2 + r2 * iCell * (1 - a2);
       s.cellSoc[k] -= (I * dt) / 3600 / (capAh * this.capF[k]);
       if (s.cellSoc[k] < -OVERDISCHARGE) s.cellSoc[k] = -OVERDISCHARGE;
-      const ocv = this.cellOcv(k);
+      const ocv = this.cellOcv(k, u);
       s.cellV[k] = ocv - s.vf[k] - s.v1[k] - s.v2[k] - r0 * iCell;
       // heat: ohmic + polarisation losses in all cells of this series group
       qGen += m * (iCell * iCell * r0 + (s.vf[k] + s.v1[k] + s.v2[k]) * iCell);

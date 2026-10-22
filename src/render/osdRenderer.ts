@@ -94,6 +94,8 @@ export class OsdRenderer {
   private lastSeq = -1;
   private blinkOn = true;
   private lastBlink = 0;
+  /** the last drawn grid had blinking characters (else a blink phase change redraws nothing) */
+  private blinks = true;
   cols = 30; rows = 16;
   hasContent = false;
   /** Cells Betaflight has drawn (blinking ones count while hidden), row-major cols×rows: the
@@ -120,9 +122,10 @@ export class OsdRenderer {
     const seq = Atomics.load(sh.ctrl, 2);
     const blinkPhase = Math.floor(now / 250) % 2 === 0;
     const blinkChanged = blinkPhase !== this.blinkOn && now - this.lastBlink > 200;
-    if (seq === this.lastSeq && !blinkChanged) return false;
-    this.lastSeq = seq;
     if (blinkChanged) { this.blinkOn = blinkPhase; this.lastBlink = now; }
+    // (a canvas redraw is a full texture upload, 3.5 MB for a 53x20 HD grid, and a new present)
+    if (seq === this.lastSeq && !(blinkChanged && this.blinks)) return false;
+    this.lastSeq = seq;
     const cols = Atomics.load(sh.ctrl, 3) || 30, rows = Atomics.load(sh.ctrl, 4) || 16;
     const s = this.hd ? 2 : 1, gw = GLYPH_W * s, gh = GLYPH_H * s;
     if (cols !== this.cols || rows !== this.rows || this.canvas.width !== cols * gw || this.canvas.height !== rows * gh) {
@@ -135,18 +138,18 @@ export class OsdRenderer {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     const atlas = this.hd ? this.atlasHd : this.atlas;
     if (!atlas) return true;
-    let any = false;
+    let any = false, blinks = false;
     if (this.occupied.length !== cols * rows) this.occupied = new Uint8Array(cols * rows); else this.occupied.fill(0);
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
       const c = sh.osd[y * OSD_MAX_COLS + x];
       const attr = sh.osd[OSD_MAX_COLS * OSD_MAX_ROWS + y * OSD_MAX_COLS + x];
       if (c === 0 || c === 0x20) continue;
       this.occupied[y * cols + x] = 1;
-      if ((attr & 0x40) && !this.blinkOn) continue;
+      if (attr & 0x40) { blinks = true; if (!this.blinkOn) continue; }
       any = true;
       ctx.drawImage(atlas, (c % 16) * gw, Math.floor(c / 16) * gh, gw, gh, x * gw, y * gh, gw, gh);
     }
-    this.hasContent = any;
+    this.hasContent = any; this.blinks = blinks;
     this.texture.needsUpdate = true;
     return true;
   }
@@ -194,34 +197,45 @@ export function goggleItems(i: GoggleInfo): { left: string[]; right: string[]; b
   }
 }
 
+/** Rows of a w x h frame the goggle overlay's canvas covers: its band plus room for the text's
+ *  descenders and shadow, and a clear bottom row. */
+export const goggleCanvasRows = (h: number) => Math.ceil(h * (GOGGLE_BAND + 0.015)) + 1;
+
 export class GoggleOverlay {
+  /** Only the frame's top band (goggleCanvasRows) - everything the overlay draws is in it; a full
+   *  frame canvas was ~15x the pixels to redraw and upload. */
   canvas = document.createElement('canvas');
   texture: THREE.CanvasTexture;
   /** What it covers (fractions of the frame, top-left origin): the left and right text blocks. */
   boxes: { x: number; y: number; w: number; h: number }[] = [];
+  /** Fraction of the frame's height the canvas covers (from the top). */
+  band = 1;
   private key = '';
   private at = -1e9;
 
   constructor() {
-    this.canvas.width = 640; this.canvas.height = 480;
+    this.canvas.width = 640; this.canvas.height = goggleCanvasRows(480);
+    this.band = this.canvas.height / 480;
     // drawn in display values (the goggle UI is not part of the camera's linear signal)
     this.texture = canvasTexture(this.canvas, THREE.NoColorSpace);
   }
 
-  /** Redraw at most ~4 Hz (goggle status bars update about that often) when something changed. */
+  /** Redraw at most ~4 Hz (goggle status bars update about that often) when something changed.
+   *  w, h: the video frame's size (text is sized from it). */
   update(i: GoggleInfo, w: number, h: number, now: number): boolean {
-    const sized = this.canvas.width === w && this.canvas.height === h;
+    const rows = goggleCanvasRows(h);
+    const sized = this.canvas.width === w && this.canvas.height === rows && this.band === rows / h;
     if (sized && now - this.at < 250) return false;
     const it = goggleItems(i);
     const key = JSON.stringify(it) + (i.recording ? Math.floor(now / 500) % 2 : '');
     if (sized && key === this.key) return false;
     this.key = key; this.at = now;
     if (!sized) {
-      this.canvas.width = w; this.canvas.height = h;
+      this.canvas.width = w; this.canvas.height = rows; this.band = rows / h;
       this.texture.dispose(); this.texture = canvasTexture(this.canvas, THREE.NoColorSpace);
     }
     const g = this.canvas.getContext('2d')!;
-    g.clearRect(0, 0, w, h);
+    g.clearRect(0, 0, w, rows);
     const fs = Math.round(h * 0.03), pad = Math.round(h * 0.025), y = Math.round(h * (GOGGLE_BAND - 0.016));
     g.font = `600 ${fs}px "Chakra Petch", system-ui, sans-serif`;
     g.textBaseline = 'alphabetic';

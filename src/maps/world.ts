@@ -95,17 +95,35 @@ export function pilotPos(m: MapDef, o: V3): V3 {
 
 // ---------------------------------------------------------------------------------------------
 
+// Sphere queries (8 kHz x ~75 collider spheres) read packed per-cell records instead of the Prim
+// objects: one Float64Array per grid cell, REC numbers per prim (kind, centre, size, rotation,
+// material index, bounding radius), so the hot loop has no Map lookups, no megamorphic property
+// loads and rejects far prims with one squared-distance test.
+const REC = 13;
+const K_BOX = 0, K_CYL = 1, K_SPHERE = 2;
+/** Terrain under the sphere queries: tangent planes (height + normal from 5 terrain samples), each
+ *  used within PLANE_REUSE m (per axis) of where it was taken; a few kept so that all of a quad's
+ *  collider spheres find one. */
+const PLANE_REUSE = 0.15, PLANES = 8, PL = 8; // per plane: x, y, h, gx, gy, nx, ny, nz
+
 export class PrimitiveWorld implements CollisionWorld {
   private cell: number;
   private grid = new Map<number, Prim[]>();
   private boxRot = new Map<BoxPrim, { c: number; s: number; cp: number; sp: number }>();
+  /** grid cells as packed records for sphere() (REC numbers per prim) */
+  private packed = new Map<number, Float64Array>();
+  private mats: SurfaceMaterial[] = [];
+  private groundMat: SurfaceMaterial;
+  private planes = new Float64Array(PLANES * PL).fill(Infinity); // (no plane anywhere yet)
+  private nPlanes = 0; private lastPlane = 0; private nextPlane = 0;
+  private cand = new Float64Array(64 * REC); private nCand = 0; // near(): records within reach
   readonly brushes = new BrushGrid();
   // porous drag volumes (tree canopies, foliage spheres, hedges): not solid, see foliage()
   private canopies = new Map<number, (SpherePrim | BoxPrim)[]>();
-  private tGrad = { x: Infinity, y: Infinity, nx: 0, ny: 0, nz: 1 };
   private hasCanopy = false;
   constructor(public map: MapDef) {
     this.cell = map.collisionCell ?? 8;
+    this.groundMat = MATERIALS[map.groundMat];
     for (const p of map.prims) {
       // foliage spheres and thick foliage boxes are volumes; thin ones (safety nets, flags) stay solid
       if (p.mat === 'foliage' && (p.kind === 'sphere' || (p.kind === 'box' && Math.min(p.half.x, p.half.y, p.half.z) > 0.25))) this.insertCanopy(p);
@@ -117,6 +135,29 @@ export class PrimitiveWorld implements CollisionWorld {
       const c = { x: t.x, y: t.y, z: g + t.h * 0.62 };
       this.insertCanopy({ kind: 'sphere', c, r: t.r, mat: 'foliage' });
       this.insert({ kind: 'sphere', c, r: t.r * 0.3, mat: 'wood' }); // trunk top + main limbs: solid core
+    }
+    this.pack();
+  }
+  private pack() {
+    const matIx = new Map<string, number>();
+    for (const [k, l] of this.grid) {
+      const a = new Float64Array(l.length * REC);
+      l.forEach((pr, i) => {
+        if (pr.kind === 'brush') { a[i * REC] = K_SPHERE; a[i * REC + 4] = -Infinity; return; } // (never: brushes live in this.brushes)
+        let m = matIx.get(pr.mat);
+        if (m === undefined) { m = this.mats.length; matIx.set(pr.mat, m); this.mats.push(MATERIALS[pr.mat]); }
+        const o = i * REC;
+        a[o + 1] = pr.c.x; a[o + 2] = pr.c.y; a[o + 3] = pr.c.z; a[o + 11] = m;
+        if (pr.kind === 'box') {
+          const r = this.boxRot.get(pr)!, h = pr.half;
+          a[o] = K_BOX; a[o + 4] = h.x; a[o + 5] = h.y; a[o + 6] = h.z;
+          a[o + 7] = r.c; a[o + 8] = r.s; a[o + 9] = r.cp; a[o + 10] = r.sp;
+          // bounding radius, a hair generous so that rounding can never reject a touching box
+          a[o + 12] = Math.sqrt(h.x * h.x + h.y * h.y + h.z * h.z) * (1 + 1e-9) + 1e-9;
+        } else if (pr.kind === 'cyl') { a[o] = K_CYL; a[o + 4] = pr.r; a[o + 5] = pr.h; }
+        else { a[o] = K_SPHERE; a[o + 4] = pr.r; }
+      });
+      this.packed.set(k, a);
     }
   }
   private insertCanopy(p: SpherePrim | BoxPrim) {
@@ -138,7 +179,7 @@ export class PrimitiveWorld implements CollisionWorld {
     let best = 0;
     for (const pr of l) {
       let d: number;
-      if (pr.kind === 'sphere') d = pr.r - Math.hypot(p.x - pr.c.x, p.y - pr.c.y, p.z - pr.c.z);
+      if (pr.kind === 'sphere') { const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z; d = pr.r - Math.sqrt(dx * dx + dy * dy + dz * dz); }
       else {
         const rot = this.boxRot.get(pr)!;
         const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
@@ -168,76 +209,135 @@ export class PrimitiveWorld implements CollisionWorld {
 
   groundHeight(x: number, y: number): number { return this.map.terrain(x, y); }
 
-  sphere(p: V3, radius: number, out: ContactHit): boolean {
-    let best = 0;
-    // terrain: approximate surface by tangent plane under the sphere
-    const h = this.map.terrain(p.x, p.y);
-    if (p.z - radius < h + 0.5) {
-      // terrain normal: central differences, reused within 0.15 m (all of a quad's spheres share one)
-      const tg = this.tGrad;
-      if (Math.abs(p.x - tg.x) > 0.15 || Math.abs(p.y - tg.y) > 0.15) {
-        const e = 0.05;
-        const gx = (this.map.terrain(p.x + e, p.y) - this.map.terrain(p.x - e, p.y)) / (2 * e);
-        const gy = (this.map.terrain(p.x, p.y + e) - this.map.terrain(p.x, p.y - e)) / (2 * e);
-        const nl = Math.hypot(gx, gy, 1);
-        tg.x = p.x; tg.y = p.y; tg.nx = -gx / nl; tg.ny = -gy / nl; tg.nz = 1 / nl;
-      }
-      const nx = tg.nx, ny = tg.ny, nz = tg.nz;
-      const d = radius - (p.z - h) * nz;
-      if (d > best) { best = d; out.depth = d; out.nx = nx; out.ny = ny; out.nz = nz; out.material = MATERIALS[this.map.groundMat]; }
+  /** Index (into this.planes) of a terrain tangent plane usable at (x, y); takes a new one if none is. */
+  private plane(x: number, y: number): number {
+    const P = this.planes;
+    let o = this.lastPlane;
+    if (Math.abs(x - P[o]) <= PLANE_REUSE && Math.abs(y - P[o + 1]) <= PLANE_REUSE) return o;
+    for (let i = 0; i < this.nPlanes; i++) {
+      o = i * PL;
+      if (Math.abs(x - P[o]) <= PLANE_REUSE && Math.abs(y - P[o + 1]) <= PLANE_REUSE) return (this.lastPlane = o);
     }
-    // every grid cell the sphere overlaps (a prim just across a cell border is not listed in this one)
-    const cx0 = Math.floor((p.x - radius) / this.cell), cx1 = Math.floor((p.x + radius) / this.cell);
-    const cy0 = Math.floor((p.y - radius) / this.cell), cy1 = Math.floor((p.y + radius) / this.cell);
-    for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
-      const l = this.grid.get(this.key(cx, cy));
-      if (l) for (const pr of l) {
-        if (pr.kind === 'box') {
-          const rot = this.boxRot.get(pr)!;
-          // into box frame: yaw about z then pitch about local y
-          let dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
-          let lx = rot.c * dx + rot.s * dy, ly = -rot.s * dx + rot.c * dy, lz = dz;
-          const tx = rot.cp * lx - rot.sp * lz; lz = rot.sp * lx + rot.cp * lz; lx = tx;
-          const hx = pr.half.x, hy = pr.half.y, hz = pr.half.z;
-          const qx = Math.max(-hx, Math.min(hx, lx)), qy = Math.max(-hy, Math.min(hy, ly)), qz = Math.max(-hz, Math.min(hz, lz));
-          let nx = lx - qx, ny = ly - qy, nz = lz - qz;
-          let dist = Math.hypot(nx, ny, nz), depth: number;
-          if (dist > 1e-9) {
-            if (dist >= radius) continue;
-            depth = radius - dist; nx /= dist; ny /= dist; nz /= dist;
-          } else {
-            // centre inside: push out along the axis of least penetration
-            const px = hx - Math.abs(lx), py = hy - Math.abs(ly), pz = hz - Math.abs(lz);
-            if (px < py && px < pz) { nx = Math.sign(lx) || 1; ny = 0; nz = 0; depth = px + radius; }
-            else if (py < pz) { nx = 0; ny = Math.sign(ly) || 1; nz = 0; depth = py + radius; }
-            else { nx = 0; ny = 0; nz = Math.sign(lz) || 1; depth = pz + radius; }
-          }
-          if (depth > best) {
-            // back to world: inverse pitch then inverse yaw
-            const wx0 = rot.cp * nx + rot.sp * nz, wz = -rot.sp * nx + rot.cp * nz;
-            const wx = rot.c * wx0 - rot.s * ny, wy = rot.s * wx0 + rot.c * ny;
-            best = depth; out.depth = depth; out.nx = wx; out.ny = wy; out.nz = wz; out.material = MATERIALS[pr.mat];
-          }
-        } else if (pr.kind === 'cyl') {
-          if (p.z < pr.c.z - radius || p.z > pr.c.z + pr.h + radius) continue;
-          const dx = p.x - pr.c.x, dy = p.y - pr.c.y;
-          const rr = Math.hypot(dx, dy);
-          const side = pr.r + radius - rr;
-          if (side <= 0) continue;
-          const top = pr.c.z + pr.h + radius - p.z;
-          if (top < side && p.z > pr.c.z + pr.h) {
-            if (top > best && rr < pr.r) { best = top; out.depth = top; out.nx = 0; out.ny = 0; out.nz = 1; out.material = MATERIALS[pr.mat]; }
-          } else if (side > best) {
-            best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = MATERIALS[pr.mat];
-          }
-        } else if (pr.kind === 'sphere') {
-          const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
-          const d = Math.hypot(dx, dy, dz);
-          const depth = pr.r + radius - d;
-          if (depth > best && d > 1e-6) { best = depth; out.depth = depth; out.nx = dx / d; out.ny = dy / d; out.nz = dz / d; out.material = MATERIALS[pr.mat]; }
+    // central differences around (x, y); the slot is reused round-robin
+    o = this.nextPlane * PL;
+    this.nextPlane = (this.nextPlane + 1) % PLANES;
+    if (this.nPlanes < PLANES) this.nPlanes++;
+    const t = this.map.terrain, e = 0.05;
+    const gx = (t(x + e, y) - t(x - e, y)) / (2 * e), gy = (t(x, y + e) - t(x, y - e)) / (2 * e);
+    const nl = Math.sqrt(gx * gx + gy * gy + 1);
+    P[o] = x; P[o + 1] = y; P[o + 2] = t(x, y); P[o + 3] = gx; P[o + 4] = gy; P[o + 5] = -gx / nl; P[o + 6] = -gy / nl; P[o + 7] = 1 / nl;
+    return (this.lastPlane = o);
+  }
+
+  /** Terrain part of sphere(): the deepest-so-far result written to out (0 = none). */
+  private terrainHit(px: number, py: number, pz: number, radius: number, out: ContactHit): number {
+    // the tangent plane under the sphere (all of a quad's spheres share a few)
+    const P = this.planes, o = this.plane(px, py);
+    const h = P[o + 2] + P[o + 3] * (px - P[o]) + P[o + 4] * (py - P[o + 1]);
+    if (pz - radius >= h + 0.5) return 0;
+    const nz = P[o + 7], d = radius - (pz - h) * nz;
+    if (d <= 0) return 0;
+    out.depth = d; out.nx = P[o + 5]; out.ny = P[o + 6]; out.nz = nz; out.material = this.groundMat;
+    return d;
+  }
+
+  /** Packed records a[0 .. end) against the sphere: returns the new best depth (hit written to out). */
+  private records(a: Float64Array, end: number, px: number, py: number, pz: number, radius: number, best: number, out: ContactHit): number {
+    const mats = this.mats, r2 = radius * radius;
+    for (let i = 0; i < end; i += REC) {
+      const kind = a[i], dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3];
+      if (kind === K_BOX) {
+        const rb = a[i + 12] + radius;
+        if (dx * dx + dy * dy + dz * dz > rb * rb) continue; // out of reach
+        const hx = a[i + 4], hy = a[i + 5], hz = a[i + 6], c = a[i + 7], s = a[i + 8], cp = a[i + 9], sp = a[i + 10];
+        // into box frame: yaw about z then pitch about local y
+        let lx = c * dx + s * dy, lz = dz;
+        const ly = -s * dx + c * dy;
+        const tx = cp * lx - sp * lz; lz = sp * lx + cp * lz; lx = tx;
+        const qx = lx < -hx ? -hx : lx > hx ? hx : lx, qy = ly < -hy ? -hy : ly > hy ? hy : ly, qz = lz < -hz ? -hz : lz > hz ? hz : lz;
+        let nx = lx - qx, ny = ly - qy, nz = lz - qz;
+        const n2 = nx * nx + ny * ny + nz * nz;
+        let depth: number;
+        if (n2 > 1e-18) {
+          if (n2 >= r2) continue;
+          const dist = Math.sqrt(n2);
+          depth = radius - dist; nx /= dist; ny /= dist; nz /= dist;
+        } else {
+          // centre inside: push out along the axis of least penetration
+          const ex = hx - Math.abs(lx), ey = hy - Math.abs(ly), ez = hz - Math.abs(lz);
+          if (ex < ey && ex < ez) { nx = Math.sign(lx) || 1; ny = 0; nz = 0; depth = ex + radius; }
+          else if (ey < ez) { nx = 0; ny = Math.sign(ly) || 1; nz = 0; depth = ey + radius; }
+          else { nx = 0; ny = 0; nz = Math.sign(lz) || 1; depth = ez + radius; }
         }
+        if (depth > best) {
+          // back to world: inverse pitch then inverse yaw
+          const wx0 = cp * nx + sp * nz;
+          best = depth; out.depth = depth; out.nx = c * wx0 - s * ny; out.ny = s * wx0 + c * ny; out.nz = -sp * nx + cp * nz; out.material = mats[a[i + 11]];
+        }
+      } else if (kind === K_CYL) {
+        const r = a[i + 4], top = a[i + 3] + a[i + 5];
+        if (pz < a[i + 3] - radius || pz > top + radius) continue;
+        const rr = Math.sqrt(dx * dx + dy * dy), side = r + radius - rr;
+        if (side <= 0) continue;
+        const dTop = top + radius - pz;
+        if (dTop < side && pz > top) {
+          if (dTop > best && rr < r) { best = dTop; out.depth = dTop; out.nx = 0; out.ny = 0; out.nz = 1; out.material = mats[a[i + 11]]; }
+        } else if (side > best) {
+          best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = mats[a[i + 11]];
+        }
+      } else {
+        const rs = a[i + 4] + radius, d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= rs * rs) continue;
+        const d = Math.sqrt(d2), depth = rs - d;
+        if (depth > best && d > 1e-6) { best = depth; out.depth = depth; out.nx = dx / d; out.ny = dy / d; out.nz = dz / d; out.material = mats[a[i + 11]]; }
       }
     }
+    return best;
+  }
+
+  sphere(p: V3, radius: number, out: ContactHit): boolean {
+    const px = p.x, py = p.y, pz = p.z;
+    let best = this.terrainHit(px, py, pz, radius, out);
+    // every grid cell the sphere overlaps (a prim just across a cell border is not listed in this one)
+    const C = this.cell, cells = this.packed;
+    const cx0 = Math.floor((px - radius) / C), cx1 = Math.floor((px + radius) / C);
+    const cy0 = Math.floor((py - radius) / C), cy1 = Math.floor((py + radius) / C);
+    for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+      const a = cells.get(this.key(cx, cy));
+      if (a !== undefined) best = this.records(a, a.length, px, py, pz, radius, best, out);
+    }
+    if (this.brushes.count) best = this.brushes.sphere(p, radius, out, best);
+    return best > 0;
+  }
+
+  /**
+   * Collect the prims within reach of the sphere (p, r), e.g. an airframe's bound sphere, for the
+   * sphereNear() queries of spheres inside it that follow: those then skip the grid and every prim
+   * out of reach. (Same results as sphere(): a prim missing from the list can't touch them.)
+   */
+  near(p: V3, r: number): void {
+    const R = r * (1 + 1e-9) + 1e-9, px = p.x, py = p.y, pz = p.z, C = this.cell;
+    let c = this.cand, n = 0;
+    for (let cx = Math.floor((px - R) / C), cx1 = Math.floor((px + R) / C); cx <= cx1; cx++) for (let cy = Math.floor((py - R) / C), cy1 = Math.floor((py + R) / C); cy <= cy1; cy++) {
+      const a = this.packed.get(this.key(cx, cy));
+      if (a === undefined) continue;
+      for (let i = 0; i < a.length; i += REC) {
+        const dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3], kind = a[i];
+        const reach = (kind === K_BOX ? a[i + 12] : a[i + 4]) + R;
+        if (kind === K_CYL ? pz < a[i + 3] - R || pz > a[i + 3] + a[i + 5] + R || dx * dx + dy * dy > reach * reach : dx * dx + dy * dy + dz * dz > reach * reach) continue;
+        if ((n + 1) * REC > c.length) { const g = new Float64Array(c.length * 2); g.set(c); this.cand = c = g; }
+        for (let j = 0, o = n * REC; j < REC; j++) c[o + j] = a[i + j];
+        n++;
+      }
+    }
+    this.nCand = n;
+  }
+
+  /** sphere() for a sphere inside the one last passed to near(). */
+  sphereNear(p: V3, radius: number, out: ContactHit): boolean {
+    const px = p.x, py = p.y, pz = p.z;
+    let best = this.terrainHit(px, py, pz, radius, out);
+    if (this.nCand) best = this.records(this.cand, this.nCand * REC, px, py, pz, radius, best, out);
     if (this.brushes.count) best = this.brushes.sphere(p, radius, out, best);
     return best > 0;
   }
@@ -245,18 +345,20 @@ export class PrimitiveWorld implements CollisionWorld {
   raycast(p: V3, dir: V3, maxDist: number): number {
     let best = Infinity;
     // terrain by marching (short rays only: ground effect / LOS)
-    const steps = Math.ceil(maxDist / 0.05);
-    for (let i = 1; i <= Math.min(steps, 400); i++) {
-      const t = (i / Math.min(steps, 400)) * maxDist;
-      const x = p.x + dir.x * t, y = p.y + dir.y * t, z = p.z + dir.z * t;
-      if (z <= this.map.terrain(x, y)) { best = t; break; }
+    const n = Math.min(Math.ceil(maxDist / 0.05), 400);
+    // a vertical ray (the height above ground) sees one terrain height
+    const hv = dir.x === 0 && dir.y === 0 ? this.map.terrain(p.x, p.y) : NaN;
+    for (let i = 1; i <= n; i++) {
+      const t = (i / n) * maxDist;
+      const z = p.z + dir.z * t;
+      if (z <= (hv === hv ? hv : this.map.terrain(p.x + dir.x * t, p.y + dir.y * t))) { best = t; break; }
     }
     // boxes in the start cell and end cell
-    const cells = new Set<number>();
-    cells.add(this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell)));
-    cells.add(this.key(Math.floor((p.x + dir.x * maxDist) / this.cell), Math.floor((p.y + dir.y * maxDist) / this.cell)));
-    for (const k of cells) {
-      const l = this.grid.get(k); if (!l) continue;
+    const k0 = this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell));
+    const k1 = this.key(Math.floor((p.x + dir.x * maxDist) / this.cell), Math.floor((p.y + dir.y * maxDist) / this.cell));
+    for (let c = 0; c < 2; c++) {
+      if (c === 1 && k1 === k0) break;
+      const l = this.grid.get(c ? k1 : k0); if (!l) continue;
       for (const pr of l) {
         if (pr.kind !== 'box') continue;
         const rot = this.boxRot.get(pr)!;
@@ -355,7 +457,9 @@ export class BrushGrid {
   private nx = 0; private ny = 0; private nz = 0;
   constructor(readonly cell = 4) {}
   get count() { return this.list.length; }
-  private key(ix: number, iy: number, iz: number) { return ((ix + 1024) * 2048 + (iy + 1024)) * 2048 + (iz + 1024); }
+  /** 10 bits per axis: a small-integer key (no boxed number per lookup); cells 4 km apart share a
+   *  list, which only costs a bounding-box test (every query checks the brush itself) */
+  private key(ix: number, iy: number, iz: number) { return ((ix & 1023) << 20) | ((iy & 1023) << 10) | (iz & 1023); }
   private next() { if (++this.stamp === 0xffffffff) { this.mark.fill(0); this.stamp = 1; } return this.stamp; }
 
   insert(b: BrushPrim) {

@@ -123,14 +123,26 @@ export function bfPanel(bf: BfBridge, opts?: BfPanelOptions): HTMLElement {
     bf.cliSend(inp.value + '\n');
     inp.value = '';
   });
-  // one CLI listener per panel, dropped when the menu throws the panel away
+  // one CLI listener per panel, dropped when the menu throws the panel away. Output (up to 100
+  // chunks a second during a dump / diff) is appended as text nodes and scrolled into view once
+  // per frame; the oldest is trimmed only once the console holds more than 60 000 characters
+  // (rewriting the whole text and reading scrollHeight on every chunk relaid it out each time).
   let unsub: (() => void) | void = undefined;
-  const stop = () => { if (unsub) { unsub(); unsub = undefined; } };
+  let pendingOut = '', outLen = 0, outRaf = 0;
+  const flushOut = () => {
+    outRaf = 0;
+    if (!pendingOut) return;
+    out.append(pendingOut); outLen += pendingOut.length; pendingOut = '';
+    if (outLen > 60000) { const keep = (out.textContent ?? '').slice(-40000); out.textContent = keep; outLen = keep.length; }
+    out.scrollTop = out.scrollHeight;
+  };
+  const stop = () => { if (unsub) { unsub(); unsub = undefined; } cancelAnimationFrame(outRaf); outRaf = 0; };
   let seen = false;
   unsub = bf.onCliOut((t) => {
     seen ||= root.isConnected;
     if (seen && !root.isConnected) { stop(); return; }
-    out.textContent = (out.textContent + t).slice(-40000); out.scrollTop = out.scrollHeight;
+    pendingOut += t;
+    if (!outRaf) outRaf = requestAnimationFrame(flushOut);
   });
   onUnmount(root, stop);
 

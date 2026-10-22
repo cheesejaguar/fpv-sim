@@ -30,20 +30,21 @@ const sstep = (a: number, b: number, x: number) => { const t = Math.max(0, Math.
 /** First-order Dryden filters driven by white noise (discretised with exact ZOH where possible). */
 class DrydenAxis {
   x1 = 0; x2 = 0;
+  private kDt = NaN; private kT = NaN; private a = 0; private sq = 0; // exp(-dt/T), sqrt(1 - a²) for the last (dt, T)
   constructor(private rng: Rng, private second: boolean) {}
   step(sigma: number, L: number, V: number, dt: number): number {
     const T = L / Math.max(V, 0.5);
+    if (dt !== this.kDt || T !== this.kT) { this.kDt = dt; this.kT = T; this.a = Math.exp(-dt / T); this.sq = Math.sqrt(1 - this.a * this.a); }
+    const a = this.a;
     if (!this.second) {
       // H(s) = sigma sqrt(2L/(pi V)) / (1 + T s)  -> OU with variance sigma^2
-      const a = Math.exp(-dt / T);
-      this.x1 = a * this.x1 + sigma * Math.sqrt(1 - a * a) * this.rng.gauss();
+      this.x1 = a * this.x1 + sigma * this.sq * this.rng.gauss();
       return this.x1;
     }
     // H(s) ∝ (1 + √3 T s)/(1 + T s)²  =  [√3 + (1 − √3)/(1 + T s)] · 1/(1 + T s)
     // x1: unit-variance OU (the 1/(1+Ts) stage), x2: x1 low-passed again with the same T.
     // y = √3·x1 + (1 − √3)·x2 has variance 2 (Var x2 = Cov(x1,x2) = ½), hence the /√2.
-    const a = Math.exp(-dt / T);
-    this.x1 = a * this.x1 + Math.sqrt(1 - a * a) * this.rng.gauss();
+    this.x1 = a * this.x1 + this.sq * this.rng.gauss();
     this.x2 = a * this.x2 + (1 - a) * this.x1;
     return (sigma * (Math.sqrt(3) * this.x1 + (1 - Math.sqrt(3)) * this.x2)) / Math.SQRT2;
   }
@@ -70,6 +71,11 @@ export class Wind {
   private zt: Float64Array = new Float64Array(0);
   private zTimer = 0;
   private zMean = { x: 0, y: 0, z: 0 };
+  // exact memos of what only changes with the parameters or the height (asked for every step)
+  private mZ0 = NaN; private mLnRef = 0; private mDir = NaN; private mSin = 0; private mCos = 0; // meanAt: ln(z20/z0), direction
+  private hHft = NaN; private hK = 0; private hLu = 0; private hLw = 0; private hLw3 = 0; // Dryden scales per height
+  private bSpan = NaN; private bPow = 0; // (π/4b)^(1/6)
+  private gDt = NaN; private gTau = NaN; private gA = 0; private gSq = 0; private gSqP = 0; // gradient filter per (dt, tau)
   constructor(p: WindParams = DEFAULT_WIND, seed = 1234) {
     this.p = { ...p };
     this.rng = new Rng(seed);
@@ -83,13 +89,19 @@ export class Wind {
   meanAt(z: number, o: V3): V3 {
     const p = this.p;
     const zz = Math.max(z, p.z0 * 2 + 0.05);
-    const z20 = 20 * FT;
-    const k = Math.log(zz / p.z0) / Math.log(z20 / p.z0);
+    if (p.z0 !== this.mZ0) { this.mZ0 = p.z0; this.mLnRef = Math.log((20 * FT) / p.z0); } // (z20 = 20 ft)
+    this.direction();
+    const k = Math.log(zz / p.z0) / this.mLnRef;
     const s = Math.max(0, p.speed20ft * k);
-    // wind blowing TO = from + 180; ENU: north = +y
-    const th = ((p.directionDeg + 180) * Math.PI) / 180;
-    o.x = s * Math.sin(th); o.y = s * Math.cos(th); o.z = 0;
+    o.x = s * this.mSin; o.y = s * this.mCos; o.z = 0;
     return o;
+  }
+  /** sin / cos of the direction the wind blows TO (from + 180°; ENU: north = +y), for the current p.directionDeg */
+  private direction() {
+    const d = this.p.directionDeg;
+    if (d === this.mDir) return;
+    const th = ((d + 180) * Math.PI) / 180;
+    this.mDir = d; this.mSin = Math.sin(th); this.mCos = Math.cos(th);
   }
 
   /**
@@ -103,9 +115,15 @@ export class Wind {
     const hft = Math.max(10, altitude / FT);
     const W20 = p.speed20ft / 0.5144; // knots
     const sigW = 0.1 * W20 * 0.5144 * p.turbulence;  // m/s
-    const k = 1 / Math.pow(0.177 + 0.000823 * hft, 0.4);
+    if (hft !== this.hHft) {
+      this.hHft = hft;
+      this.hK = 1 / Math.pow(0.177 + 0.000823 * hft, 0.4);
+      this.hLw = hft * FT; this.hLu = (hft / Math.pow(0.177 + 0.000823 * hft, 1.2)) * FT;
+      this.hLw3 = Math.pow(this.hLw, 1 / 3);
+    }
+    const k = this.hK;
     const sigU = sigW * k;
-    const Lw = hft * FT, Lu = (hft / Math.pow(0.177 + 0.000823 * hft, 1.2)) * FT;
+    const Lw = this.hLw, Lu = this.hLu;
     const mean = Math.max(airspeed, 1);
     this.turb.x = this.u.step(sigU, Lu, mean, dt);
     this.turb.y = this.v.step(sigU, Lu, mean, dt);
@@ -114,19 +132,21 @@ export class Wind {
     // Δf ≈ −ḟ·dl/V; ḟ is taken through MIL-HDBK-1797's 1/(1 + 4b s/πV) (q_g, r_g) so the 1st-order u
     // channel does not leak white noise. Spanwise: p_g (roll gust) as a vertical-gust gradient.
     const V = mean, b = this.span, tau = (4 * b) / (Math.PI * V);
-    const a = Math.exp(-dt / tau), g = this.grad, lp = this.lp;
+    if (dt !== this.gDt || tau !== this.gTau) { this.gDt = dt; this.gTau = tau; this.gA = Math.exp(-dt / tau); this.gSq = Math.sqrt(1 - this.gA * this.gA); this.gSqP = Math.sqrt(Math.PI / (2 * tau)); }
+    if (b !== this.bSpan) { this.bSpan = b; this.bPow = Math.pow(Math.PI / (4 * b), 1 / 6); }
+    const a = this.gA, g = this.grad, lp = this.lp;
     lp.x = a * lp.x + (1 - a) * this.turb.x; lp.y = a * lp.y + (1 - a) * this.turb.y; lp.z = a * lp.z + (1 - a) * this.turb.z;
     g.u = (this.turb.x - lp.x) / (tau * V); g.v = (this.turb.y - lp.y) / (tau * V); g.w = (this.turb.z - lp.z) / (tau * V);
     // p_g: H = σw·√(0.8/V)·(π/4b)^(1/6) / (Lw^(1/3)·(1 + τs)) → OU with variance K²·π/(2τ)
-    const Kp = (sigW * Math.sqrt(0.8 / V) * Math.pow(Math.PI / (4 * b), 1 / 6)) / Math.pow(Lw, 1 / 3);
-    const sigP = Kp * Math.sqrt(Math.PI / (2 * tau));
-    this.pg = a * this.pg + sigP * Math.sqrt(1 - a * a) * this.rng2.gauss();
+    const Kp = (sigW * Math.sqrt(0.8 / V) * this.bPow) / this.hLw3;
+    const sigP = Kp * this.gSqP;
+    this.pg = a * this.pg + sigP * this.gSq * this.rng2.gauss();
     g.V = V;
     let ex: number, ey: number, ez: number;
     if (airDir) { ex = airDir.x; ey = airDir.y; ez = airDir.z; }
-    else { const th = ((p.directionDeg + 180) * Math.PI) / 180; ex = Math.sin(th); ey = Math.cos(th); ez = 0; }
+    else { this.direction(); ex = this.mSin; ey = this.mCos; ez = 0; }
     g.ex = ex; g.ey = ey; g.ez = ez;
-    const hl = Math.hypot(ex, ey);
+    const hl = Math.sqrt(ex * ex + ey * ey);
     if (hl > 1e-3) { g.cx = -ey / hl; g.cy = ex / hl; } else { g.cx = 1; g.cy = 0; }
     // discrete gusts (none in calm air)
     this.gustTimer -= dt;
@@ -143,7 +163,8 @@ export class Wind {
       const zm = this.zMean;
       for (let i = 0; i < this.zones.length; i++) {
         const zn = this.zones[i];
-        const UH = Math.hypot(this.meanAt(zn.height, zm).x, zm.y);
+        this.meanAt(zn.height, zm);
+        const UH = Math.sqrt(zm.x * zm.x + zm.y * zm.y);
         const T = (0.5 * zn.height) / Math.max(airspeed, 0.5 * UH, 0.5);
         const c = Math.exp(-this.zTimer / T), s = Math.sqrt(1 - c * c);
         for (let j = 0; j < 3; j++) this.zt[i * 3 + j] = c * this.zt[i * 3 + j] + s * this.rng2.gauss();
@@ -186,8 +207,8 @@ export class Wind {
 
   /** Directional obstacle wakes: shelter + local turbulence downwind, lee downdraft, roof-edge updraft. */
   private wakes(pos: V3, o: V3): void {
-    const th = ((this.p.directionDeg + 180) * Math.PI) / 180;
-    const ex = Math.sin(th), ey = Math.cos(th);
+    this.direction();
+    const ex = this.mSin, ey = this.mCos;
     let shelter = 0, wz = 0, tx = 0, ty = 0, tz = 0;
     const zm = this.zMean;
     for (let i = 0; i < this.zones.length; i++) {
@@ -197,7 +218,7 @@ export class Wind {
       const lee = along - R;                            // distance behind the lee face
       if (lee > 9 * H || along < -R - H || cross > R + 2 * H || h > 1.8 * H) continue;
       this.meanAt(H, zm);
-      const UH = Math.hypot(zm.x, zm.y);
+      const UH = Math.sqrt(zm.x * zm.x + zm.y * zm.y);
       if (UH < 0.05) continue;
       const W = R + 0.2 * Math.max(0, lee);             // wake widens slowly downstream
       const fc = 1 - sstep(W, W + 0.5 * H, cross);
@@ -207,7 +228,7 @@ export class Wind {
       shelter = Math.max(shelter, s);
       // lee downdraft (recirculation over the cavity) and roof-edge separation updraft (windward edge)
       wz -= 0.25 * UH * sstep(-R, 0, lee) * (1 - sstep(0, 2.5 * H, lee)) * fc * (1 - sstep(0.9 * H, 1.4 * H, h));
-      const de = Math.hypot(along + R, h - H) / (0.35 * H);
+      const ea = along + R, eh = h - H, de = Math.sqrt(ea * ea + eh * eh) / (0.35 * H);
       if (de < 3) wz += 0.5 * UH * Math.exp(-de * de) * (1 - sstep(R, R + 0.3 * H, cross));
       // local turbulence: σ ≈ 0.3·U_H·intensity in the wake, also in the roof shear layer
       const st = 0.3 * UH * zn.intensity * Math.max(s, 0.6 * Math.exp(-de * de));

@@ -23,9 +23,11 @@ export interface RotorAeroOut {
   mAdv: number; mFront: number;
   /** Flapping phase lag (rad): the hub moment pattern turns this far in the spin direction. */
   flapLag: number;
+  /** tan(flapLag) */
+  flapTan: number;
 }
 
-export const emptyRotorOut = (): RotorAeroOut => ({ thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0, mAdv: 0, mFront: 0, flapLag: 0 });
+export const emptyRotorOut = (): RotorAeroOut => ({ thrust: 0, torque: 0, hForce: 0, vi: 0, vrs: 0, mAdv: 0, mFront: 0, flapLag: 0, flapTan: 0 });
 
 const out6 = new Float64Array(6);
 
@@ -55,6 +57,7 @@ export class RotorAero {
   private rng: Rng;
   private ouT = 0; private ouQ = 0;
   private tNow = 0;
+  private ouDt = NaN; private ouA = 0; private ouSd = 0; // OU decay / drive for the last dt
   /** Frame-wide correlated part of the prop-wash noise (optional). */
   common: CommonNoise | null = null;
   /** Reversed rotation efficiency (props run backwards are poor airfoils). */
@@ -100,7 +103,7 @@ export class RotorAero {
     const OR = W * R;
     const V = Math.sqrt(vcEff * vcEff + vip * vip);
     const q2 = OR * OR + V * V;
-    if (q2 < 1e-6) { o.thrust = 0; o.torque = 0; o.hForce = 0; o.vi = 0; o.vrs = 0; o.mAdv = 0; o.mFront = 0; o.flapLag = 0; return; }
+    if (q2 < 1e-6) { o.thrust = 0; o.torque = 0; o.hForce = 0; o.vi = 0; o.vrs = 0; o.mAdv = 0; o.mFront = 0; o.flapLag = 0; o.flapTan = 0; return; }
     const beta = Math.atan2(V, OR);
     const gamma = V > 1e-6 ? Math.atan2(vcEff, vip) : 0;
     tableLookup(t, beta, gamma, out6);
@@ -111,7 +114,7 @@ export class RotorAero {
     // Low-Reynolds-number correction: blade profile drag (and so torque) rises, and lift falls
     // slightly, as the section Reynolds number drops below the calibration point (Re ~ q).
     const reRatio = Math.sqrt(q2) / t.tipRef;
-    if (reRatio < 1) { Q *= Math.min(1.45, Math.pow(Math.max(reRatio, 0.05), -0.18)); T *= Math.max(0.9, Math.pow(Math.max(reRatio, 0.05), 0.03)); }
+    if (reRatio < 1) { const lr = Math.log(Math.max(reRatio, 0.05)); Q *= Math.min(1.45, Math.exp(-0.18 * lr)); T *= Math.max(0.9, Math.exp(0.03 * lr)); } // (Re^-0.18, Re^0.03)
     let H = out6[2] * t.ctScale * den;
     // the table's vi belongs to the uncalibrated BEMT thrust; momentum theory has vi ~ sqrt(T)
     const vi = out6[3] * Math.sqrt(q2) * Math.sqrt(t.ctScale);
@@ -165,7 +168,8 @@ export class RotorAero {
     // ~15-50 Hz), scaled by VRS intensity. Part is common to the whole frame (it sits in one
     // turbulent wake, rho ~ 0.36), the rest per rotor (eddies ~ R across are uncorrelated).
     const tau = 0.006;
-    const a = Math.exp(-dt / tau), sd = Math.sqrt(1 - a * a);
+    if (dt !== this.ouDt) { this.ouDt = dt; this.ouA = Math.exp(-dt / tau); this.ouSd = Math.sqrt(1 - this.ouA * this.ouA); }
+    const a = this.ouA, sd = this.ouSd;
     this.ouT = this.ouT * a + sd * this.rng.gauss();
     this.ouQ = this.ouQ * a + sd * this.rng.gauss();
     this.tNow += dt;
@@ -196,7 +200,7 @@ export class RotorAero {
     // flap damping γ/8·Ω² against the bending stiffness I_β·ω_β0² (Bramwell, hingeless rotors).
     const kM = T0 !== 0 ? T / T0 : 0;
     const wf = 2 * Math.PI * this.flapHz;
-    o.mAdv = mS * kM; o.mFront = mC * kM; o.flapLag = Math.atan((this.lock / 8) * (W / wf) * (W / wf));
+    o.mAdv = mS * kM; o.mFront = mC * kM; o.flapTan = (this.lock / 8) * (W / wf) * (W / wf); o.flapLag = Math.atan(o.flapTan);
     if (rev) { T = -T * this.reverseEfficiency; o.mAdv = -o.mAdv * this.reverseEfficiency; o.mFront = -o.mFront * this.reverseEfficiency; }
     o.thrust = T; o.torque = Q; o.hForce = H; o.vi = vi; o.vrs = vrs;
   }

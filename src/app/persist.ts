@@ -173,7 +173,7 @@ export function validView(raw: unknown): ViewSettings {
   return merge(DEFAULT_VIEW, raw, {
     osdFont: oneOf(...OSD_FONTS), // also keeps the font URL to /fonts/<known name>.mcm
     renderScale: num(0.25, 2),
-    cubeSize: num(256, 2048, true),
+    cubeSize: (x, d) => (x === 0 ? 0 : num(256, 2048, true)(x, d)), // 0: automatic
     displayCompMs: num(0, 100),
     displayCompAuto: bool,
     latencyOverrideMs: num(0, 500),

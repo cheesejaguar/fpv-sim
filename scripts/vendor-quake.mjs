@@ -12,8 +12,9 @@
 //
 // Output: <id>.map, textures/<librequake-name>.png and textures/manifest.json
 // ({ idTextureName: { file, w, h } }; the sizes are needed to compute UVs before the images load).
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { optimizePng } from './optimize-png.mjs';
 
 const MAPS = { e1m1: 'E1M1.MAP', dm3: 'DM3.MAP' };
 
@@ -67,7 +68,8 @@ for (const [id, file] of Object.entries(MAPS)) {
     const path = index.get(lqName);
     if (!path) { if (!missing.includes(name)) missing.push(name); continue; }
     const buf = await readFile(path);
-    await copyFile(path, new URL(`textures/${lqName}.png`, out));
+    // re-encoded losslessly (palette PNG, editor metadata dropped): same pixels, ~1/3 the bytes
+    await writeFile(new URL(`textures/${lqName}.png`, out), optimizePng(buf) ?? buf);
     manifest[name] = { file: `${lqName}.png`, ...pngSize(buf) };
   }
 }

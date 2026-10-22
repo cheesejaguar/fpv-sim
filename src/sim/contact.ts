@@ -35,6 +35,10 @@ export interface ContactHit { depth: number; nx: number; ny: number; nz: number;
 export interface CollisionWorld {
   /** Penetration query for a sphere (world position, radius). Return true if penetrating. */
   sphere(p: V3, radius: number, out: ContactHit): boolean;
+  /** Optional: prepare sphereNear() queries for spheres inside (p, r) (the airframe's bound sphere). */
+  near?(p: V3, r: number): void;
+  /** sphere() for a sphere inside the one last passed to near(); same results, less work. */
+  sphereNear?(p: V3, radius: number, out: ContactHit): boolean;
   /** Depth (m) of p inside a porous drag volume (tree canopy, hedge); 0 outside. */
   foliage?(p: V3): number;
   /** Distance from p along unit dir to the first surface, or Infinity. */

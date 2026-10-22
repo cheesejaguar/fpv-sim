@@ -36,6 +36,9 @@ export function missingFeatures(): Missing[] {
   else if (!gl.getExtension('EXT_color_buffer_float') && !gl.getExtension('EXT_color_buffer_half_float')) {
     missing.push({ what: 'Floating-point render targets (EXT_color_buffer_float)', fix: `Your graphics driver doesn't offer them to the browser. ${HW_ACCEL}` });
   }
+  // the probe's context is released at once: browsers cap live WebGL contexts per page (and per GPU
+  // process), and this one would otherwise linger until garbage collection
+  try { gl?.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* best effort */ }
   if (typeof WebAssembly !== 'object' || typeof WebAssembly.instantiate !== 'function') {
     missing.push({ what: 'WebAssembly (runs the Betaflight firmware)', fix: 'WebAssembly is turned off, for example by Lockdown Mode on Apple devices or by a browser policy. Allow it for this site.' });
   }

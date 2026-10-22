@@ -66,7 +66,7 @@ const LRPP_STALL = 0.25, LRPP_FULL = 0.3;
 export class Motor {
   p: MotorParams;
   s: MotorState;
-  private pending: number[] = [0, 0]; // DShot transport/processing delay (frames)
+  private pend0 = 0; private pend1 = 0; // DShot transport/processing delay (two frames in flight)
   readonly ke: number;  // V·s/rad at 20 °C
   private rng: Rng;
   private iBusF = 0;      // limiter: filtered bus-current measurement
@@ -96,8 +96,8 @@ export class Motor {
 
   /** Queue a DShot command (called at the PID/motor update rate). */
   command(dshot: number, reversed: boolean): void {
-    this.pending.push(dshot);
-    const cmd = this.pending.shift()!;
+    const cmd = this.pend0;
+    this.pend0 = this.pend1; this.pend1 = dshot;
     this.s.dshotCmd = cmd;
     this.s.reversed = reversed;
   }
@@ -130,14 +130,15 @@ export class Motor {
     return D;
   }
 
-  /** Coefficients for the bus solve: bus current = a·V − b (for driven motors). */
-  busCoeffs(): { a: number; b: number; driven: boolean } {
+  /** Coefficients for the bus solve: bus current = a·V − b (for driven motors); written to `out` when given. */
+  busCoeffs(out: { a: number; b: number; driven: boolean } = { a: 0, b: 0, driven: false }): { a: number; b: number; driven: boolean } {
     const D = this.appliedDuty();
-    if (Number.isNaN(D)) return { a: 0, b: 0, driven: false };
+    if (Number.isNaN(D)) { out.a = 0; out.b = 0; out.driven = false; return out; }
     const R = this.rEff(), e = this.kt() * this.s.omega; // back-EMF (signed), Ke≈Kt in SI
     // i = (D V − e)/R ;  I_bus = D·i (/η when motoring)
     const eta = this.p.escEfficiency;
-    return { a: (D * D) / (R * eta), b: (D * e) / (R * eta), driven: true };
+    out.a = (D * D) / (R * eta); out.b = (D * e) / (R * eta); out.driven = true;
+    return out;
   }
 
   /** No-load speed at bus voltage V (rad/s). */
@@ -197,7 +198,7 @@ export class Motor {
     // (h ∝ U^0.8, U ∝ rpm; a 5" 2207 runs ~30 °C at hover and ~100-120 °C after a minute at full
     // throttle on a thrust stand) and by the flight airspeed
     const xs = Math.min(1, (Math.abs(w) * kt) / Math.max(1, vbus));
-    const rth = p.thermalResKPerW / (0.25 + 8 * Math.pow(xs, 0.8) + coolingAirspeed / 12);
+    const rth = p.thermalResKPerW / (0.25 + 8 * Math.exp(0.8 * Math.log(xs)) + coolingAirspeed / 12); // (xs^0.8)
     s.tempC += ((pLoss - (s.tempC - ambientC) / rth) / p.thermalCapJPerK) * dt;
     if (s.tempC > s.peakC) {
       s.peakC = s.tempC;
