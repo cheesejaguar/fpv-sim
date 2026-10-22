@@ -6,7 +6,7 @@
 import { AUX_EXTRA, AuxBind, AxisBind, ButtonBind, buttonName, controllerKind, genericJoystickProfile, InputManager, InputProfile, isStandard, PRESET_PROFILES, squareSticks, standardProfile, ThrottleMode } from '../input/gamepad';
 import { ControlBase, controlBase, detectControl, RadioWizard, WIZARD_STEPS } from '../input/radioWizard';
 import { webHidSupported } from '../input/steamHid';
-import { checkbox, el, section, select, slider } from './dom';
+import { checkbox, el, onUnmount, section, select, slider } from './dom';
 import { focusEl, lockNav, NavLock, NavLockLevel } from './menu/nav';
 
 type Ch = 'roll' | 'pitch' | 'yaw' | 'throttle';
@@ -401,6 +401,7 @@ export function inputPanel(im: InputManager): HTMLElement {
   };
   render();
   raf = requestAnimationFrame(tick);
+  onUnmount(root, stop); // the menu closing into flight (its screen stays in the page, hidden) or moving on
   return root;
 }
 

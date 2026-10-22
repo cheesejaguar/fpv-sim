@@ -190,6 +190,9 @@ export class GameMenu {
   get isOpen() { return this.openState; }
   /** The title screen wants the live orbiting quad behind it instead of the FPV feed. */
   get backdrop() { return this.openState && this.stack[0] === 'title'; }
+  /** The menu covers the 3D view with its opaque scrim (any screen but the title, no replay playing):
+   *  the frame loop can draw the scene behind it far less often. */
+  get dimmed() { return this.openState && this.root.classList.contains('deep') && !this.root.classList.contains('gm-replaying'); }
 
   open(screen: Screen = this.inFlight ? 'pause' : 'title') {
     this.stack = screen === 'title' || screen === 'pause' ? [screen] : [this.inFlight ? 'pause' : 'title', screen];
@@ -205,6 +208,9 @@ export class GameMenu {
     this.openState = false;
     this.root.classList.add('hidden');
     this.clearTimers();
+    // the screen stays in the page (hidden) until the next open() renders a fresh one: stop its
+    // panels' loops and listeners now, not then (the Controller tab polls every frame otherwise)
+    runUnmounts(this.screenEl);
     this.nav.stop();
     this.host.onOpenChange(false);
   }
