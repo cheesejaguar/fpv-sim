@@ -27,6 +27,7 @@ export class WorkerBridge implements BfBridge {
   private cliListeners = new Set<(t: string) => void>();
   private batchWaiters = new Map<number, (s: string) => void>();
   private bblWaiters = new Map<number, (m: { data: ArrayBuffer; sessions: number }) => void>();
+  private runWaiters = new Map<number, (m: { data: ArrayBuffer; seconds: number; reason: string }) => void>();
   private batchId = 1;
   private init: InitMsg | null = null;
   private maps = new Map<string, MapMsg>();
@@ -46,6 +47,7 @@ export class WorkerBridge implements BfBridge {
       if (m.type === 'cliOut') { for (const l of this.cliListeners) l(m.text); return; }
       if (m.type === 'cliBatchDone') { this.batchWaiters.get(m.id)?.(m.output); this.batchWaiters.delete(m.id); return; }
       if (m.type === 'bbl') { this.bblWaiters.get(m.id)?.({ data: m.data, sessions: m.sessions }); this.bblWaiters.delete(m.id); return; }
+      if (m.type === 'run') { this.runWaiters.get(m.id)?.({ data: m.data, seconds: m.seconds, reason: m.reason }); this.runWaiters.delete(m.id); return; }
       if (m.type === 'fatal') { this.died(m.reason); return; }
       this.onMessage(m);
     };
@@ -60,7 +62,8 @@ export class WorkerBridge implements BfBridge {
     // nobody will answer the old worker's requests
     for (const r of this.batchWaiters.values()) r('');
     for (const r of this.bblWaiters.values()) r({ data: new ArrayBuffer(0), sessions: 0 });
-    this.batchWaiters.clear(); this.bblWaiters.clear();
+    for (const r of this.runWaiters.values()) r({ data: new ArrayBuffer(0), seconds: 0, reason: 'the simulator stopped' });
+    this.batchWaiters.clear(); this.bblWaiters.clear(); this.runWaiters.clear();
     if (this.restarts >= this.maxRestarts || !this.init) {
       this.failed = true;
       this.onMessage({ type: 'fatal', reason });
@@ -94,6 +97,13 @@ export class WorkerBridge implements BfBridge {
     const id = this.batchId++; this.bblWaiters.set(id, res); this.send({ type: 'getBbl', id });
   });
   clearBbl = () => this.send({ type: 'clearBbl' });
+  /** Begin a reproducible run (the worker reboots Betaflight and records every RC packet). */
+  runStart = (seed: number) => this.send({ type: 'runStart', seed: seed >>> 0 });
+  /** Stop the run (or fetch the last one) as a .fpvrun file; empty data: there was none. */
+  runStop = () => new Promise<{ data: ArrayBuffer; seconds: number; reason: string }>((res) => {
+    if (this.failed) { res({ data: new ArrayBuffer(0), seconds: 0, reason: 'the simulator stopped' }); return; }
+    const id = this.batchId++; this.runWaiters.set(id, res); this.send({ type: 'runStop', id });
+  });
 
   /**
    * Poll the sticks at ~0.5-1 kHz and hand every sample to the worker with the time it was taken:

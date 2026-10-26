@@ -5,7 +5,7 @@ import { Battery, BatteryParams } from './battery';
 import { BemtTable } from './bemt';
 import { ColliderSphere, CollisionWorld, ContactHit, MATERIALS, restitutionAt, SurfaceMaterial } from './contact';
 import { FlexMode, GyroChip, Imu } from './imu';
-import { V3, Quat, v3, quat, rotate, rotateInv, cross, qintegrate, Rng } from './math';
+import { V3, Quat, v3, quat, rotate, rotateInv, cross, qintegrate, Rng, subSeed } from './math';
 import { Motor, MotorParams } from './motor';
 import { CommonNoise, RotorAero, RotorAeroOut, emptyRotorOut, pristineDamage } from './rotor';
 import { WakeField } from './wake';
@@ -93,7 +93,7 @@ export class QuadSim {
   rotorExtraTorque: number[]; // braking torque from prop strikes (applied next step)
   private Iinv: number[] = [];
   private iMin = 1e-3;
-  private rng = new Rng(7);
+  private rng: Rng;
   private air = { rho: 1.225, pressure: 101325, tempK: 288, mu: 1.8e-5 };
   private groundCache: number[] = [];
   private ceilCache: number[] = [];
@@ -136,7 +136,13 @@ export class QuadSim {
   private evMotor: Float64Array; private evArm: Float64Array; private evMat: SurfaceMaterial[]; private evTouch: Uint8Array;
   private foliageDrag = 0;
 
-  constructor(p: QuadParams, physicsHz = 8000, soc = 1, ambientC = 20) {
+  /**
+   * noiseSeed: seeds the plant's own random streams (rotor-wash and contact noise); without it they
+   * start from fixed seeds, as they always have. The build's unit-to-unit scatter is p.seed.
+   */
+  constructor(p: QuadParams, physicsHz = 8000, soc = 1, ambientC = 20, noiseSeed?: number) {
+    const ns = (k: number) => (noiseSeed === undefined ? k : subSeed(noiseSeed, k));
+    this.rng = new Rng(ns(7));
     // own copy of the rotor axes: a bent arm tilts them (repair() restores)
     p = { ...p, rotors: p.rotors.map((r) => ({ ...r, axis: { ...r.axis } })) };
     this.p = p;
@@ -154,9 +160,9 @@ export class QuadSim {
     this.foliageDrag = 70 * (p.cdA.x + p.cdA.y + p.cdA.z) / 3;
     this.physicsHz = physicsHz;
     this.motors = p.rotors.map((r, i) => new Motor(r.motor, ambientC, ((p.seed ?? 0) + 0x9e37 * (i + 1)) >>> 0));
-    const washCommon = new CommonNoise(99);
+    const washCommon = new CommonNoise(ns(99));
     this.aero = p.rotors.map((r, i) => {
-      const a = new RotorAero(r.table, 100 + i);
+      const a = new RotorAero(r.table, ns(100 + i));
       a.common = washCommon;
       a.ductGain = r.ductGain ?? 0;
       a.damage.imbalance = r.imbalance ?? a.damage.imbalance;

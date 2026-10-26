@@ -1,0 +1,33 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario",
+  "version": 1,
+  "meta": {
+    "id": "hover-whoop-gym",
+    "name": "Whoop hover box",
+    "description": "First drill: hold a 65 mm whoop inside a 0.5 m box 1.5 m above the pad in the windless Whoop Gym. Angle mode, armed at the start.",
+    "author": "fpv-sim",
+    "license": "CC0-1.0"
+  },
+  "seed": 1,
+  "map": {
+    "id": "gym"
+  },
+  "drone": {
+    "preset": "Beginner: 65 mm Tiny Whoop 1S"
+  },
+  "start": {
+    "armed": true,
+    "mode": "angle"
+  },
+  "task": {
+    "type": "hover",
+    "heightM": 1.5,
+    "radiusM": 0.5,
+    "holdS": 10
+  },
+  "episode": {
+    "maxSeconds": 30,
+    "controlHz": 100
+  }
+}

@@ -24,6 +24,11 @@ export interface DroneSpec {
   batteryAge: number;            // 1 = new
   motorTiltDeg: number;
   overrides: Partial<Overrides>;
+  /**
+   * Another unit of the same build: its own sensor offsets, cell spread and arm detuning (specSeed).
+   * Unset: the build's own, which stay put while sliders are tuned. Scenarios set it per episode.
+   */
+  unitSeed?: number;
 }
 
 /** Everything a slider can override (per-component raw specs and derived values). */
@@ -390,7 +395,7 @@ export function buildDrone(spec: DroneSpec): DroneBuild {
  * (IMU offsets / board alignment, cell spread, arm detuning) stays put while sliders are tuned.
  */
 export function specSeed(spec: DroneSpec): number {
-  const key = [spec.name, spec.frame, spec.motor, spec.prop, spec.battery, spec.esc, spec.fc, spec.video].join('|');
+  const key = [spec.name, spec.frame, spec.motor, spec.prop, spec.battery, spec.esc, spec.fc, spec.video].join('|') + (spec.unitSeed != null ? `|#${spec.unitSeed >>> 0}` : '');
   let h = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
   return h >>> 0;

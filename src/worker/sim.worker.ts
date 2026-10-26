@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
-// Simulation worker: Betaflight (WASM) and the physics plant in lockstep.
+// Simulation worker: Betaflight (WASM) and the physics plant in lockstep (the flight core,
+// flightCore.ts, shared with the headless environment), paced by the wall clock.
 //
 // Each physics step (default 125 µs = 8 kHz):
 //   IMU sample -> bf_set_gyro_acc -> bf_step(dt) -> bf_get_motors -> ESC/motor/rotor/body step
@@ -10,26 +11,21 @@
 //
 // Reliability: messages wait until the boot finished; firmware operations (CLI, spec changes) run one
 // at a time; any uncaught error posts { type: 'fatal' } (the bridge restarts the worker once).
-import { Betaflight, BF_PORT, armingFlagNames } from '../bf/bfModule';
+import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { batteryCli, defaultCli, loopCli, osdGrid, osdLayout } from '../bf/defaults';
-import { buildDrone, DEFAULT_SPEC, DroneBuild, DroneSpec, preloadPropTable } from '../builder/derive';
+import { DEFAULT_SPEC, DroneBuild, DroneSpec, preloadPropTable } from '../builder/derive';
 import { hasMap, MapEntry, MAPS, preloadMap, registerMap } from '../maps/maps';
-import { gatePassed } from '../maps/gates';
-import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ, withCourse } from '../maps/world';
-import { RcLink } from '../sim/rcLink';
-import { G0, isa } from '../sim/atmosphere';
+import { MapDef, withCourse } from '../maps/world';
 import { Spectrum } from '../sim/fft';
-import { rotateInv, V3 } from '../sim/math';
-import { QuadEnv, QuadSim } from '../sim/quad';
-import { WakeField } from '../sim/wake';
-import { Wind } from '../sim/wind';
-import { ACC_CAL_KEY, accBoardKey, calibrateAccLevel, sampleLevelRest } from './accCal';
+import { APP_VERSION } from '../ui/menu/about';
+import { ACC_CAL_KEY, accBoardKey } from './accCal';
 import { BblRecorder } from './bbl';
-import { BaroModel, Brownout, CurrentSensor, OverloadGovernor, seedOf } from './fcHardware';
-import { EepromStore, runCliBatch } from './fwCli';
+import { OverloadGovernor } from './fcHardware';
+import { FlightCore } from './flightCore';
+import { encodeRun, RunLog, RunRecorder, RUN_FORMAT, RUN_GPS_EPOCH_MS, RUN_VERSION } from './runLog';
+import { EepromStore } from './fwCli';
 import { IdbKv } from './kv';
-import { createShared, DEFAULT_SETTINGS, FromWorker, GyroSpectrum, OSD_MAX_COLS, OSD_MAX_ROWS, R, REC, RING_DT, RING_N, Shared, SimSettings, StickSampler, Telemetry, ToWorker } from './shared';
-import { GPS_ORIGIN, UbxReceiver } from './ubxGps';
+import { createShared, FromWorker, GyroSpectrum, OSD_MAX_COLS, OSD_MAX_ROWS, R, REC, RING_N, Shared, StickSampler, Telemetry, ToWorker } from './shared';
 
 /** Bump when defaultCli() changes so existing users get the new baseline. */
 const DEFAULTS_VERSION = 6; // 4: RSSI dBm OSD element; 5: battery follows the pack; 6: GPS, serial blackbox, beacon, small_angle 25, PID denom
@@ -61,63 +57,25 @@ self.onerror = (ev) => { fatal(typeof ev === 'string' ? ev : (ev as ErrorEvent).
 self.onunhandledrejection = (ev: PromiseRejectionEvent) => { ev.preventDefault(); fatal(ev.reason); };
 
 let sh: Shared;
-let settings: SimSettings = DEFAULT_SETTINGS;
-let spec: DroneSpec = DEFAULT_SPEC;
-let build: DroneBuild;
-let quad: QuadSim;
-let map: MapDef;
-let world: PrimitiveWorld;
-let env: QuadEnv;
-let bf: Betaflight | null = null;
 let fwState = 0;
 
-let simT = 0;   // plant time (s)
-let fcT = 0;    // firmware time (s): also runs while the plant is held during CLI batches
 let wallStart = 0, simAtWallStart = 0;
 let realtime = false; // inside loop(): sim time maps onto the wall clock (stick timestamps apply)
-// 2.4 GHz RC control link: decides which RC packets arrive and feeds LQ / RSSI to Betaflight
-const rcLink = new RcLink();
-const pilotTmp = { x: 0, y: 0, z: 0 };
-let linkAcc = 0;
-/** prop-wash puffs: time not yet handed to WakeField.step (s), and its scratch wind vector */
-const WAKE_DT = 0.001 - 1e-9;
-let wakeAcc = 0;
-const wakeWind: V3 = { x: 0, y: 0, z: 0 };
-let rcAcc = 0, battAcc = 0, baroAcc = 0, ringAcc = 0, osdAcc = 0, telAcc = 0, cliAcc = 0, gpsAcc = 0, bblAcc = 0;
+let osdAcc = 0, telAcc = 0, cliAcc = 0;
 let lastOsdFrame = -1;
-const motorCmd = new Uint16Array(4);
-const erpm = new Float32Array(4);
-const rcBuf = new Float32Array(16).fill(1500);
-let armed = false;
-let crashMsg: string | null = null;
-let crashMsgUntil = 0;
-let impactMsg = '', damageMsg = '';
-// A crash worth flagging: ~4 m/s into something (a whoop rarely reaches the old 6 m/s threshold),
-// or anything that actually damaged the quad.
-const CRASH_MIN_MPS = 4;
-let impactPeak = 0, impactLastT = -1;
 let stepCostUs = 0;
 let simRate = 1;
-let lastPos = { x: 0, y: 0, z: 0 };
-let nextGate = 0;
 let cliOutBuf = '';
+/** physicsKey() of the settings a run began with */
+let runKey = '';
 /** EEPROM dirty-check pacing (pumpSideChannels): CLI traffic seen within the last CLI_HOT_S seconds */
 const CLI_HOT_S = 2;
 let cliHot = 0, eepAcc = 0, eepAfterDisarm = false;
-// beeper / beacon seen since the last telemetry message (their patterns are faster than 20 Hz)
-let beeperSeen = false, beaconSeen = false;
-
-// FC hardware imperfections (seeded per drone build) and peripherals
-const baro = new BaroModel();
-let current = new CurrentSensor(1);
-const brownout = new Brownout(2.8, 0.03, 3.0, 0.8); // 0.8 s: regulator back up + MCU boot
 const governor = new OverloadGovernor();
-const gps = new UbxReceiver(GPS_ORIGIN);
 const bbl = new BblRecorder();
-let diskArea = 0, rotorR = 0.05;
-// IMU sample-and-hold mirror: a slower chip (BMI270 3.2 kHz) hands Betaflight a new sample only on
-// the physics steps where it latched one (see src/sim/imu.ts holdT)
-let imuHold = 0, imuFresh = true;
+/** the reproducible run being recorded, and the last one that ended */
+let run: RunRecorder | null = null;
+let lastRun: RunLog | null = null;
 
 const kv = new IdbKv(undefined, (why) => post({ type: 'log', text: `Settings storage unavailable (${why}): Betaflight changes won't be kept after a reload` }));
 const eeprom = new EepromStore(kv);
@@ -138,14 +96,30 @@ const specFilt = [new Float32Array(SPEC_N), new Float32Array(SPEC_N), new Float3
 const specFft = new Spectrum(SPEC_N);
 const dbg = new Int16Array(8);
 
-// ---------------------------------------------------------------------------------------------
+// The flight core, hooked up to the shared memory and the message port: sticks from the timestamped
+// stick ring (in real-time stepping) or the newest poll, and the 1 kHz state ring.
+const core = new FlightCore({
+  sticks: (out) => {
+    // the stick sample taken a fixed latency before this packet's slot (timestamped by the main
+    // thread; a slow input such as a BLE radio is interpolated between its reports, see
+    // StickSampler); outside real-time stepping (boot, CLI batches) simply the newest poll
+    sticks.packetMs = 1000 / core.settings.rcLinkHz;
+    if (!(realtime && sticks.sample(sh, wallAt(core.simT), out))) for (let i = 0; i < 16; i++) out[i] = sh.rc[i];
+    run?.packet(core.steps, out);
+  },
+  log: (text) => post({ type: 'log', text }),
+  gate: (gate, t) => post({ type: 'gate', gate, t }),
+  brownout: (ev) => { if (ev === 'down') blankOsd(); },
+  blackbox: (bytes, armed) => {
+    const was = bbl.full;
+    bbl.push(bytes, armed);
+    if (bbl.full && !was) post({ type: 'log', text: 'Blackbox log full (32 MB): download or clear it to keep recording' });
+  },
+  record: () => writeRing(),
+  afterFirmware: (dt) => { if (specOn) sampleSpectrum(dt); },
+});
 
-function makeEnv(): QuadEnv {
-  const ws = map.windScale ?? 1;
-  const w = new Wind({ speed20ft: settings.wind.speed * ws, directionDeg: settings.wind.direction, z0: map.groundMat === 'grass' ? 0.03 : 0.3, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 * ws }); // calm air: no gusts
-  w.zones = map.wakeZones; w.indoor = map.indoor ?? [];
-  return { world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
-}
+// ---------------------------------------------------------------------------------------------
 
 /**
  * A map package from disk, as mapFormat.packageEntry builds it, but the package loader (~30 kB) is
@@ -170,13 +144,10 @@ async function loadMap(id: string): Promise<boolean> {
   let error: string | undefined;
   if (!hasMap(id)) { error = `unknown map "${id}"`; id = 'field'; }
   else await preloadMap(id).catch((e) => { console.warn(e); error = (e as Error)?.message ?? String(e); id = 'field'; });
-  if (map && want !== settings.mapId) return false; // superseded by a newer map change while loading
+  if (core.map && want !== core.settings.mapId) return false; // superseded by a newer map change while loading
   let m: MapDef;
-  try { m = withCourse(MAPS[id](), settings.courseId); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
-  map = m;
-  world = new PrimitiveWorld(map);
-  env = makeEnv();
-  gps.origin = { ...GPS_ORIGIN, altM: map.elevationM ?? 0 };
+  try { m = withCourse(MAPS[id](), core.settings.courseId); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
+  core.setMap(m);
   post({ type: 'mapLoaded', id, requested: want, ok: !error, error });
   return true;
 }
@@ -186,29 +157,8 @@ async function loadMap(id: string): Promise<boolean> {
  * over instead of respawning (a physics-rate change mid-flight).
  */
 function buildQuad(keepBattery = false, keepState = false) {
-  build = buildDrone(spec);
-  const prev = quad;
-  quad = new QuadSim(build.params, settings.physicsHz, spec.batterySoc, settings.ambientC);
-  imuHold = 0; imuFresh = true;
-  if (keepBattery && prev) quad.battery.s = { ...prev.battery.s };
-  else current.reset();
-  for (const a of quad.aero) a.propwashScale = settings.propwash;
-  diskArea = build.params.rotors.reduce((a, r) => a + Math.PI * r.table.R * r.table.R, 0);
-  rotorR = build.params.rotors[0]?.table.R ?? 0.05;
-  // sensor errors belong to the board: the same build keeps the same offsets
-  const seed = seedOf(`${spec.fc}|${spec.frame}|${spec.esc}|${spec.battery}`);
-  if (!keepBattery) current = new CurrentSensor(seed);
-  // (prop imbalance, including the builder override, now comes from the rotor config)
-  if (keepState && prev) {
-    const s = quad.s, p = prev.s;
-    s.pos = { ...p.pos }; s.vel = { ...p.vel }; s.q = { ...p.q }; s.w = { ...p.w }; s.vbus = p.vbus; s.ibus = p.ibus; s.touching = p.touching;
-    quad.motors.forEach((m, k) => { if (prev.motors[k]) m.s = { ...prev.motors[k].s }; });
-    quad.aero.forEach((a, k) => { if (prev.aero[k]) a.damage = { ...prev.aero[k].damage }; });
-    quad.motorDamage = prev.motorDamage.map((d) => ({ ...d }));
-  } else respawn();
-  // a fresh pack (or another quad) powers a browned-out FC up again
-  if (brownout.off && !keepBattery) { brownout.reset(); if (bf && fwState === 2) { bf.eepromSet(bf.eepromGet()); powerOnFirmware(); } }
-  post({ type: 'built', info: serializeInfo(build) });
+  core.buildQuad(keepBattery, keepState);
+  post({ type: 'built', info: serializeInfo(core.build) });
 }
 
 function serializeInfo(b: DroneBuild) {
@@ -219,17 +169,10 @@ function serializeInfo(b: DroneBuild) {
   };
 }
 
-function respawn() {
-  const sp = map.spawn;
-  const z = spawnGroundZ(map) + 0.06 - Math.min(...build.params.colliders.map((c) => c.pos.z - c.radius));
-  quad.reset({ x: sp.pos.x, y: sp.pos.y, z }, sp.yaw);
-  env.wake.reset(); wakeAcc = 0;
-  lastPos = { ...quad.s.pos };
-  nextGate = 0;
-}
+const respawn = () => core.respawn();
 
 /** The loop's wall-clock <-> sim-time mapping restarts from now (after boot, batches, pauses). */
-function resyncClock() { wallStart = performance.now(); simAtWallStart = simT; }
+function resyncClock() { wallStart = performance.now(); simAtWallStart = core.simT; }
 
 // ---------------------------------------------------------------------------------------------
 // Betaflight boot + CLI
@@ -255,21 +198,13 @@ async function loadFirmware(): Promise<Betaflight> {
   throw last;
 }
 
-/** Power the FC on (first boot, or again after a brownout): chip rate, sensors, init(). */
-function powerOnFirmware() {
-  if (!bf) return;
-  bf.setGyroRate(quad.imu.chip.sampleRateHz); // the chip's ODR, read at boot
-  primeSensors();
-  bf.init();
-  gps.powerOn(fcT);
-}
-
 async function bootFirmware() {
   fwState = 1; Atomics.store(sh.ctrl, 7, 1);
+  let bf: Betaflight;
   try {
-    bf = await loadFirmware();
+    bf = core.bf = await loadFirmware();
   } catch (e) {
-    bf = null; fwState = 3; Atomics.store(sh.ctrl, 7, 3);
+    core.bf = null; fwState = 3; Atomics.store(sh.ctrl, 7, 3);
     post({ type: 'fwMissing', reason: `Betaflight WASM not found (${(e as Error).message}). Build it with: npm run firmware` });
     return;
   }
@@ -277,9 +212,9 @@ async function bootFirmware() {
     const [saved, applied, fwSeen, accKey] = await storedConfig;
     accCalKey = typeof accKey === 'string' ? accKey : undefined;
     if (saved) bf.eepromSet(saved);
-    powerOnFirmware();
-    const dt = 1 / settings.physicsHz;
-    for (let i = 0; i < Math.round(0.5 / dt); i++) physicsStep(dt); // ~0.5 s boot: gyro calibration etc.
+    core.powerOnFirmware();
+    const dt = 1 / core.settings.physicsHz;
+    for (let i = 0; i < Math.round(0.5 / dt); i++) core.physicsStep(dt); // ~0.5 s boot: gyro calibration etc.
     // the image changed while booting: Betaflight could not use the stored config and reset it
     const fwReset = eeprom.check(bf) && !!saved;
     const why = !saved ? 'First boot' : fwReset ? 'Betaflight reset its stored configuration'
@@ -289,29 +224,20 @@ async function bootFirmware() {
       // on the held plant, as every later batch: the quad sits disarmed on the ground either way, and
       // the ~2.1 s of firmware time (the `save` reboot included) then costs ~0.3 s instead of ~1.5 s
       // of flying physics at 8 kHz
-      await cliBatch(defaultCli(build));
+      await cliBatch(defaultCli(core.build));
       await kv.set('bf-defaults-version', DEFAULTS_VERSION);
     }
     // new defaults, another board, or trims from before the level calibration (ACC_CAL_REV)
     if (why || accCalStale()) await calibrateAcc();
     if (FW_VERSION !== 'dev') await kv.set('bf-fw-version', FW_VERSION);
     eeprom.check(bf); await eeprom.flush();
-    fwState = 2; Atomics.store(sh.ctrl, 7, 2);
+    fwState = 2; core.fwRunning = true; Atomics.store(sh.ctrl, 7, 2);
     post({ type: 'ready', fw: bf.version });
   } catch (e) {
     fwState = 4; Atomics.store(sh.ctrl, 7, 4);
     post({ type: 'fwMissing', reason: `Betaflight failed to boot: ${(e as Error).message}` });
-    bf = null;
+    core.bf = null;
   }
-}
-
-function primeSensors() {
-  if (!bf) return;
-  const b = quad.battery.s;
-  bf.setBattery(b.voltage, 0, current.mah);
-  bf.setImu(0, 0, 0, 0, 0, G0);
-  rcBuf.fill(1500); rcBuf[2] = 1000; rcBuf[4] = 1000;
-  bf.setRc(rcBuf);
 }
 
 /** The board the stored accelerometer trims were made for (accBoardKey; persisted under ACC_CAL_KEY). */
@@ -326,22 +252,17 @@ let accRecheck = false;
  * lie: a whoop resting on one duct taught Betaflight a 13° roll as level.
  */
 async function calibrateAcc(): Promise<boolean> {
+  const bf = core.bf;
   if (!bf) return false;
-  const ok = calibrateAccLevel(bf, settings.physicsHz, (dt) => heldStep(dt, true));
-  if (ok) { accCalKey = accBoardKey(quad.imu); await kv.set(ACC_CAL_KEY, accCalKey); }
+  const ok = core.calibrateAccLevel();
+  if (ok) { accCalKey = accBoardKey(core.quad.imu); await kv.set(ACC_CAL_KEY, accCalKey); }
   eeprom.check(bf); await eeprom.flush();
   resyncClock();
   return ok;
 }
 
 /** The stored trims don't fit the simulated board: never calibrated, another build's IMU errors, or an older calibration. */
-const accCalStale = () => !!bf && (!bf.accCalibrated() || accCalKey !== accBoardKey(quad.imu));
-
-/** Firmware time passes by ms while the plant holds still (CLI batches). */
-function advanceFirmware(ms: number) {
-  const dt = 1 / settings.physicsHz;
-  for (let i = 0, n = Math.round(ms / 1000 / dt); i < n; i++) heldStep(dt);
-}
+const accCalStale = () => !!core.bf && (!core.bf.accCalibrated() || accCalKey !== accBoardKey(core.quad.imu));
 
 /**
  * Run CLI lines on the firmware, persist the EEPROM if they saved. The plant is held at rest
@@ -350,8 +271,9 @@ function advanceFirmware(ms: number) {
  * the ground anyway).
  */
 async function cliBatch(lines: string[]): Promise<string> {
+  const bf = core.bf;
   if (!bf) return '';
-  const out = runCliBatch(bf, lines, advanceFirmware);
+  const out = core.cliBatch(lines);
   eeprom.check(bf);
   await eeprom.flush();
   resyncClock();
@@ -362,179 +284,7 @@ async function cliBatch(lines: string[]): Promise<string> {
 // Main lockstep loop
 
 /** Wall-clock time (ms since the epoch) at which the loop meant to simulate sim time t. */
-const wallAt = (t: number) => performance.timeOrigin + wallStart + ((t - simAtWallStart) * 1000) / (settings.timeScale || 1);
-
-/**
- * Inputs to the FC that don't depend on whether the plant flies: RC link packets and link stats,
- * battery ADC, baro, GPS UART, blackbox UART. held: the plant is frozen (no current, no motion).
- */
-function fcInputs(dt: number, held: boolean) {
-  if (!bf) return;
-  rcAcc += dt;
-  linkAcc += dt;
-  if (linkAcc >= 0.05) {
-    // slowly varying uplink budget: range, walls, fading (pilot stands at the map's pilot spot)
-    rcLink.txPowerMw = settings.rcTxPowerMw ?? 250;
-    rcLink.rateHz = settings.rcLinkHz;
-    rcLink.updateBudget(world, pilotPos(map, pilotTmp), quad.s.pos, linkAcc);
-    linkAcc = 0;
-  }
-  if (rcAcc >= 1 / settings.rcLinkHz) {
-    rcAcc -= 1 / settings.rcLinkHz;
-    // a lost packet is really lost: Betaflight sees no new frame (and fails safe if it persists)
-    if (rcLink.packet()) {
-      // the stick sample taken a fixed latency before this packet's slot (timestamped by the main
-      // thread; a slow input such as a BLE radio is interpolated between its reports, see
-      // StickSampler); outside real-time stepping (boot, CLI batches) simply the newest poll
-      sticks.packetMs = 1000 / settings.rcLinkHz;
-      if (!(realtime && sticks.sample(sh, wallAt(simT), rcBuf))) for (let i = 0; i < 16; i++) rcBuf[i] = sh.rc[i];
-      for (let i = 0; i < 16; i++) if (!(rcBuf[i] >= 800 && rcBuf[i] <= 2200)) rcBuf[i] = 1500;
-      bf.setRc(rcBuf);
-    }
-    bf.setLinkStats(rcLink.lq, Math.round(rcLink.rssiDbm), rcLink.rfMode);
-  }
-  battAcc += dt;
-  if (battAcc >= 0.001) {
-    const b = quad.battery.s;
-    const amps = current.step(held ? 0 : b.current, battAcc); // the sensor's reading, mAh integrated from it
-    bf.setBattery(b.voltage, amps, current.mah);
-    battAcc = 0;
-  }
-  baroAcc += dt;
-  if (baroAcc >= 0.01) {
-    baroAcc = 0;
-    const air = isa(quad.s.pos.z + map.elevationM, settings.ambientC - 15);
-    const thrust = quad.rotorOut.reduce((a, o) => a + o.thrust, 0);
-    bf.setBaro(baro.read(air.pressure, air.rho, quad.s.pos.z - map.terrain(quad.s.pos.x, quad.s.pos.y), thrust, diskArea, rotorR));
-  }
-  gpsAcc += dt;
-  if (gpsAcc >= 0.005) {
-    gpsAcc = 0;
-    gps.fromFc(bf.serialRead(BF_PORT.gps));
-    const p = quad.s.pos, v = quad.s.vel;
-    const out = gps.tick(fcT, { e: p.x, n: p.y, u: p.z, ve: held ? 0 : v.x, vn: held ? 0 : v.y, vu: held ? 0 : v.z }, Date.now());
-    if (out.length) bf.serialWrite(BF_PORT.gps, out);
-  }
-  bblAcc += dt;
-  if (bblAcc >= 0.01) {
-    bblAcc = 0;
-    const was = bbl.full;
-    bbl.push(bf.serialRead(BF_PORT.blackbox), armed);
-    if (bbl.full && !was) post({ type: 'log', text: 'Blackbox log full (32 MB): download or clear it to keep recording' });
-  }
-}
-
-/** Hand Betaflight the IMU sample if the chip latched a new one, then run the FC for dt. */
-function stepFirmware(dt: number) {
-  if (!bf) return;
-  if (imuFresh) {
-    const g = quad.imu.gyroOut, a = quad.imu.accOut;
-    bf.setImu(g.x, g.y, g.z, a.x, a.y, a.z);
-    imuFresh = false;
-  }
-  bf.step(Math.round(dt * 1e6));
-  fcT += dt;
-  // (once seen, not asked again until the next telemetry message reports and clears it)
-  if (!beeperSeen && bf.beeper()) beeperSeen = true;
-  if (!beaconSeen && bf.beacon()) beaconSeen = true;
-}
-
-/** Track whether the IMU sample taken this step is a new one (call after every imu.sample). */
-function noteImuSample(dt: number) {
-  const own = (quad.imu as { gyroFresh?: boolean }).gyroFresh; // if the IMU model exposes it, trust it
-  const hz = quad.imu.chip.sampleRateHz;
-  imuHold += dt;
-  let fresh = imuHold >= 1 / hz - 1e-9;
-  if (fresh) { imuHold -= 1 / hz; if (imuHold > dt) imuHold = 0; }
-  if (hz >= quad.physicsHz) fresh = true;
-  imuFresh = typeof own === 'boolean' ? own : fresh;
-}
-
-const ZERO: V3 = { x: 0, y: 0, z: 0 }, UP_G: V3 = { x: 0, y: 0, z: G0 }, restForce: V3 = { x: 0, y: 0, z: G0 };
-/**
- * The plant holds still (no integration) while firmware time passes: the IMU reads the quad at rest
- * in its current attitude, or sitting level (accelerometer calibration), with gravity only and the
- * chip's own bias and noise; the motors don't act.
- */
-function heldStep(dt: number, level = false) {
-  if (!bf) return;
-  fcInputs(dt, true);
-  if (level) sampleLevelRest(quad.imu, quad.p.mass, dt);
-  else { rotateInv(restForce, quad.s.q, UP_G); quad.imu.sample(ZERO, restForce, ZERO, ZERO, quad.p.mass, dt); }
-  noteImuSample(dt);
-  for (let k = 0; k < 4; k++) erpm[k] = Math.abs(quad.motors[k]?.erpm() ?? 0);
-  bf.setErpm(erpm);
-  stepFirmware(dt);
-  armed = bf.getMotors(motorCmd);
-}
-
-function physicsStep(dt: number) {
-  // 1S boards: the FC browns out when the pack sags too far, and boots again once it recovers
-  if (bf && quad.p.battery.cellsSeries === 1) {
-    const ev = brownout.update(quad.s.vbus, dt);
-    if (ev === 'down') { post({ type: 'log', text: `Flight controller brownout: the 1S pack sagged to ${quad.s.vbus.toFixed(2)} V (FC rebooting, motors off)` }); blankOsd(); }
-    if (ev === 'up') { bf.eepromSet(bf.eepromGet()); powerOnFirmware(); post({ type: 'log', text: 'Flight controller rebooted after the brownout (arm switch must be cycled)' }); }
-  }
-  // sensors -> FC
-  if (bf && !brownout.off) {
-    fcInputs(dt, false);
-    for (let k = 0; k < 4; k++) erpm[k] = Math.abs(quad.motors[k].erpm());
-    bf.setErpm(erpm);
-    stepFirmware(dt);
-    armed = bf.getMotors(motorCmd);
-    quad.command(motorCmd, bf.motorsReversed());
-  } else {
-    motorCmd.fill(0); armed = false;
-    quad.command(motorCmd, false);
-  }
-  if (specOn) sampleSpectrum(dt);
-  quad.step(dt, env);
-  noteImuSample(dt);
-  // the prop-wash puffs drift with the mean wind: advanced once per ms with the time gathered, not
-  // every 125 µs step (their motion is far slower than that; WakeField.step takes any dt)
-  wakeAcc += dt;
-  if (wakeAcc >= WAKE_DT) {
-    env.wake.step(wakeAcc, env.wind.meanAt(quad.s.pos.z, wakeWind), map.terrain(quad.s.pos.x, quad.s.pos.y));
-    wakeAcc = 0;
-  }
-  simT += dt;
-
-  // state ring at 1 kHz
-  ringAcc += dt;
-  if (ringAcc >= RING_DT) { ringAcc -= RING_DT; writeRing(); detectGates(); }
-
-  // crash events
-  // An impact spans many physics steps while the contact decelerates the quad; report the peak
-  // approach speed of the event (the first steps), not whichever step happened to be last.
-  if (quad.s.maxImpact > 0) {
-    const v = quad.s.maxImpact;
-    quad.s.maxImpact = 0;
-    if (simT - impactLastT > 0.15) impactPeak = 0; // a new impact event
-    impactLastT = simT;
-    if (v > impactPeak) {
-      impactPeak = v;
-      if (v > CRASH_MIN_MPS) { impactMsg = `Impact ${v.toFixed(1)} m/s`; damageMsg = ''; crashMsgUntil = simT + 2; crashMsg = impactMsg; }
-    }
-  }
-  // damage from this crash (rolled by the quad once per impact event): name it on the banner
-  // (the worker consumes the log, so a rebuilt quad with a restarted clock can't confuse it)
-  if (quad.damageLog.length) {
-    const fresh = quad.damageLog.splice(0);
-    const n = (part: string) => fresh.filter((d) => d.part === part).length;
-    const bits = [
-      n('break') && `${n('break') > 1 ? n('break') + ' props' : 'prop'} broken`,
-      n('chip') && `${n('chip') > 1 ? n('chip') + ' props' : 'prop'} chipped`,
-      n('shaft') && `motor shaft bent`,
-      n('arm') && `arm bent`,
-    ].filter(Boolean);
-    if (bits.length) {
-      damageMsg = bits.join(' · ');
-      if (simT >= crashMsgUntil) impactMsg = 'Crash';
-      crashMsgUntil = simT + 3;
-      crashMsg = `${impactMsg} · ${damageMsg}`;
-    }
-  }
-}
+const wallAt = (t: number) => performance.timeOrigin + wallStart + ((t - simAtWallStart) * 1000) / (core.settings.timeScale || 1);
 
 /** A browned-out FC draws no OSD (its OSD chip / displayport is dead too). */
 function blankOsd() {
@@ -543,7 +293,7 @@ function blankOsd() {
 }
 
 function sampleSpectrum(dt: number) {
-  const g = quad.imu.gyroOut, i = specHead;
+  const g = core.quad.imu.gyroOut, i = specHead, bf = core.bf;
   // raw: what the IMU hands Betaflight this step, °/s; filtered: gyroADCf after every BF filter
   specRaw[0][i] = g.x * RAD2DEG; specRaw[1][i] = g.y * RAD2DEG; specRaw[2][i] = g.z * RAD2DEG;
   if (bf?.debugInto(dbg)) {
@@ -569,13 +319,14 @@ function postSpectrum(dt: number) {
     binHz, bins, raw, filtered, hasFiltered: specSawFiltered,
     // integer °/s rounding: error up to ±0.5 °/s; slow signals near a step give σ up to 0.5 (worst case)
     filteredFloorDb: specFft.whiteFloorDb(0.5),
-    motorHz: quad.motors.map((m) => Math.abs(m.rpm()) / 60),
-    blades: build.info.components.prop.blades,
+    motorHz: core.quad.motors.map((m) => Math.abs(m.rpm()) / 60),
+    blades: core.build.info.components.prop.blades,
   };
   (self as unknown as Worker).postMessage({ type: 'spectrum', spec } satisfies FromWorker, [raw.buffer, filtered.buffer]);
 }
 
 function writeRing() {
+  const { quad, bf, motorCmd, rcBuf, armed, simT } = core;
   const head = Atomics.load(sh.ctrl, 1);
   const o = (head % RING_N) * REC, r = sh.ring, s = quad.s;
   r[o + R.t] = simT;
@@ -594,27 +345,18 @@ function writeRing() {
   r[o + R.cellV] = s.vbus / quad.p.battery.cellsSeries;
   r[o + R.crashFlip] = bf?.motorsReversed() ? 1 : 0;
   r[o + R.simRate] = simRate;
-  r[o + R.damage] = quad.aero.reduce((a, x) => a + (1 - x.damage.thrustFactor) + (x.damage.broken ? 1 : 0), 0);
+  r[o + R.damage] = core.damageTotal();
   r[o + R.rc0] = rcBuf[0]; r[o + R.rc1] = rcBuf[1]; r[o + R.rc2] = rcBuf[2]; r[o + R.rc3] = rcBuf[3];
   Atomics.store(sh.ctrl, 1, head + 1);
   Atomics.store(sh.ctrl, 5, armed ? 1 : 0);
   // live buzzer / DShot beacon bits for sample-accurate audio: bit 0 beeper, bit 1 beacon
-  Atomics.store(sh.ctrl, 9, bf && !brownout.off ? (bf.beeper() ? 1 : 0) | (bf.beacon() ? 2 : 0) : 0);
-}
-
-function detectGates() {
-  const p = quad.s.pos;
-  const gates = map.gates;
-  if (!gates.length) { lastPos = { ...p }; return; }
-  const g: GateDef = gates[nextGate % gates.length];
-  const passed = gatePassed(g, lastPos, p);
-  if (passed) { post({ type: 'gate', gate: g.id, t: simT }); nextGate++; }
-  lastPos = { ...p };
+  Atomics.store(sh.ctrl, 9, bf && !core.brownout.off ? (bf.beeper() ? 1 : 0) | (bf.beacon() ? 2 : 0) : 0);
 }
 
 function sendTelemetry() {
+  const { quad, bf, simT } = core;
   const b = quad.battery.s;
-  const on = bf && !brownout.off ? bf : null;
+  const on = bf && !core.brownout.off ? bf : null;
   const flags = on ? on.armingDisableFlags() : 0;
   const gi = on?.gpsInfo() ?? null;
   const tel: Telemetry = {
@@ -624,16 +366,18 @@ function sendTelemetry() {
     rotorDamage: quad.aero.map((a) => ({ thrust: a.damage.thrustFactor, broken: a.damage.broken })),
     battery: { v: quad.s.vbus, i: quad.s.ibus, soc: b.soc, mah: b.mAhDrawn, tempC: b.tempC, sag: b.sagV, cellV: quad.s.vbus / quad.p.battery.cellsSeries },
     simRate, stepCostUs, attitudeDeg: on ? on.attitude() : [0, 0, 0],
-    crash: simT < crashMsgUntil ? crashMsg : null,
-    beeper: beeperSeen, beacon: beaconSeen, cpuLoad: on ? on.cpuLoad() : 0,
+    crash: simT < core.crashMsgUntil ? core.crashMsg : null,
+    beeper: core.beeperSeen, beacon: core.beaconSeen, cpuLoad: on ? on.cpuLoad() : 0,
     gps: gi ? { fix: gi.fix, sats: gi.numSat, homeDistM: gi.homeDistM, homeDirDeg: gi.homeDirDeg } : null,
+    impact: core.lastImpact,
   };
-  beeperSeen = false; beaconSeen = false;
+  core.beeperSeen = false; core.beaconSeen = false;
   post({ type: 'telemetry', tel });
 }
 
 function pumpSideChannels(dt: number) {
-  if (!bf || brownout.off) return;
+  const bf = core.bf;
+  if (!bf || core.brownout.off) return;
   osdAcc += dt;
   if (osdAcc >= 0.02) {
     osdAcc = 0;
@@ -657,7 +401,7 @@ function pumpSideChannels(dt: number) {
     // save is possible then; checked once right after the disarm instead)
     cliHot = Math.max(0, cliHot - dtc);
     eepAcc += dtc;
-    if (armed) eepAfterDisarm = true;
+    if (core.armed) eepAfterDisarm = true;
     else if (cliHot > 0 || eepAfterDisarm || eepAcc >= 0.1) {
       eepAcc = 0; eepAfterDisarm = false;
       if (eeprom.check(bf)) accRecheck = true;
@@ -670,16 +414,17 @@ let lastTickWall = 0;
 function tick(): number {
   const now = performance.now();
   const wallDt = Math.min(0.5, (now - lastTickWall) / 1000); lastTickWall = now;
+  const settings = core.settings;
   if (settings.paused || fwState === 1) { resyncClock(); return 10; }
   const target = simAtWallStart + ((now - wallStart) / 1000) * settings.timeScale;
   const dt = 1 / settings.physicsHz;
-  let n = Math.floor((target - simT) / dt);
+  let n = Math.floor((target - core.simT) / dt);
   const maxSteps = Math.floor(0.03 / dt);
   let behind = false;
   if (n > maxSteps) { n = maxSteps; behind = true; }
   const t0 = performance.now();
   realtime = true;
-  try { for (let i = 0; i < n; i++) { physicsStep(dt); pumpSideChannels(dt); } } finally { realtime = false; }
+  try { for (let i = 0; i < n; i++) { core.physicsStep(dt); pumpSideChannels(dt); } } finally { realtime = false; }
   const cost = performance.now() - t0;
   if (n > 0) stepCostUs = stepCostUs * 0.95 + ((cost * 1000) / n) * 0.05;
   if (behind) resyncClock();
@@ -687,9 +432,9 @@ function tick(): number {
   const capacity = n > 0 ? (n * dt) / Math.max(1e-6, cost / 1000) : 99;
   simRate = simRate * 0.9 + Math.min(capacity, 99) * 0.1;
   if (n > 0) {
-    const hz = governor.update(simRate, settings.timeScale, wallDt, settings.physicsHz, settings.autoRate !== false);
+    const hz = governor.update(simRate, settings.timeScale, wallDt, settings.physicsHz, settings.autoRate !== false && !run);
     if (hz) {
-      settings = { ...settings, physicsHz: hz };
+      core.settings = { ...settings, physicsHz: hz };
       buildQuad(true, true); // same flight, new step size
       post({ type: 'overload', simRate, physicsHz: hz });
       resyncClock();
@@ -699,12 +444,12 @@ function tick(): number {
   if (telAcc >= 0.05) { telAcc = 0; sendTelemetry(); }
   // a CLI `defaults` / acc_calibration change left the accelerometer uncalibrated: the simulator has
   // no Calibrate button, so redo the level calibration (disarmed, after any queued firmware work)
-  if (accRecheck && !armed && fwState === 2) {
+  if (accRecheck && !core.armed && fwState === 2) {
     accRecheck = false;
-    if (accCalStale()) fwOps = fwOps.then(() => guarded(async () => { if (bf && fwState === 2 && !armed && accCalStale()) await calibrateAcc(); }));
+    if (accCalStale()) fwOps = fwOps.then(() => guarded(async () => { if (core.bf && fwState === 2 && !core.armed && accCalStale()) await calibrateAcc(); }));
   }
   // behind, or a millisecond of steps is due already (this tick took that long): go on at once
-  if (behind || simAtWallStart + ((performance.now() - wallStart) / 1000) * settings.timeScale - simT >= 0.001) return 0;
+  if (behind || simAtWallStart + ((performance.now() - wallStart) / 1000) * core.settings.timeScale - core.simT >= 0.001) return 0;
   return 1;
 }
 
@@ -744,18 +489,18 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
 };
 
 function dispatch(m: ToWorker) {
-  if (m.type === 'spec' || m.type === 'cli' || m.type === 'cliBatch' || m.type === 'factoryReset') fwOps = fwOps.then(() => guarded(() => firmwareOp(m)));
+  if (m.type === 'spec' || m.type === 'cli' || m.type === 'cliBatch' || m.type === 'factoryReset' || m.type === 'runStart' || m.type === 'runStop') fwOps = fwOps.then(() => guarded(() => firmwareOp(m)));
   else void guarded(() => handle(m));
 }
 
 async function init(m: Extract<ToWorker, { type: 'init' }>) {
   if (sh) return; // only once
   sh = createShared(m.sab);
-  settings = m.settings;
-  spec = (m.spec as DroneSpec) ?? DEFAULT_SPEC;
-  simT = m.t0 ?? 0;
+  core.settings = m.settings;
+  core.spec = (m.spec as DroneSpec) ?? DEFAULT_SPEC;
+  core.simT = m.t0 ?? 0;
   // the prop's precomputed BEMT table comes in alongside the map (else buildQuad spends ~1.2 s on it)
-  await Promise.all([loadMap(settings.mapId), preloadPropTable(spec.prop)]);
+  await Promise.all([loadMap(core.settings.mapId), preloadPropTable(core.spec.prop)]);
   buildQuad();
   resyncClock();
   await bootFirmware();
@@ -766,17 +511,63 @@ async function init(m: Extract<ToWorker, { type: 'init' }>) {
   loop();
 }
 
+/** The physics-relevant settings (a change ends a reproducible run; pausing and the time scale don't). */
+const physicsKey = (s: typeof core.settings) => JSON.stringify({ ...s, paused: false, timeScale: 1 });
+
+/** End the run being recorded (it stays available as the last run). */
+function stopRun(reason: string) {
+  if (!run) return;
+  lastRun = run.finish(core.steps, reason);
+  run = null;
+  core.endRun();
+  post({ type: 'runState', active: false, reason });
+}
+
 async function firmwareOp(m: ToWorker) {
+  // anything that changes the flight controller or the airframe ends a reproducible run
+  if (run && (m.type === 'spec' || m.type === 'cli' || m.type === 'cliBatch' || m.type === 'factoryReset')) stopRun(m.type === 'spec' ? 'the drone changed' : 'Betaflight was configured');
   switch (m.type) {
+    case 'runStart': {
+      const bf = core.bf;
+      if (!bf || fwState !== 2) { post({ type: 'log', text: 'Reproducible run: Betaflight is not running' }); break; }
+      stopRun('a new run started');
+      // a never-booted FC with the current configuration, the world and the quad rebuilt, every random
+      // stream seeded: what follows depends only on the sticks of each RC packet, which are recorded
+      const eeprom = bf.eepromGet().slice();
+      const fresh = await bf.spawn();
+      core.settings = { ...core.settings, autoRate: false };
+      core.beginRun(fresh, eeprom, m.seed, RUN_GPS_EPOCH_MS);
+      governor.reset();
+      run = new RunRecorder({
+        format: RUN_FORMAT, version: RUN_VERSION, app: `fpv-sim ${APP_VERSION}`, firmware: fresh.version, firmwareBuild: FW_VERSION,
+        created: new Date().toISOString(), seed: m.seed >>> 0, mapId: core.map.id, courseId: core.settings.courseId ?? '',
+        settings: { ...core.settings, paused: false, timeScale: 1 }, spec: structuredClone(core.spec), eeprom,
+      });
+      runKey = physicsKey(core.settings);
+      post({ type: 'built', info: serializeInfo(core.build) });
+      post({ type: 'runState', active: true, seed: m.seed >>> 0 });
+      post({ type: 'log', text: `Reproducible run started (seed ${m.seed >>> 0}): Betaflight rebooted, the quad is on the pad` });
+      resyncClock();
+      break;
+    }
+    case 'runStop': {
+      stopRun('stopped');
+      const r = lastRun;
+      const data = r ? (await encodeRun(r)).slice().buffer : new ArrayBuffer(0);
+      const seconds = r ? r.steps / r.settings.physicsHz : 0;
+      (self as unknown as Worker).postMessage({ type: 'run', id: m.id, data, seconds, reason: r?.end ?? 'no run' } satisfies FromWorker, [data]);
+      break;
+    }
     case 'spec': {
       await preloadPropTable((m.spec as DroneSpec).prop);
-      const old = spec;
-      spec = m.spec as DroneSpec;
+      const old = core.spec;
+      const spec = core.spec = m.spec as DroneSpec;
       buildQuad();
       // keep firmware hardware settings in sync with the generated airframe
+      const bf = core.bf;
       if (bf && fwState === 2) {
-        const b = build.info.components;
-        bf.setGyroRate(quad.imu.chip.sampleRateHz); // a different FC: its gyro rate applies from the reboot on save
+        const build = core.build, b = build.info.components;
+        bf.setGyroRate(core.quad.imu.chip.sampleRateHz); // a different FC: its gyro rate applies from the reboot on save
         const lines = [`set motor_poles = ${b.motor.poles}`, `set motor_kv = ${Math.round(b.motor.kv)}`, `set yaw_motors_reversed = ${spec.propDirection === 'props-out' ? 'ON' : 'OFF'}`, ...batteryCli(build), ...loopCli(build)];
         if (old.video !== spec.video) {
           lines.push(`set vcd_video_system = ${osdGrid(b.video).vcd}`);
@@ -791,21 +582,21 @@ async function firmwareOp(m: ToWorker) {
       break;
     }
     case 'cli': {
-      if (bf && fwState === 2) { bf.serialWrite(0, enc.encode(m.text)); cliHot = CLI_HOT_S; } // replies come back through pumpSideChannels
+      if (core.bf && fwState === 2) { core.bf.serialWrite(0, enc.encode(m.text)); cliHot = CLI_HOT_S; } // replies come back through pumpSideChannels
       break;
     }
     case 'cliBatch': {
-      const out = bf && fwState === 2 ? await cliBatch(m.lines) : '';
+      const out = core.bf && fwState === 2 ? await cliBatch(m.lines) : '';
       // (an imported diff never carries acc_calibration, but `defaults` in a batch clears it)
-      if (bf && fwState === 2 && !armed && accCalStale()) await calibrateAcc();
+      if (core.bf && fwState === 2 && !core.armed && accCalStale()) await calibrateAcc();
       post({ type: 'cliBatchDone', id: m.id, output: out });
       break;
     }
     case 'factoryReset': {
       await eeprom.save(new Uint8Array(0));
-      if (bf && fwState === 2) {
+      if (core.bf && fwState === 2) {
         await cliBatch(['defaults nosave']);
-        await cliBatch(defaultCli(build));
+        await cliBatch(defaultCli(core.build));
         await calibrateAcc();
         await kv.set('bf-defaults-version', DEFAULTS_VERSION);
       }
@@ -817,16 +608,16 @@ async function firmwareOp(m: ToWorker) {
 async function handle(m: ToWorker) {
   switch (m.type) {
     case 'settings': {
-      const mapChanged = m.settings.mapId !== settings.mapId || (m.settings.courseId ?? '') !== (settings.courseId ?? '');
-      const rateChanged = m.settings.physicsHz !== settings.physicsHz;
-      settings = m.settings;
-      if (!env || !quad) break;
-      if (mapChanged) { if (await loadMap(settings.mapId)) respawn(); }
-      else {
-        env.wind.p = { ...env.wind.p, speed20ft: settings.wind.speed * (map.windScale ?? 1), directionDeg: settings.wind.direction, turbulence: settings.wind.turbulence, gustiness: settings.wind.gusts, gustMax: settings.wind.speed * 0.8 * (map.windScale ?? 1) };
-        env.damageEnabled = settings.damage; env.ambientC = settings.ambientC;
-      }
-      for (const a of quad.aero) a.propwashScale = settings.propwash;
+      const prev = core.settings;
+      if (run && physicsKey({ ...m.settings, autoRate: false }) !== runKey) stopRun('the simulation settings changed');
+      // (a run keeps the physics rate fixed)
+      if (run) m = { ...m, settings: { ...m.settings, autoRate: false } };
+      const mapChanged = m.settings.mapId !== prev.mapId || (m.settings.courseId ?? '') !== (prev.courseId ?? '');
+      const rateChanged = m.settings.physicsHz !== prev.physicsHz;
+      core.settings = m.settings;
+      if (!core.env || !core.quad) break;
+      if (mapChanged) { if (await loadMap(core.settings.mapId)) respawn(); for (const a of core.quad.aero) a.propwashScale = core.settings.propwash; }
+      else core.applyWindSettings();
       if (rateChanged) { governor.reset(); buildQuad(true); }
       resyncClock();
       break;
@@ -835,15 +626,17 @@ async function handle(m: ToWorker) {
       // a map package loaded from disk (blob: URLs from the main thread); registered at once, so a
       // settings message right behind it finds the map
       registerMap(m.id, localPackageEntry(m.id, m.info, m.urls));
-      if (settings.mapId === m.id && quad) { if (await loadMap(m.id)) respawn(); }
+      if (run && core.settings.mapId === m.id) stopRun('the map was reloaded');
+      if (core.settings.mapId === m.id && core.quad) { if (await loadMap(m.id)) respawn(); }
       break;
     }
     case 'reset': {
-      if (!quad) break;
-      if (m.repair) quad.repair();
-      if (m.fullBattery) { buildQuad(); } else respawn();
-      // debug / test hook: put the quad somewhere specific (e.g. inside a building)
-      if (m.at) { quad.reset({ x: m.at.x, y: m.at.y, z: m.at.z }, (m.at.yawDeg * Math.PI) / 180); env.wake.reset(); lastPos = { ...quad.s.pos }; }
+      if (!core.quad) break;
+      const ev = { repair: !!m.repair, fullBattery: !!m.fullBattery, at: m.at ? { ...m.at } : undefined };
+      run?.events.push({ k: core.steps, type: 'reset', ...ev });
+      // (at: a debug / test hook, and the control API's teleport)
+      core.applyReset(ev);
+      if (m.fullBattery) post({ type: 'built', info: serializeInfo(core.build) });
       break;
     }
     case 'spectrum': {

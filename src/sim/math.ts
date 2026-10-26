@@ -101,6 +101,17 @@ export class Rng {
   }
 }
 
+/**
+ * A sub-seed for one random stream of a run seeded with `seed` (splitmix32 of seed and the stream's
+ * own constant): every stream of a seeded run differs, and none depends on the order they are made.
+ */
+export function subSeed(seed: number, stream: number): number {
+  let z = (Math.imul(seed >>> 0, 0x9e3779b1) ^ Math.imul(stream >>> 0, 0x85ebca6b)) >>> 0;
+  z = Math.imul(z ^ (z >>> 16), 0x21f0aaad) >>> 0;
+  z = Math.imul(z ^ (z >>> 15), 0x735a2d97) >>> 0;
+  return (z ^ (z >>> 15)) >>> 0;
+}
+
 /** Fritsch–Carlson monotone cubic interpolant over sorted xs. */
 export function monotoneCubic(xs: number[], ys: number[]): (x: number) => number {
   const n = xs.length;

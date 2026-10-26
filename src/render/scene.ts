@@ -164,6 +164,7 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   const sunDir = skyDir(env.sunAz, env.sunEl);
   const sky = buildSky(env, sunDir);
   track(sky.geometry); track(sky.material as THREE.Material);
+  sky.userData.gt = 'skip'; // ground truth: the sky is where nothing is hit
   scene.add(sky);
   const hemi = new THREE.HemisphereLight(env.hemiSky, env.hemiGround, env.hemiIntensity);
   scene.add(hemi);
@@ -181,7 +182,7 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   const night = buildLights(map, env);
   track(night);
   for (const l of night.lights) scene.add(l);
-  for (const o of night.objects) scene.add(o);
+  for (const o of night.objects) { o.userData.gt ??= 'object'; scene.add(o); }
 
   // ---- terrain: tiles (each cube face culls what it doesn't see), anti-repeat ground ----
   if (map.ground !== false) {
@@ -338,15 +339,15 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
     scene.add(glow, beam);
     if (parts.frame.length) {
       const frame = new THREE.Mesh(merge(parts.frame), frameMat);
-      frame.castShadow = true; frame.receiveShadow = true;
+      frame.castShadow = true; frame.receiveShadow = true; frame.userData.gt = { cls: 'gate', id: gid };
       scene.add(frame); gateMeshes.push(frame);
     }
-    if (parts.led.length) scene.add(new THREE.Mesh(merge(parts.led), ledMat));
+    if (parts.led.length) { const m = new THREE.Mesh(merge(parts.led), ledMat); m.userData.gt = { cls: 'gate', id: gid }; scene.add(m); }
     let cloth: THREE.MeshStandardMaterial | null = null;
     if (parts.cloth.length) {
       const cm = clothMaterials(u, gateTex, col);
       cloth = track(cm.mat); track(cm.depth);
-      for (const pr of parts.cloth) { const m = flagCloth(pr, cm.mat, cm.depth); track(m.geometry); scene.add(m); gateMeshes.push(m); }
+      for (const pr of parts.cloth) { const m = flagCloth(pr, cm.mat, cm.depth); m.userData.gt = { cls: 'gate', id: gid }; track(m.geometry); scene.add(m); gateMeshes.push(m); }
     }
     gates.push({ id: gid, frameMat, ledMat, ledBase: led, glow, glowMat, beam, beamMat, cloth, state: -1 });
   }

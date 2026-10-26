@@ -1,0 +1,31 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario",
+  "version": 1,
+  "meta": {
+    "id": "practice-slalom",
+    "name": "Slalom drill",
+    "description": "The Practice Field's slalom course, timed on its own, on the 3\" toothpick.",
+    "author": "fpv-sim",
+    "license": "CC0-1.0"
+  },
+  "seed": 3,
+  "map": {
+    "id": "practice",
+    "course": "slalom"
+  },
+  "drone": {
+    "preset": "3\" Toothpick 4S"
+  },
+  "start": {
+    "mode": "acro"
+  },
+  "task": {
+    "type": "gates",
+    "laps": 1
+  },
+  "episode": {
+    "maxSeconds": 60,
+    "controlHz": 250
+  }
+}

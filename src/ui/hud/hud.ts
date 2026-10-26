@@ -19,7 +19,11 @@ export interface RaceInfo {
   board?: { name: string; color: string; lap: number; best: number; me: boolean }[];
   pb?: number; record?: { initials: string; lap: number; mine: boolean };
 }
-export interface DrillInfo { inBox: boolean; offBy: number; elapsed: number; score: number; best: number }
+export interface DrillInfo {
+  inBox: boolean; offBy: number; elapsed: number; score: number; best: number;
+  /** card title (default HOVER DRILL) and the attempt's length in s (default 30) */
+  title?: string; total?: number;
+}
 
 type Edge = 'top' | 'bottom' | 'left' | 'right';
 type Slot = { bar: 'left' | 'right'; at: 'top' | 'bottom' } | { edge: Edge; pref: 'start' | 'center' | 'end' } | { center: number };
@@ -61,7 +65,7 @@ export class Hud {
   private keysBuiltSig = '';
   private keysNodes: HTMLElement[] = [];
   private raceSig = '';
-  private drillEls: { box: HTMLElement; score: HTMLElement; best: HTMLElement; gate: HTMLElement; bar: HTMLElement; barW: string } | null = null;
+  private drillEls: { box: HTMLElement; score: HTMLElement; best: HTMLElement; gate: HTMLElement; bar: HTMLElement; barW: string; title: HTMLElement } | null = null;
   private noticeList: HTMLElement[] = [];
   private telText = '';
   private telShape = '';
@@ -119,21 +123,21 @@ export class Hud {
       let e = this.drillEls;
       if (!e) {
         this.raceSig = '';
-        const box = el('dd'), score = el('dd'), best = el('dd', { class: 'best' }), gate = el('div', { class: 'gate' }), bar = el('i');
+        const box = el('dd'), score = el('dd'), best = el('dd', { class: 'best' }), gate = el('div', { class: 'gate' }), bar = el('i'), title = el('span', { class: 'k' }, d.title ?? 'HOVER DRILL');
         this.raceEl.className = 'card race drill';
         this.raceEl.replaceChildren(
-          el('div', { class: 'lap' }, el('span', { class: 'k' }, 'HOVER DRILL')),
+          el('div', { class: 'lap' }, title),
           el('dl', {}, el('dt', {}, 'Box'), box, el('dt', {}, 'Score'), score, el('dt', {}, 'Best'), best),
           gate, el('div', { class: 'bar' }, bar));
-        e = this.drillEls = { box, score, best, gate, bar, barW: '' };
+        e = this.drillEls = { box, score, best, gate, bar, barW: '', title };
         this.w.race.dirty = true;
       }
       const boxCls = d.inBox ? 'inbox' : 'outbox';
       if (e.box.className !== boxCls) e.box.className = boxCls;
       const grew = sized(e.box, d.inBox ? 'IN' : `+${d.offBy.toFixed(1)} m`) | sized(e.score, `${d.score.toFixed(0)} %`)
-        | sized(e.best, `${d.best.toFixed(0)} %`) | sized(e.gate, `${d.elapsed.toFixed(1)} / 30 s`);
+        | sized(e.best, `${d.best.toFixed(0)} %`) | sized(e.gate, `${d.elapsed.toFixed(1)} / ${(d.total ?? 30).toFixed(0)} s`) | sized(e.title, d.title ?? 'HOVER DRILL');
       if (grew) this.w.race.dirty = true;
-      const bw = `${Math.min(100, (d.elapsed / 30) * 100).toFixed(1)}%`;
+      const bw = `${Math.min(100, (d.elapsed / (d.total ?? 30)) * 100).toFixed(1)}%`;
       if (bw !== e.barW) { e.barW = bw; e.bar.style.width = bw; }
       this.show('race', true);
       return;

@@ -1,0 +1,40 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario",
+  "version": 1,
+  "meta": {
+    "id": "stadium-lap",
+    "name": "Grand Prix Stadium, one lap",
+    "description": "One timed lap of the FPV Grand Prix Stadium on the 5\" freestyle quad in acro, light wind. The lap is gate 0 round to gate 0 again, as the in-app lap timer counts it.",
+    "author": "fpv-sim",
+    "license": "CC0-1.0"
+  },
+  "seed": 2,
+  "map": {
+    "id": "field"
+  },
+  "drone": {
+    "preset": "5\" Freestyle 6S"
+  },
+  "sim": {
+    "wind": {
+      "speed": 2,
+      "direction": 240,
+      "turbulence": 1,
+      "gusts": 1
+    }
+  },
+  "start": {
+    "armed": false,
+    "mode": "acro"
+  },
+  "task": {
+    "type": "gates",
+    "laps": 1
+  },
+  "episode": {
+    "maxSeconds": 120,
+    "controlHz": 250,
+    "endOnCrash": false
+  }
+}

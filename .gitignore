@@ -10,3 +10,5 @@ server/.wrangler/
 server/.dev.vars
 # precomputed BEMT tables (scripts/build-bemt-tables.mjs, run by prebuild / predev)
 public/bemt/
+__pycache__/
+*.pyc

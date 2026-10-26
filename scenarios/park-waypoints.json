@@ -1,0 +1,53 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario",
+  "version": 1,
+  "meta": {
+    "id": "park-waypoints",
+    "name": "Meadow Park waypoints",
+    "description": "Visit four points around the Meadow Park launch spot, 3 m up, within 1.5 m of each.",
+    "author": "fpv-sim",
+    "license": "CC0-1.0"
+  },
+  "seed": 5,
+  "map": {
+    "id": "park"
+  },
+  "drone": {
+    "preset": "5\" Freestyle 6S"
+  },
+  "start": {
+    "armed": true,
+    "mode": "angle"
+  },
+  "task": {
+    "type": "waypoints",
+    "radiusM": 1.5,
+    "points": [
+      [
+        -70,
+        -90,
+        3
+      ],
+      [
+        -60,
+        -90,
+        4
+      ],
+      [
+        -60,
+        -80,
+        4
+      ],
+      [
+        -75,
+        -95,
+        3
+      ]
+    ]
+  },
+  "episode": {
+    "maxSeconds": 60,
+    "controlHz": 100
+  }
+}

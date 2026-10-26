@@ -1094,7 +1094,53 @@ export class FpvCamera {
     this.onPresent?.();
   }
 
+  /**
+   * The lens as the last capture used it (dataset ground truth renders through the same one): the
+   * Kannala–Brandt parameters, the rolling-shutter rotation table and the mount vibration.
+   */
+  get lensUniforms(): Record<string, THREE.IUniform> { return this.fisheyeMat.uniforms; }
+
+  private readRT: THREE.WebGLRenderTarget | null = null;
+  private copyMat: THREE.ShaderMaterial | null = null;
+
+  /**
+   * The picture as 8-bit RGBA, top row first: 'camera' is the clean camera image (exposure, white
+   * balance, the camera's own noise; no radio link and no OSD), 'received' what the goggles show
+   * (link noise and break-up, the analog OSD) before it is scaled to the screen. Call right after
+   * present(), while the frame's textures are current.
+   */
+  async readFrame(kind: 'camera' | 'received'): Promise<{ width: number; height: number; rgba: Uint8Array }> {
+    const r = this.renderer, w = this.linkRT.width, h = this.linkRT.height;
+    if (!this.readRT || this.readRT.width !== w || this.readRT.height !== h) {
+      this.readRT?.dispose();
+      this.readRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.UnsignedByteType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false });
+    }
+    const prev = r.getRenderTarget();
+    if (kind === 'camera') {
+      // the post pass with a perfect link and no OSD (the uniforms are set again by the next present)
+      const u = this.postMat.uniforms;
+      const keep = { cnr: u.cnr.value, freeze: u.freeze.value, block: u.block.value, lost: u.lost.value, osdOn: u.osdOn.value };
+      u.cnr.value = 60; u.freeze.value = 0; u.block.value = 0; u.lost.value = 0; u.osdOn.value = 0;
+      this.quad.material = this.postMat;
+      r.setRenderTarget(this.readRT); r.render(this.quadScene, this.quadCam);
+      Object.entries(keep).forEach(([k, v]) => { u[k].value = v; });
+    } else {
+      this.copyMat ??= new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader: 'precision highp float; varying vec2 vUv; uniform sampler2D src; void main() { gl_FragColor = vec4(clamp(texture2D(src, vUv).rgb, 0.0, 1.0), 1.0); }', depthTest: false, uniforms: { src: { value: null } } });
+      this.copyMat.uniforms.src.value = this.linkRT.texture;
+      this.quad.material = this.copyMat;
+      r.setRenderTarget(this.readRT); r.render(this.quadScene, this.quadCam);
+    }
+    r.setRenderTarget(prev);
+    const px = new Uint8Array(w * h * 4);
+    await r.readRenderTargetPixelsAsync(this.readRT, 0, 0, w, h, px);
+    // GL rows run bottom-up: flip to top-down
+    const row = w * 4, out = new Uint8Array(px.length);
+    for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * row, (h - y) * row), y * row);
+    return { width: w, height: h, rgba: out };
+  }
+
   dispose() {
+    this.readRT?.dispose(); this.copyMat?.dispose();
     this.cubeRT.dispose(); this.frameRT.dispose(); this.prevRT.dispose(); this.rawRT?.dispose();
     this.glowTmp.dispose(); this.glowRT.dispose(); this.prevGlowRT.dispose(); this.sunRT.dispose(); this.voidRT.dispose(); this.linkRT?.dispose();
     for (const e of this.expRT) e.dispose();
