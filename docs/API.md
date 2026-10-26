@@ -101,7 +101,16 @@ once 32 MiB are waiting, and is disconnected if a reply can't be queued.
 | `metrics` | | `metrics` | ✓ | ✓ | ✓ |
 | `capture` | `rgb?`, `received?`, `depth?`, `segmentation?` | `labels`, PNGs (base64) | | | ✓ |
 | `record` | `action: "start" \| "stop"`, `hz?`, kinds, `maxFrames?` | `frame` events; stop: `frames`, `dropped`, `meta` ([DATASET.md](DATASET.md)) | | | ✓ |
+| `fault` | `faults`: [{ `at`, `kind`, `motor?`, `axis?`, `value?`, `duration?` }] (`at` counts from now) | | ✓ | ✓ | ✓ |
+| `drop` | | (releases the payload) | ✓ | ✓ | ✓ |
+| `ops` | `config`: an `ops` block, or null to remove it | `status` (headless) | ✓ | ✓ | ✓ |
+| `linkmap` | `centre?` [x, y], `halfM?` (200), `n?` (21), `heightM?` (20) | `map`: `xs`, `ys`, `marginDb`, `jammedFrac`, `gnssSats`, `pilot`, `link` | ✓ | ✓ | |
 | `bye` | | | ✓ | ✓ | ✓ |
+
+**fault**, **drop**, **ops** and **linkmap** drive the operational layer: jammers and spoofers,
+the fibre-optic link, scheduled faults and the payload ([OPERATIONS.md](OPERATIONS.md)). In the
+live game they work on the running flight (the Research tab's Operations section uses the same
+messages).
 
 **reset** starts an episode. The scenario ([SCENARIO_FORMAT.md](SCENARIO_FORMAT.md)) sets up the
 map, drone, conditions, Betaflight configuration, start, task and limits. Without one, the last
@@ -175,9 +184,14 @@ radio's would.
   "goal": [x, y, z], "goalBody": [x, y, z], // where the task wants the quad next: world, and in the body frame
   "probes": [d0, d1, ...],                // proximity probes (m), see below
   "gate": { "next": 2, "total": 8 },
-  "impact": 0, "damage": 0                // peak impact speed this step (m/s), prop damage
+  "impact": 0, "damage": 0,               // peak impact speed this step (m/s), prop damage
+  "nav": { "mag": [3], "rangeM": 2.9, "flow": { "x", "y", "quality" } },  // observations.nav: compass (gauss), downward rangefinder, optical flow
+  "ops": { "link", "video", "gnss", "fix", "fiber", "payload", "faults" } // with an ops block: the operational picture (OPERATIONS.md)
 }
 ```
+
+With a sensor fault in force (`gyro_bias`, `acc_bias` …), `gyro` and `acc` are the faulty readings
+the firmware got; `rates` stays the truth.
 
 **Vector.** `vec` (with `vector: true`) is `obsVector()` ([`src/api/types.ts`](../src/api/types.ts)):
 pos, vel, quat, rates, gyro, acc (zeros when null), rpm / 10000 ×4, cellV, armed, agl, goalBody,
@@ -199,9 +213,11 @@ or other cylinders.
 | `log` | `text` | simulator and Betaflight messages |
 | `control` | `by`: `api` / `pilot` | live game: who flies |
 | `frame` | `labels`, PNGs | live game: a recorded dataset frame (`record`) |
+| `ops` | `type` (`fault`, `payload_release`, `payload_impact`, `fiber_break`, `gnss`), `t`, details | the operational layer: a fault on or off, the payload released or landed, the fibre broke, the GNSS state changed |
 | `bye` | `reason` | live game: the page went away |
 
-Lock-step episodes report gates, impacts and logs in `step`'s `info.events` instead.
+Lock-step episodes report gates, impacts, logs and operational events in `step`'s `info.events`
+instead (operational events with their own `type`).
 
 ## Rewards and metrics
 
@@ -213,6 +229,7 @@ in-app training drills.
 | `hover` | per second `exp(-(e/r)²)`: e is the distance to the target, r the box radius | inside for `holdS` in a row | inside time and fraction, RMS / max error, `normalizedError` = RMS / r |
 | `gates` | metres closed toward the next gate's opening, +10 per gate | the last lap's finish through gate 0 | passed / total, splits, lap times |
 | `waypoints` | metres closed toward the next point, +10 per point | every point visited | passed / total, splits |
+| `drop` | horizontal metres closed toward the target, +10 for a hit | the payload lands within `radiusM` (a miss ends the episode with `failure`) | `missM`, `impactSpeedMs`, `impactPos` |
 | `free` | 0 | never | distance, top speed |
 
 Every task also reports elapsed time, distance flown, top speed and the return.

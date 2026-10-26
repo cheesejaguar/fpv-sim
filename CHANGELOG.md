@@ -6,6 +6,40 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Development, test and operations (docs/COMPARISON.md)
+- **Operations** (docs/OPERATIONS.md; scenario `ops`, API `ops` / `fault` / `drop` / `linkmap`,
+  Settings → Research → Operations):
+  - Jammers and GNSS spoofers placed in the world, with link budgets: free-space loss, buildings
+    and terrain, the radio horizon.
+  - The ELRS control link's frequency hopping against partial-band jammers; the 5.8 GHz video noise
+    floor; GNSS C/N0, satellites, fix loss, and spoofing that captures the receiver and walks its
+    position away. The real Betaflight sees exactly the packets and fixes that get through.
+  - A fibre-optic link: spool length, payout drag and speed, the spool lightening in flight, breaks.
+  - 16 fault kinds (motors, props, gyro, accelerometer, barometer, GNSS, compass, RC, video,
+    battery), scheduled, randomized or injected live.
+  - Payloads: mass on the airframe, release by command, schedule or AUX switch, a ballistic fall in
+    the wind; a `drop` task.
+  - Navigation sensors: magnetometer, downward rangefinder, optical flow, and the GNSS receiver's
+    own solution.
+  - 900 MHz ELRS.
+- **PX4 and ArduPilot in the loop** (docs/AUTOPILOTS.md, `npm run sitl`): the plant speaks PX4's
+  MAVLink HIL lock-step protocol (TCP 4560) and ArduPilot's JSON backend (UDP 9002), with every
+  sensor and the operational layer; `--write-params` writes a starting parameter file for the build.
+- **Verification campaigns and trade studies** (docs/CAMPAIGNS.md, `npm run campaign`):
+  - Parallel Monte Carlo over randomized scenarios, flown by a reference mission autopilot (truth
+    or GNSS navigation) or your own controller module.
+  - Requirements judged on exact Clopper–Pearson bounds: pass, fail, or inconclusive with the runs
+    needed.
+  - Failure cases that re-fly bit for bit, with traces.
+  - Sweeps with common random numbers and a Pareto front; HTML / Markdown / JSON reports; CI exit
+    codes. Four example campaigns.
+- **Digital twin from a flight log** (docs/DIGITAL_TWIN.md, `npm run twin`):
+  - A full Betaflight blackbox decoder.
+  - The tune rebuilt from the log's headers, the sticks replayed through the same firmware, and
+    the simulator's own blackbox compared with the real one: gyro, tracking, delay, noise,
+    controller effort, motor levels.
+  - A Nelder–Mead fit of the build to the log, saved as a drone spec.
+
 ### Research, training and the control API
 - **Control API** (docs/API.md): one JSON protocol for driving the simulator from a program.
   - The headless simulator, lock-step (`npm run api`) or on the wall clock (`--realtime`).

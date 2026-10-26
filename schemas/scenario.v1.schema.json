@@ -324,6 +324,32 @@
               "exclusiveMinimum": 0
             }
           }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "target"
+          ],
+          "additionalProperties": false,
+          "description": "release the payload (ops.payload) so it lands within radiusM of target (horizontal miss)",
+          "properties": {
+            "type": {
+              "const": "drop"
+            },
+            "target": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "radiusM": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
         }
       ]
     },
@@ -366,6 +392,249 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "maximum": 500
+        },
+        "nav": {
+          "type": "boolean",
+          "description": "navigation sensors in the observations: magnetometer, rangefinder, optical flow"
+        }
+      }
+    },
+    "ops": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "the operational environment (docs/OPERATIONS.md): radio or fibre-optic link, jammers and GNSS spoofers, scheduled faults, a payload",
+      "properties": {
+        "link": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "radio",
+                "fiber"
+              ]
+            },
+            "band": {
+              "enum": [
+                "2.4",
+                "900"
+              ]
+            },
+            "fiber": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "lengthM": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "massGPerKm": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "spoolMassG": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "tensionN": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "maxPayoutMps": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "emitters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pos",
+              "erpW"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "jammer",
+                  "spoofer"
+                ]
+              },
+              "pos": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "east, north, height above the ground (m)"
+              },
+              "band": {
+                "enum": [
+                  "2.4",
+                  "900",
+                  "5.8",
+                  "gnss",
+                  "1.2"
+                ]
+              },
+              "freqMHz": {
+                "type": "number"
+              },
+              "bandwidthMHz": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "erpW": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "fromS": {
+                "type": "number"
+              },
+              "untilS": {
+                "type": "number"
+              },
+              "driftMps": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "band"
+                ]
+              },
+              {
+                "required": [
+                  "freqMHz",
+                  "bandwidthMHz"
+                ]
+              }
+            ]
+          }
+        },
+        "faults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "at",
+              "kind"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "number",
+                "minimum": 0
+              },
+              "duration": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "kind": {
+                "enum": [
+                  "motor_failure",
+                  "motor_degraded",
+                  "prop_damage",
+                  "gyro_bias",
+                  "gyro_noise",
+                  "gyro_stuck",
+                  "acc_bias",
+                  "baro_drift",
+                  "baro_failure",
+                  "gps_loss",
+                  "gps_degraded",
+                  "mag_interference",
+                  "rc_loss",
+                  "video_loss",
+                  "battery_degraded",
+                  "payload_release"
+                ]
+              },
+              "motor": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8
+              },
+              "axis": {
+                "enum": [
+                  "x",
+                  "y",
+                  "z",
+                  "all"
+                ]
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "massG"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "massG": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "cdA": {
+              "type": "number",
+              "minimum": 0
+            },
+            "offset": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "releaseAux": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            }
+          }
+        },
+        "field": {
+          "type": "object",
+          "required": [
+            "total",
+            "inclinationDeg",
+            "declinationDeg"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "total": {
+              "type": "number"
+            },
+            "inclinationDeg": {
+              "type": "number"
+            },
+            "declinationDeg": {
+              "type": "number"
+            }
+          }
         }
       }
     },
@@ -2226,6 +2495,456 @@
               ]
             },
             "yawDeg": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "uniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "uniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "loguniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "loguniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "normal": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "normal"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 1
+                    },
+                    "weights": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "choice"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "ops": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "faultPick": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "faultAt": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "uniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "uniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "loguniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "loguniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "normal": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "normal"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 1
+                    },
+                    "weights": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "choice"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "faultMotor": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "uniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "uniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "loguniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "loguniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "normal": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "normal"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 1
+                    },
+                    "weights": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "choice"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "erpScale": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "uniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "uniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "loguniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "loguniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "normal": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "normal"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 1
+                    },
+                    "weights": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "choice"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "emitterOffsetM": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "uniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "uniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "loguniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "loguniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "normal": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "normal"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 1
+                    },
+                    "weights": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "choice"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "payloadMassG": {
               "oneOf": [
                 {
                   "type": "number"

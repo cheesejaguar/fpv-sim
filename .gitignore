@@ -12,3 +12,5 @@ server/.dev.vars
 public/bemt/
 __pycache__/
 *.pyc
+campaign-out/
+twin-out/

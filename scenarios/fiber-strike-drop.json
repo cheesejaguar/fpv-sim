@@ -1,0 +1,17 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario", "version": 1,
+  "meta": { "id": "fiber-strike-drop", "name": "Fibre-optic drone: payload on a point through GNSS jamming", "description": "A 7\" on a 10 km fibre spool carries 400 g to a target 40 m away and drops it. A GNSS jammer covers the area, so navigation has to cope without a fix; the fibre keeps the control and video links clean. Spool mass and payout drag count." },
+  "seed": 12,
+  "map": { "id": "field" }, "drone": { "preset": "7\" Long Range Li-ion" },
+  "sim": { "wind": { "speed": 3, "direction": 120, "turbulence": 1, "gusts": 1 } },
+  "start": { "armed": true, "mode": "angle" },
+  "task": { "type": "drop", "target": [-10, 0, 0], "radiusM": 3 },
+  "episode": { "maxSeconds": 45, "controlHz": 50 },
+  "observations": { "nav": true },
+  "ops": {
+    "link": { "type": "fiber", "fiber": { "lengthM": 10000 } },
+    "emitters": [{ "id": "gnss-jammer", "band": "gnss", "pos": [60, 80, 10], "erpW": 2, "fromS": 0 }],
+    "payload": { "name": "payload", "massG": 400, "cdA": 0.004, "releaseAux": 6 }
+  }
+}

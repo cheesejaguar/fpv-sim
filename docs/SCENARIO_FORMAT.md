@@ -65,7 +65,8 @@ back to a default.
 | `start` | `pos` [x, y, z] (default: the map's or course's spawn pad), `yawDeg` (counter-clockwise from east), `armed` (arm once Betaflight's boot grace is over), `mode` (`acro`, `horizon`, `angle`: AUX2). |
 | `task` | what the episode asks (below). Default: `{ "type": "free" }`. |
 | `episode` | `maxSeconds` (default 30), `controlHz` (actions per second, default 100), `endOnCrash` (default true) at `crashSpeedMs` (default 4 m/s), `endOutOfBounds` (default true). |
-| `observations` | `probes`: proximity rays (0–256, default 0); `probeRangeM` (default 20). |
+| `observations` | `probes`: proximity rays (0–256, default 0); `probeRangeM` (default 20); `nav`: add the magnetometer, downward rangefinder and optical flow to the observations. |
+| `ops` | the operational environment: `link` (`type` radio / `fiber`, `band` 2.4 / 900, `fiber` spool), `emitters` (jammers and GNSS spoofers), `faults` (scheduled failures), `payload`, `field` (the Earth's magnetic field). See [OPERATIONS.md](OPERATIONS.md). |
 | `randomize` | domain randomization (below). |
 
 ## Tasks
@@ -76,6 +77,7 @@ back to a default.
 | `hover` | `target` [x, y, z] or `heightM` above the pad (default 3), `radiusM` (default 1.5), `holdS` | inside the box for `holdS` seconds in a row (without `holdS`: none, scored by time inside) |
 | `gates` | `laps` (default 1) | every gate of the course in order, then through gate 0 again: a lap as the lap timer counts it |
 | `waypoints` | `points` [[x, y, z], …], `radiusM` (default 1) | every point visited in order |
+| `drop` | `target` [x, y, z], `radiusM` (default 2) | the payload (`ops.payload`) lands within `radiusM` of the target, horizontally; a miss is a `failure` |
 
 Rewards and metrics are in [API.md](API.md#rewards-and-metrics).
 
@@ -96,6 +98,7 @@ Every randomized value is a **distribution**:
 | `randomize.drone` | `preset` (names), `parts.{frame, motor, prop, battery, esc, fc, video}` (catalogue ids), `overrides.<name>` (any builder override: `massScale`, `inertiaScale`, `propThrustScale`, `kv`, `cdAScale`, `irPerCellMohm` …), `cameraUptiltDeg`, `batterySoc`, `batteryAge`, `extraMassG`, `extraMassZmm`, `motorTiltDeg`, `unit` (a new unit per episode, default true) |
 | `randomize.sim` | `windSpeed`, `windDirection`, `windTurbulence`, `windGusts`, `ambientC`, `propwash`, `rcLinkHz`, `rcTxPowerMw` |
 | `randomize.start` | `dx`, `dy`, `dz` (offsets from the start, m), `yawDeg` (added to the start yaw) |
+| `randomize.ops` | `faultPick` (keep this many of the listed faults, at random), `faultAt` (every fault's start, s), `faultMotor` (every motor fault's motor), `erpScale` (every emitter's power ×), `emitterOffsetM` (every emitter moves along x and y), `payloadMassG` |
 
 A randomized drone is **built**, not jittered. The sampled parts and overrides go through the
 drone builder, which derives the mass budget, CG, inertia tensor, prop tables, motor and battery
@@ -103,7 +106,7 @@ models from them. A heavier draw moves the CG and the inertia with it, and anoth
 the sag and the weight together. RAPTOR-style policies need exactly these correlations.
 
 **Seeds.** An episode's seed decides everything random in it. Each randomized group draws from its
-own stream (`subSeed(seed, 1)` for the drone, 2 for the conditions, 3 for the start), so adding a
+own stream (`subSeed(seed, 1)` for the drone, 2 for the conditions, 3 for the start, 4 for ops), so adding a
 drone range doesn't change the wind a seed draws. The episode seed also seeds every random process
 in the simulation: wind turbulence, sensor noise, the radio link, rotor-wash noise. Headless,
 `reset({ seed })` therefore repeats an episode bit for bit, given the same actions and firmware build.

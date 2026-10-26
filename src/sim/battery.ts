@@ -110,6 +110,12 @@ export class Battery {
     for (let k = 0; k < n; k++) this.s.cellV[k] = this.cellOcv(k);
   }
 
+  /** Age / damage the pack in place (a failing cell, a fault injection): resistance x f, capacity / f. */
+  setAgeFactor(f: number): void {
+    this.p = { ...this.p, ageFactor: f };
+    this.pfT = NaN; // packFactor() memo
+  }
+
   /** State of charge cell k behaves at: a cold cell runs out early (coldUnavailable). */
   private usableSoc(soc: number, u = coldUnavailable(this.s.tempC)): number { return (soc - u) / (1 - u); }
   /** OCV of series cell k at the state of charge it can reach at the present temperature. */

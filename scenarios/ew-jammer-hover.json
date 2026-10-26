@@ -1,0 +1,11 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario", "version": 1,
+  "meta": { "id": "ew-jammer-hover", "name": "Hover under 2.4 GHz jamming", "description": "A 5\" hovers 3 m up while a 20 W barrage jammer 10 m away switches on at 2 s. Over the radio link Betaflight goes into RX failsafe; set ops.link.type to \"fiber\" and it flies on." },
+  "seed": 4,
+  "map": { "id": "field" }, "drone": { "preset": "5\" Freestyle 6S" },
+  "start": { "armed": true, "mode": "angle" },
+  "task": { "type": "hover", "heightM": 3, "radiusM": 2 },
+  "episode": { "maxSeconds": 10, "controlHz": 50, "endOnCrash": false },
+  "ops": { "emitters": [{ "id": "barrage", "band": "2.4", "pos": [-44, -16, 3], "erpW": 20, "fromS": 2 }] }
+}

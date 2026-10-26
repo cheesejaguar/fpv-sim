@@ -121,6 +121,8 @@ export class QuadSim {
   rotorWind: V3[];
   /** Vibration torque each rotor puts into its arm this step (body, N·m): drives the IMU's arm modes. */
   rotorVib: V3[];
+  /** External force on the CG (world, N): a fibre's payout tension, a tether, a host's own effects. */
+  extForce: V3 = v3();
   private windTimer = 0;
   private windAgl = 0;
   private axis0: V3[];
@@ -188,6 +190,16 @@ export class QuadSim {
       pos: v3(), vel: v3(), q: quat(), w: v3(), time: 0, specForce: v3(0, 0, G0), accWorld: v3(),
       vbus: this.battery.s.voltage, ibus: 0, maxImpact: 0, crashed: false, touching: false,
     };
+    this.computeInertiaInverse();
+  }
+
+  /**
+   * Change the mass properties in flight (a payload released, a fibre spool emptying): mass (kg)
+   * and inertia about the CG. The CG itself stays put (the change is assumed near it).
+   */
+  setMassProperties(mass: number, inertia: QuadParams['inertia']): void {
+    this.p.mass = mass;
+    this.p.inertia = { ...inertia };
     this.computeInertiaInverse();
   }
 
@@ -424,6 +436,8 @@ export class QuadSim {
 
     // ---------- contacts (forces in world, torques in body) ----------
     const Fw = rotate(this.Fb, s.q, F);
+    const xf = this.extForce;
+    if (xf.x !== 0 || xf.y !== 0 || xf.z !== 0) { Fw.x += xf.x; Fw.y += xf.y; Fw.z += xf.z; }
     this.contacts(env, dt, Fw, Tq);
 
     // ---------- integrate (semi-implicit Euler) ----------

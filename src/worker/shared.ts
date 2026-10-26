@@ -8,6 +8,8 @@
 //   osd   Uint8[2*64*32]: chars then attributes
 //   sticks Float64[STICK_N*STICK_REC]: timestamped stick samples {t, ch0..15}; t in ms since the
 //                       epoch (performance.timeOrigin + now), so main and worker clocks compare
+import type { FaultSpec } from '../sim/faults';
+import type { OpsConfig, OpsEvent, OpsStatus } from './ops';
 
 export const RING_N = 2048;           // 2.048 s of history at 1 kHz
 export const RING_DT = 0.001;         // s between records
@@ -284,6 +286,10 @@ export type ToWorker =
   | { type: 'runStop'; id: number }
   /** answered by { type: 'synced' } once every message before it, firmware work included, is done */
   | { type: 'sync'; id: number }
+  /** the operational environment (ops.ts): replace it (null: none), add faults (times from now), drop the payload */
+  | { type: 'ops'; config: OpsConfig | null }
+  | { type: 'opsFaults'; faults: FaultSpec[] }
+  | { type: 'opsDrop' }
   | { type: 'registerMap'; id: string; info: { name: string; author: string; license: string }; urls: Record<string, string> };
 
 export interface Telemetry {
@@ -310,12 +316,15 @@ export interface Telemetry {
   gps: { fix: boolean; sats: number; homeDistM: number; homeDirDeg: number } | null;
   /** peak approach speed of the newest impact (m/s) and its sim time (s); t < 0: none yet */
   impact?: { speed: number; t: number };
+  /** the operational picture (links, jamming, GNSS, fibre, payload, faults) while an ops configuration is on */
+  ops?: OpsStatus;
 }
 
 export type FromWorker =
   | { type: 'ready'; fw: string }
   | { type: 'fwMissing'; reason: string }
   | { type: 'telemetry'; tel: Telemetry }
+  | { type: 'opsEvent'; e: OpsEvent }
   | { type: 'cliOut'; text: string }
   | { type: 'cliBatchDone'; id: number; output: string }
   | { type: 'built'; info: unknown }

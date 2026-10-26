@@ -1,6 +1,8 @@
 // The control API's foothold in the page: the sticks an API client flies with, the events main.ts
 // forwards, window.fpvSim, and connecting to a local relay (?api=ws://127.0.0.1:8765). The live
 // backend itself (src/app/liveApi.ts) loads the first time any of it is used.
+import type { FaultSpec } from '../sim/faults';
+import type { OpsConfig, OpsEvent } from '../worker/ops';
 import type { DroneSpec } from '../builder/derive';
 import type { V3 } from '../sim/math';
 import type { SimSettings, Telemetry } from '../worker/shared';
@@ -23,6 +25,10 @@ export interface LiveDeps {
   /** close the menu into flight / open the pause menu */
   fly(): void;
   pause(): void;
+  /** the operational environment (src/worker/ops.ts): replace, add faults (from now), drop the payload */
+  setOps(config: OpsConfig | null): void;
+  injectFaults(faults: FaultSpec[]): void;
+  dropPayload(): void;
 }
 
 /** Only relays on this computer: a page link must not send the sim's controls anywhere else. */
@@ -47,6 +53,7 @@ export class ApiHost {
   onGate(gate: number, t: number) { this.loaded?.onGate(gate, t); }
   onTelemetry(tel: Telemetry) { this.loaded?.onTelemetry(tel); }
   onLog(text: string) { this.loaded?.onLog(text); }
+  onOps(e: OpsEvent) { this.loaded?.onOps(e); }
   /** the pilot respawned / changed map: an API episode in progress starts over */
   onRespawn() { this.loaded?.onRespawn(); }
   /** the live task in progress (training drills), if the backend is loaded */
