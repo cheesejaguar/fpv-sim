@@ -146,3 +146,57 @@ board, the relay checks that:
 The sim runs in the pilot's browser, so this is still not proof that a lap was flown. A forged
 lap now needs a whole trajectory that flies the track within the class's physics, and the
 trajectory is public.
+
+## Reproducible runs (.fpvrun)
+
+A lap replay records what happened. A **run** records what was done, so the flight can be
+simulated again, exactly, with the full simulator state at every step. Use it for human
+demonstrations with privileged state (imitation learning), studies that need the true trajectory
+and sensor streams of a flight, or checking that two builds of the simulator agree.
+
+Record one in **Settings → Research → Reproducible run**. *Start run* does four things:
+- reboots Betaflight on a fresh instance with the current configuration;
+- seeds every random process in the simulation from the run's seed: wind turbulence, sensor
+  noise, the radio link, rotor wash;
+- rebuilds the world and the quad on the pad;
+- records the sticks of every RC packet the flight controller receives, with the physics step it
+  arrived in, plus respawns.
+
+What follows is a pure function of those packets (`FlightCore.beginRun`,
+[`src/worker/flightCore.ts`](../src/worker/flightCore.ts)). Changing the drone, the map, the
+physics settings or Betaflight ends the run. Pausing and the time scale don't matter.
+
+Re-simulate it headless:
+
+```bash
+npm run resim -- flight.fpvrun --csv flight.csv [--hz 1000]
+```
+
+The CSV has the full state at up to 1 kHz:
+- position, velocity, attitude and body rates;
+- the gyro and accelerometer as Betaflight read them;
+- motor speeds and commands;
+- battery;
+- the sticks Betaflight received, and whether it was armed.
+
+The replayer ([`src/headless/replay.ts`](../src/headless/replay.ts)) checks that every recorded
+packet arrives in the same physics step. If one doesn't, the run has diverged: another firmware
+build or simulator version. The script says where and exits with status 3.
+[`tests/workerHarness.test.ts`](../tests/workerHarness.test.ts) records a run in the real worker
+and checks the re-simulation against the worker's state at every millisecond.
+
+**File.** A gzip of one JSON document ([`src/worker/runLog.ts`](../src/worker/runLog.ts)):
+
+| Field | Content |
+| --- | --- |
+| `format`, `version` | `"fpvsim-run"`, `1` |
+| `app`, `firmware`, `firmwareBuild`, `created` | who recorded it, on which Betaflight build |
+| `seed`, `mapId`, `courseId`, `settings`, `spec` | the run's seed, world, conditions and drone |
+| `eeprom` | Betaflight's configuration image at the start (base64) |
+| `steps` | physics steps flown |
+| `packetSteps` | per RC packet, the physics step it arrived in (base64, uint32 little-endian) |
+| `packetChannels` | per RC packet, 16 channels in µs (base64, float32 little-endian) |
+| `events` | respawns: `{ k, type: "reset", repair, fullBattery, at? }` (k: the physics step) |
+| `end` | why the recording ended |
+
+A run stores 68 bytes per RC packet before compression, about 1 MB per minute at 250 Hz. Sticks compress well: a 9 s test flight came to 9 KB.

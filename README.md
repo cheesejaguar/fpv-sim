@@ -123,7 +123,9 @@ The sim opens on a title screen, with your quad orbiting on the launch pad behin
   replay (see [Global leaderboard](#global-leaderboard) and [Lap replays](#lap-replays)). Also in
   the pause menu, which also has **Replay last lap**.
 - **Settings**: Simulation, Controller, Betaflight (tuning, CLI, `diff all` import), Drone builder,
-  Multiplayer relay and Blackbox.
+  Multiplayer relay, Blackbox, Training (drills with an adaptive curriculum) and Research
+  (reproducible runs, camera datasets, scenario files, the control API). See
+  [Research, training and the control API](#research-training-and-the-control-api).
 - **Betaflight quick start**: a nine-chapter guide covering arming, flight modes, rates (with a
   live rate-curve explorer), PIDs, filters, OSD / LQ / RSSI, the CLI and your first flight.
 - **About** (footer): version and commit, license and no-warranty notice, third-party notices
@@ -540,6 +542,40 @@ class board and that board's top 5. It's CORS-enabled and cached for 10 s like t
 tested in `tests/shareEntry.test.ts`. Card layout, share links, the share decision and the QR
 encoder are tested in `tests/share.test.ts`. Deploy the relay before a site that links to it.
 
+## Research, training and the control API
+
+FPV Sim can also be driven by a program and used as a research and teaching instrument. The
+overview, with the HyperDrone lessons each part follows, is in [docs/RESEARCH.md](docs/RESEARCH.md).
+
+- **Control API** ([docs/API.md](docs/API.md)): the same JSON messages fly three setups.
+  - A headless simulation stepped by a program: lock-step and deterministic, for research and
+    reinforcement learning (`npm run api`).
+  - A headless simulation on the wall clock, for game engines and custom front ends
+    (`npm run api -- --realtime`).
+  - The live browser game: a program reads the state and takes over the sticks, with a banner and
+    one click to take them back (`npm run api -- --live`, then open the sim with
+    `?api=ws://127.0.0.1:8765`). Inside the page it is `window.fpvSim`.
+- **Python** ([python/](python/README.md)): a client and a Gymnasium environment, plus examples (a
+  hover controller, a random policy, real-time streaming, a live autopilot, dataset recording).
+- **Headless simulator** ([`src/headless/env.ts`](src/headless/env.ts)): the browser's own flight
+  core (Betaflight + physics, [`src/worker/flightCore.ts`](src/worker/flightCore.ts)) without
+  rendering. Episodes are a pure function of the scenario, the seed and the actions, and repeat bit
+  for bit. It runs about 5–10× real time per core.
+- **Scenario files** ([docs/SCENARIO_FORMAT.md](docs/SCENARIO_FORMAT.md), examples in
+  [`scenarios/`](scenarios/)): map, drone, conditions, Betaflight `diff all`, start, task (hover,
+  gates, waypoints), limits, probes, and domain randomization over built drones, wind and starts.
+- **Reproducible runs** (Settings → Research): record a live flight and re-simulate it headless,
+  exactly: `npm run resim -- flight.fpvrun` writes the full state at up to 1 kHz as CSV
+  ([format](docs/REPLAY_FORMAT.md#reproducible-runs-fpvrun)).
+- **Camera datasets** (Settings → Research, or the API; [docs/DATASET.md](docs/DATASET.md)): the
+  FPV picture with range, semantic and gate-instance ground truth through the same fisheye and
+  rolling shutter, plus per-frame labels: camera intrinsics and pose, the quad's state, and gate
+  corners in the image.
+- **Training drills** (Settings → Training): seven drills.
+  - The level rises after clean passes and drops after failures (HyperDrone's curriculum rule).
+  - A HUD card and a marker show the target.
+  - Every attempt exports as CSV or JSON.
+
 ## Tests
 
 ```bash
@@ -560,6 +596,16 @@ The closed-loop test flies the real firmware and checks:
 - Arming and a level hover.
 - Yaw drift below 0.15 °/s after boot calibration.
 - Full-stick roll rate close to Betaflight's default 670 °/s.
+
+The research tools are tested too:
+- The real simulation worker runs in Node on a fake clock (`tests/workerHarness.test.ts`): the
+  same inputs give bit-identical states, and a reproducible run it records re-simulates headless
+  identically, millisecond by millisecond.
+- Headless episodes repeat from their seed (`tests/headlessEnv.test.ts`).
+- Scenario files agree with their schema (`tests/scenario.test.ts`).
+- The API server and relay (`tests/apiServer.test.ts`).
+- Drills and the curriculum (`tests/training.test.ts`).
+- Dataset encoders (`tests/dataset.test.ts`).
 
 ## License
 
