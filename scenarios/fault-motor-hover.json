@@ -1,0 +1,15 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario", "version": 1,
+  "meta": { "id": "fault-motor-hover", "name": "Hover with a weakening motor and a drifting gyro", "description": "Motor 2 loses 30 % of its power at 4 s, and the gyro picks up a 6 deg/s roll bias at 6 s: fault tolerance and estimator robustness, with the real Betaflight mixer and attitude estimate." },
+  "seed": 21,
+  "map": { "id": "field" }, "drone": { "preset": "5\" Freestyle 6S" },
+  "start": { "armed": true, "mode": "angle" },
+  "task": { "type": "hover", "heightM": 4, "radiusM": 2 },
+  "episode": { "maxSeconds": 12, "controlHz": 50 },
+  "ops": { "faults": [
+    { "at": 4, "kind": "motor_degraded", "motor": 2, "value": 0.7 },
+    { "at": 6, "kind": "gyro_bias", "axis": "x", "value": 6, "duration": 4 }
+  ] },
+  "randomize": { "ops": { "faultAt": { "uniform": [3, 7] }, "faultMotor": { "choice": [1, 2, 3, 4] } } }
+}

@@ -1,0 +1,24 @@
+{
+  "format": "fpvsim-campaign", "version": 1,
+  "meta": { "id": "gnss-denied-route", "name": "Route under GNSS jamming and spoofing", "description": "An autonomous 5\" flies a three-waypoint route navigating on its GNSS receiver. A barrage GNSS jammer or a spoofer (walking the position east at 1.5 m/s) is placed near the route at random. The sweep compares the threat types; the requirement is the mission success rate." },
+  "runs": 20, "seed": 7,
+  "pilot": { "type": "reference", "navigation": "gnss", "cruiseMs": 6, "cruiseAglM": 10 },
+  "sweep": {
+    "ops.emitters.0.kind": ["jammer", "spoofer"]
+  },
+  "scenario": {
+    "format": "fpvsim-scenario", "version": 1,
+    "map": { "id": "field" }, "drone": { "preset": "5\" Freestyle 6S" },
+    "sim": { "wind": { "speed": 3, "direction": 200, "turbulence": 1, "gusts": 1 } },
+    "task": { "type": "waypoints", "points": [[-44, 10, 10], [0, 10, 10], [0, -26, 6]], "radiusM": 4 },
+    "episode": { "maxSeconds": 45, "controlHz": 50 },
+    "ops": {
+      "emitters": [{ "id": "threat", "kind": "jammer", "band": "gnss", "pos": [-20, 60, 15], "erpW": 0.5, "fromS": 4, "driftMps": [1.5, 0, 0] }]
+    },
+    "randomize": { "ops": { "emitterOffsetM": { "uniform": [-30, 30] }, "erpScale": { "loguniform": [0.000001, 1] } } }
+  },
+  "requirements": [
+    { "id": "NAV-1", "text": "the route is completed", "metric": "success", "rate": ">=", "value": 0.9, "confidence": 0.8 },
+    { "id": "NAV-2", "text": "no crash", "metric": "crashed", "rate": "<=", "value": 0.1, "confidence": 0.8 }
+  ]
+}

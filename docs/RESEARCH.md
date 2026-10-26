@@ -26,6 +26,10 @@ elsewhere, to study pilots, and to train them.
 | Cheap proximity sensing | Probe rays on a Fibonacci sphere in the observations | HyperDrone's 64 collision probes |
 | Teach pilots | [Training drills](#training-drills) with an adaptive curriculum, scored by the same task code as headless episodes | HyperDrone's curriculum: widen the range when the error is below 25 % of it, in clipped steps |
 | Trust the numbers | The physics tests against published data, the closed-loop firmware tests, and the parity tests below | sim-to-real transfer only means something if the simulator is checked |
+| Measure the sim-to-real gap | [Digital twin](DIGITAL_TWIN.md): a real blackbox log replayed through the same firmware, compared log with log, and the build fitted to it | HyperDrone's future work: closing the gap with real data |
+| Evaluate with statistics | [Campaigns](CAMPAIGNS.md): parallel seeded runs, requirements on exact confidence bounds, reproducible failure cases | evaluation over many seeds, not one lucky run |
+| Robustness beyond the weather | [Operations](OPERATIONS.md): faults, jamming, GNSS denial and spoofing, payloads, randomizable | RAPTOR-style robustness, extended to the failures and threats real drones meet |
+| Other flight stacks | [PX4 and ArduPilot SITL](AUTOPILOTS.md) on the same plant | |
 
 ## Architecture
 

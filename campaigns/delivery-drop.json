@@ -1,0 +1,25 @@
+{
+  "format": "fpvsim-campaign", "version": 1,
+  "meta": { "id": "delivery-drop", "name": "Parcel drop: accuracy in gusty wind", "description": "A 7\" long-range build carries a 300 g parcel 40 m downwind and drops it on a marked point from 8 m. Wind speed and direction, the parcel's mass and the start position vary every run." },
+  "runs": 40, "seed": 2026,
+  "pilot": { "type": "reference", "cruiseMs": 6, "cruiseAglM": 8 },
+  "scenario": {
+    "format": "fpvsim-scenario", "version": 1,
+    "map": { "id": "field" }, "drone": { "preset": "7\" Long Range Li-ion" },
+    "sim": { "wind": { "speed": 4, "direction": 90, "turbulence": 1, "gusts": 1.5 } },
+    "task": { "type": "drop", "target": [-10, 0, 0], "radiusM": 3 },
+    "episode": { "maxSeconds": 45, "controlHz": 50 },
+    "ops": { "payload": { "name": "parcel", "massG": 300, "cdA": 0.004 } },
+    "randomize": {
+      "sim": { "windSpeed": { "uniform": [0, 7] }, "windDirection": { "uniform": [0, 360] }, "windGusts": { "uniform": [0.5, 2.5] } },
+      "start": { "dx": { "uniform": [-3, 3] }, "dy": { "uniform": [-3, 3] } },
+      "ops": { "payloadMassG": { "uniform": [200, 400] } }
+    }
+  },
+  "requirements": [
+    { "id": "DEL-1", "text": "the parcel lands within 3 m of the mark", "metric": "success", "rate": ">=", "value": 0.8, "confidence": 0.9 },
+    { "id": "DEL-2", "text": "95 % of parcels land within 2.5 m", "metric": "missM", "stat": "p95", "op": "<=", "value": 2.5, "where": "success" },
+    { "id": "DEL-3", "text": "no crash", "metric": "crashed", "rate": "<=", "value": 0.05, "confidence": 0.9 },
+    { "id": "DEL-4", "text": "lands softly enough for the parcel (< 16 m/s)", "metric": "impactSpeedMs", "stat": "max", "op": "<=", "value": 16 }
+  ]
+}

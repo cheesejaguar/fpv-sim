@@ -9,7 +9,8 @@ import { DEFAULT_SPEC, DroneSpec, PRESETS } from '../builder/derive';
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO } from '../data/catalog';
 import { Rng, subSeed } from '../sim/math';
 import { DEFAULT_SETTINGS, SimSettings } from '../worker/shared';
-import { checkDist, Randomization, sampleBuild, sampleSim, sampleStart } from './randomize';
+import { checkDist, Randomization, sampleBuild, sampleOps, sampleSim, sampleStart } from './randomize';
+import { checkOps, OpsConfig } from '../worker/ops';
 import type { TaskDef, Vec3 } from './tasks';
 
 export const SCENARIO_FORMAT = 'fpvsim-scenario';
@@ -54,7 +55,14 @@ export interface Scenario {
     /** proximity probes: rays from the quad on a Fibonacci sphere (0 = none) */
     probes?: number;
     probeRangeM?: number;
+    /** navigation sensors in the observations: magnetometer, rangefinder, optical flow */
+    nav?: boolean;
   };
+  /**
+   * The operational environment: radio links (radio or fibre), jammers and spoofers, scheduled
+   * faults, a payload (docs/OPERATIONS.md)
+   */
+  ops?: OpsConfig;
   randomize?: Randomization;
 }
 
@@ -75,6 +83,8 @@ export interface Episode {
   endOutOfBounds: boolean;
   probes: number;
   probeRangeM: number;
+  nav: boolean;
+  ops: OpsConfig | null;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -93,7 +103,7 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean): {
   const err = (e: string) => errors.push(e);
   if (!isObj(raw)) return { scenario: null, errors: ['a scenario is a JSON object'] };
   const allow = (o: Record<string, unknown>, path: string, keys: readonly string[]) => { for (const k of Object.keys(o)) if (!keys.includes(k)) err(`${path}${k}: unknown key`); };
-  allow(raw, '', ['$schema', 'format', 'version', 'meta', 'seed', 'map', 'drone', 'sim', 'firmware', 'start', 'task', 'episode', 'observations', 'randomize']);
+  allow(raw, '', ['$schema', 'format', 'version', 'meta', 'seed', 'map', 'drone', 'sim', 'firmware', 'start', 'task', 'episode', 'observations', 'randomize', 'ops']);
   if (raw.format !== SCENARIO_FORMAT) err(`format: expected "${SCENARIO_FORMAT}"`);
   if (raw.version !== SCENARIO_VERSION) err(`version: this simulator reads version ${SCENARIO_VERSION}`);
   if (raw.meta !== undefined) {
@@ -173,11 +183,13 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean): {
     const o = raw.observations;
     if (!isObj(o)) err('observations: expected an object');
     else {
-      allow(o, 'observations.', ['probes', 'probeRangeM']);
+      allow(o, 'observations.', ['probes', 'probeRangeM', 'nav']);
+      if (o.nav !== undefined && typeof o.nav !== 'boolean') err('observations.nav: expected true or false');
       if (o.probes !== undefined && !(Number.isInteger(o.probes) && (o.probes as number) >= 0 && (o.probes as number) <= 256)) err('observations.probes: 0 .. 256');
       if (o.probeRangeM !== undefined && !(num(o.probeRangeM) && o.probeRangeM > 0 && o.probeRangeM <= 500)) err('observations.probeRangeM: 0 .. 500');
     }
   }
+  if (raw.ops !== undefined) errors.push(...checkOps(raw.ops));
   if (raw.randomize !== undefined) errors.push(...checkRandomize(raw.randomize));
   return { scenario: errors.length ? null : (raw as unknown as Scenario), errors };
 }
@@ -185,9 +197,10 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean): {
 function checkTask(t: unknown): string[] {
   const out: string[] = [];
   if (!isObj(t)) return ['task: expected an object with a "type"'];
-  const keys: Record<string, string[]> = { free: [], hover: ['target', 'heightM', 'radiusM', 'holdS'], gates: ['laps'], waypoints: ['points', 'radiusM'] };
+  const keys: Record<string, string[]> = { free: [], hover: ['target', 'heightM', 'radiusM', 'holdS'], gates: ['laps'], waypoints: ['points', 'radiusM'], drop: ['target', 'radiusM'] };
   const type = t.type as string;
-  if (!(type in keys)) return [`task.type: free, hover, gates or waypoints`];
+  if (!(type in keys)) return [`task.type: free, hover, gates, waypoints or drop`];
+  if (type === 'drop' && !vec3(t.target)) out.push('task.target: required for a drop task');
   for (const k of Object.keys(t)) if (k !== 'type' && !keys[type].includes(k)) out.push(`task.${k}: unknown key for a ${type} task`);
   if (t.target !== undefined && !vec3(t.target)) out.push('task.target: expected [x, y, z]');
   for (const k of ['heightM', 'radiusM', 'holdS'] as const) if (t[k] !== undefined && !(num(t[k]) && (t[k] as number) > 0)) out.push(`task.${k}: a positive number`);
@@ -199,7 +212,7 @@ function checkTask(t: unknown): string[] {
 function checkRandomize(r: unknown): string[] {
   const out: string[] = [];
   if (!isObj(r)) return ['randomize: expected an object'];
-  for (const k of Object.keys(r)) if (!['drone', 'sim', 'start'].includes(k)) out.push(`randomize.${k}: unknown key`);
+  for (const k of Object.keys(r)) if (!['drone', 'sim', 'start', 'ops'].includes(k)) out.push(`randomize.${k}: unknown key`);
   const group = (g: unknown, path: string, keys: readonly string[], numeric = true) => {
     if (g === undefined) return;
     if (!isObj(g)) { out.push(`${path}: expected an object`); return; }
@@ -242,6 +255,15 @@ function checkRandomize(r: unknown): string[] {
   }
   group(r.sim, 'randomize.sim', ['windSpeed', 'windDirection', 'windTurbulence', 'windGusts', 'ambientC', 'propwash', 'rcLinkHz', 'rcTxPowerMw']);
   group(r.start, 'randomize.start', ['dx', 'dy', 'dz', 'yawDeg']);
+  if (r.ops !== undefined) {
+    const o = r.ops;
+    if (!isObj(o)) out.push('randomize.ops: expected an object');
+    else for (const [k, d] of Object.entries(o)) {
+      if (k === 'faultPick') { if (!(Number.isInteger(d) && (d as number) >= 0)) out.push('randomize.ops.faultPick: an integer >= 0'); continue; }
+      if (!['faultAt', 'faultMotor', 'erpScale', 'emitterOffsetM', 'payloadMassG'].includes(k)) { out.push(`randomize.ops.${k}: unknown key`); continue; }
+      out.push(...checkDist(d, `randomize.ops.${k}`));
+    }
+  }
   return out;
 }
 
@@ -280,6 +302,7 @@ export function resolveEpisode(sc: Scenario, seed?: number): Episode {
   const spec = sampleBuild(scenarioSpec(sc), rnd?.drone, new Rng(subSeed(s, 1)));
   const settings = sampleSim(scenarioSettings(sc), rnd?.sim, new Rng(subSeed(s, 2)));
   const off = sampleStart(rnd?.start, new Rng(subSeed(s, 3)));
+  const ops = sc.ops ? sampleOps(sc.ops, rnd?.ops, new Rng(subSeed(s, 4))) : null;
   const e = sc.episode ?? {};
   return {
     seed: s,
@@ -299,6 +322,8 @@ export function resolveEpisode(sc: Scenario, seed?: number): Episode {
     endOutOfBounds: e.endOutOfBounds ?? true,
     probes: sc.observations?.probes ?? 0,
     probeRangeM: sc.observations?.probeRangeM ?? 20,
+    nav: sc.observations?.nav ?? false,
+    ops,
   };
 }
 

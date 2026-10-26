@@ -576,6 +576,33 @@ overview, with the HyperDrone lessons each part follows, is in [docs/RESEARCH.md
   - A HUD card and a marker show the target.
   - Every attempt exports as CSV or JSON.
 
+## Development, test and operations
+
+For teams building drones, autonomous or flown by a pilot. How this compares with Isaac Sim,
+Gazebo, AirSim, MATLAB and military trainers is in [docs/COMPARISON.md](docs/COMPARISON.md).
+
+- **Operations** ([docs/OPERATIONS.md](docs/OPERATIONS.md)):
+  - jammers and GNSS spoofers with physical link budgets (terrain, buildings, radio horizon,
+    ELRS frequency hopping, GNSS C/N0);
+  - a fibre-optic link;
+  - 16 fault kinds;
+  - payloads and drops;
+  - compass, rangefinder and optical flow.
+
+  The real Betaflight reacts to all of it. Set it in scenarios, over the API, or live in
+  Settings → Research → Operations.
+- **PX4 and ArduPilot** ([docs/AUTOPILOTS.md](docs/AUTOPILOTS.md)): `npm run sitl -- --px4` or
+  `-- --ardupilot` makes this simulator the physics plant of their SITL builds.
+- **Verification campaigns and trade studies** ([docs/CAMPAIGNS.md](docs/CAMPAIGNS.md)):
+  `npm run campaign -- campaigns/delivery-drop.json`.
+  - Parallel Monte Carlo against written requirements, with exact confidence bounds.
+  - Failure cases that re-fly bit for bit.
+  - Design sweeps with a Pareto front.
+  - HTML reports and CI exit codes.
+- **Digital twin from a flight log** ([docs/DIGITAL_TWIN.md](docs/DIGITAL_TWIN.md)):
+  `npm run twin -- flight.bbl --fit` replays a real Betaflight blackbox log through the simulator
+  and reports the sim-to-real gap, axis by axis. It also fits the build to the log.
+
 ## Tests
 
 ```bash
@@ -606,6 +633,11 @@ The research tools are tested too:
 - The API server and relay (`tests/apiServer.test.ts`).
 - Drills and the curriculum (`tests/training.test.ts`).
 - Dataset encoders (`tests/dataset.test.ts`).
+- Operations on the real Betaflight: jamming, spoofing, fibre, faults, payload
+  (`tests/ops.test.ts`).
+- PX4 / ArduPilot protocols and plant (`tests/sitlProtocol.test.ts`, `tests/sitl.test.ts`).
+- Campaign statistics, reports and reproducible runs (`tests/campaign.test.ts`).
+- The blackbox decoder and the digital twin (`tests/bblDecode.test.ts`, `tests/twin.test.ts`).
 
 ## License
 

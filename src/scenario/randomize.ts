@@ -6,6 +6,7 @@
 import { DroneSpec, Overrides, PRESETS } from '../builder/derive';
 import { Rng } from '../sim/math';
 import type { SimSettings } from '../worker/shared';
+import type { OpsConfig } from '../worker/ops';
 
 /**
  * One randomized value: a constant, or
@@ -104,6 +105,7 @@ export interface Randomization {
   drone?: DroneDist;
   sim?: SimDist;
   start?: StartDist;
+  ops?: OpsDist;
 }
 
 const PART_KEYS = ['frame', 'motor', 'prop', 'battery', 'esc', 'fc', 'video'] as const;
@@ -156,4 +158,45 @@ export function sampleSim(base: SimSettings, d: SimDist | undefined, rng: Rng): 
 export function sampleStart(d: StartDist | undefined, rng: Rng): { dx: number; dy: number; dz: number; yawDeg: number } {
   const v = (x: Dist<number> | undefined) => (x === undefined ? 0 : sample(x, rng));
   return { dx: v(d?.dx), dy: v(d?.dy), dz: v(d?.dz), yawDeg: v(d?.yawDeg) };
+}
+
+/** Randomization of the operational environment (scenario `randomize.ops`). */
+export interface OpsDist {
+  /** keep this many of the listed faults, picked at random (the rest never happen) */
+  faultPick?: number;
+  /** every fault starts at a time drawn from this (s) */
+  faultAt?: Dist<number>;
+  /** every motor fault hits a motor drawn from this (1-based) */
+  faultMotor?: Dist<number>;
+  /** every emitter's power is scaled by a draw from this */
+  erpScale?: Dist<number>;
+  /** every emitter moves by a draw from this along x and along y (m) */
+  emitterOffsetM?: Dist<number>;
+  /** the payload's mass (g) */
+  payloadMassG?: Dist<number>;
+}
+
+/** An ops configuration with its randomization drawn (a copy; the scenario is untouched). */
+export function sampleOps(base: OpsConfig, d: OpsDist | undefined, rng: Rng): OpsConfig {
+  const o: OpsConfig = structuredClone(base);
+  if (!d) return o;
+  if (o.faults?.length) {
+    let f = o.faults;
+    if (d.faultPick !== undefined && d.faultPick < f.length) {
+      const idx = f.map((_, i) => i);
+      for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(rng.next() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+      f = idx.slice(0, d.faultPick).sort((a, b) => a - b).map((i) => f[i]);
+    }
+    for (const x of f) {
+      if (d.faultAt !== undefined) x.at = Math.max(0, sample(d.faultAt, rng));
+      if (d.faultMotor !== undefined && x.motor !== undefined) x.motor = Math.round(sample(d.faultMotor, rng));
+    }
+    o.faults = f;
+  }
+  for (const e of o.emitters ?? []) {
+    if (d.erpScale !== undefined) e.erpW *= Math.max(0, sample(d.erpScale, rng));
+    if (d.emitterOffsetM !== undefined) { e.pos = [e.pos[0] + sample(d.emitterOffsetM, rng), e.pos[1] + sample(d.emitterOffsetM, rng), e.pos[2]]; }
+  }
+  if (o.payload && d.payloadMassG !== undefined) o.payload.massG = Math.max(1, sample(d.payloadMassG, rng));
+  return o;
 }

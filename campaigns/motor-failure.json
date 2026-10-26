@@ -1,0 +1,20 @@
+{
+  "format": "fpvsim-campaign", "version": 1,
+  "meta": { "id": "motor-failure", "name": "Propulsion faults in hover", "description": "A 5\" hovers at 4 m under the reference autopilot; at a random moment one motor at random loses 15–45 % of its power, or a prop is damaged. Does Betaflight's mixer keep it in the air?" },
+  "runs": 30, "seed": 11,
+  "pilot": { "type": "reference" },
+  "sweep": { "ops.faults.0.kind": ["motor_degraded", "prop_damage"] },
+  "scenario": {
+    "format": "fpvsim-scenario", "version": 1,
+    "map": { "id": "field" }, "drone": { "preset": "5\" Freestyle 6S" },
+    "sim": { "wind": { "speed": 2, "direction": 0, "turbulence": 1, "gusts": 1 } },
+    "task": { "type": "hover", "heightM": 4, "radiusM": 2 },
+    "episode": { "maxSeconds": 12, "controlHz": 50 },
+    "ops": { "faults": [{ "at": 5, "kind": "motor_degraded", "motor": 1, "value": 0.6 }] },
+    "randomize": { "ops": { "faultAt": { "uniform": [4, 7] }, "faultMotor": { "choice": [1, 2, 3, 4] } } }
+  },
+  "requirements": [
+    { "id": "FT-1", "text": "stays airborne (no crash) after the fault", "metric": "crashed", "rate": "<=", "value": 0.1, "confidence": 0.8 },
+    { "id": "FT-2", "text": "stays inside the 2 m box most of the time", "metric": "insideFraction", "stat": "p50", "op": ">=", "value": 0.5 }
+  ]
+}

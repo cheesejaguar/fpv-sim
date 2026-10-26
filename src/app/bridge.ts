@@ -3,6 +3,8 @@
 // uncaught error inside it, a failed script load, an undecodable message) it is restarted once from
 // the remembered init + latest spec / settings / local maps, continuing the shared ring's timeline;
 // a second failure is surfaced as { type: 'fatal' }.
+import type { FaultSpec } from '../sim/faults';
+import type { OpsConfig } from '../worker/ops';
 import { createShared, newestTime, writeStick, type FromWorker, type Shared, type ToWorker } from '../worker/shared';
 
 /** Stops the stick poller; wake() returns it to the full rate at once (see WorkerBridge.pollSticks). */
@@ -107,6 +109,10 @@ export class WorkerBridge implements BfBridge {
   });
   /** Begin a reproducible run (the worker reboots Betaflight and records every RC packet). */
   runStart = (seed: number) => this.send({ type: 'runStart', seed: seed >>> 0 });
+  /** the operational environment (jammers, faults, payload, fibre); null removes it */
+  setOps = (config: OpsConfig | null) => this.send({ type: 'ops', config });
+  opsFaults = (faults: FaultSpec[]) => this.send({ type: 'opsFaults', faults });
+  opsDrop = () => this.send({ type: 'opsDrop' });
   /** Stop the run (or fetch the last one) as a .fpvrun file; empty data: there was none. */
   runStop = () => new Promise<{ data: ArrayBuffer; seconds: number; reason: string }>((res) => {
     if (this.failed) { res({ data: new ArrayBuffer(0), seconds: 0, reason: 'the simulator stopped' }); return; }

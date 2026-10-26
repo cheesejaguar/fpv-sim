@@ -38,6 +38,11 @@ export class VideoLink {
   state: LinkState = { cnr: 40, freeze: false, lost: 0, block: 0, distance: 0, rssiDbm: -40, latencyExtraMs: 0, margin: 30, bitrateMbps: 0 };
   rxGainDbi = 8;       // goggle patch + omni diversity
   txGainDbi = 2;       // lollipop / pagoda
+  /**
+   * The operational environment (src/worker/ops.ts): jamming in the goggles' channel (dBm), a
+   * fibre-optic link (no radio: a clean picture), the video lost (a fault, a broken fibre)
+   */
+  ew = { jamDbm: -Infinity, wired: false, lost: false };
 
   /** Link effects switched off: a perfect link (distance / RSSI keep their last values). */
   clean(video: VideoSpec) {
@@ -79,7 +84,9 @@ export class VideoLink {
     this.fade = this.fadeV * (2 + Math.min(4, this.obsDb / 6));
     const ptx = 10 * Math.log10(Math.max(1, video.vtxPowerMw));
     const rssi = ptx + this.txGainDbi + this.rxGainDbi - fspl + twoRay - this.obsDb + pattern + bodyBlock + this.fade;
-    const snr = rssi - NOISE_FLOOR_DBM;
+    // jamming adds to the receiver's noise floor
+    const floor = Number.isFinite(this.ew.jamDbm) ? 10 * Math.log10(Math.pow(10, NOISE_FLOOR_DBM / 10) + Math.pow(10, this.ew.jamDbm / 10)) : NOISE_FLOOR_DBM;
+    const snr = this.ew.lost ? -40 : this.ew.wired ? 50 : rssi - floor;
     const s = this.state;
     s.distance = d; s.rssiDbm = rssi;
     if (video.kind === 'analog') {

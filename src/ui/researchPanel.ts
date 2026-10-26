@@ -1,10 +1,13 @@
 // Settings → Research: the simulator as an instrument. Reproducible runs (record a flight that the
 // headless simulator re-simulates exactly), the camera dataset recorder (pictures with depth,
-// segmentation and labels), scenario files (an experiment or a drill set up from one file), and the
-// control API connection (a program flies the quad). Loaded the first time the tab opens.
+// segmentation and labels), scenario files (an experiment or a drill set up from one file),
+// operations (jammers, spoofers, a fibre link, faults, a payload), and the control API connection
+// (a program flies the quad). Loaded the first time the tab opens.
 import type { ApiHost } from '../app/apiHost';
 import type { WorkerBridge } from '../app/bridge';
 import type { AppCtx } from '../app/context';
+import type { FaultSpec } from '../sim/faults';
+import type { OpsConfig } from '../worker/ops';
 import { checkbox, el, onUnmount, section, select } from './dom';
 
 export interface ResearchDeps {
@@ -114,9 +117,48 @@ export function researchPanel(d: ResearchDeps): HTMLElement {
       el('button', { type: 'button', onclick: async () => { (await d.api.backend()).disconnect(); apiStatus.textContent = 'Not connected.'; } }, 'Disconnect')),
     apiStatus);
 
-  root.append(runSec, dsSec, scSec, apiSec);
+  // ---- operations: radio environment, faults, payload (src/worker/ops.ts) ----
+  const opsStatus = el('p', { class: 'status', role: 'status' });
+  const sp = ctx.map.spawn.pos;
+  /** a point d metres from the spawn pad, toward the map's middle */
+  const near = (d: number, h: number): [number, number, number] => {
+    const l = Math.hypot(sp.x, sp.y) || 1;
+    return [sp.x - (sp.x / l) * d, sp.y - (sp.y / l) * d, h];
+  };
+  const apply = (next: OpsConfig, what: string) => {
+    opsCfg = next;
+    d.bridge.setOps(Object.keys(opsCfg).length ? opsCfg : null);
+    opsStatus.textContent = what;
+  };
+  const addEmitter = (e: NonNullable<OpsConfig['emitters']>[number], what: string) => apply({ ...opsCfg, emitters: [...(opsCfg.emitters ?? []).filter((x) => x.id !== e.id), e] }, what);
+  const inject = (f: FaultSpec, what: string) => { d.bridge.opsFaults([f]); opsStatus.textContent = what; };
+  const opsSec = section('Operations',
+    el('p', {}, 'The electromagnetic environment and things going wrong, for training and testing: jammers and GNSS spoofers placed in the world (link budgets with terrain, buildings and the radio horizon), a fibre-optic link instead of radio, faults on the motors, sensors and links, and a payload to drop. The real Betaflight reacts as it would: failsafe on a lost link, a confused attitude on a bad gyro. Scenario files and the control API set the same things (docs/OPERATIONS.md). The telemetry overlay (H) shows the link, jamming and GNSS.'),
+    el('div', { class: 'actions' },
+      el('button', { type: 'button', onclick: () => addEmitter({ id: 'rc-jammer', band: '2.4', pos: near(30, 3), erpW: 20 }, 'A 20 W barrage jammer on 2.4 GHz, 30 m from the pad.') }, 'Jam 2.4 GHz control'),
+      el('button', { type: 'button', onclick: () => addEmitter({ id: 'vid-jammer', band: '5.8', pos: near(5, 2), erpW: 5 }, 'A 5 W jammer on 5.8 GHz near the pilot: watch the video.') }, 'Jam 5.8 GHz video'),
+      el('button', { type: 'button', onclick: () => addEmitter({ id: 'gnss-jammer', band: 'gnss', pos: near(150, 10), erpW: 1 }, 'A 1 W GNSS jammer 150 m away: the satellites drop out.') }, 'Jam GNSS'),
+      el('button', { type: 'button', onclick: () => addEmitter({ id: 'spoofer', kind: 'spoofer', band: 'gnss', pos: near(60, 5), erpW: 1e-6, driftMps: [2, 0, 0] }, 'A GNSS spoofer: the reported position walks east at 2 m/s.') }, 'Spoof GNSS')),
+    el('div', { class: 'actions' },
+      el('button', { type: 'button', onclick: () => apply({ ...opsCfg, link: { type: 'fiber', fiber: { lengthM: 5000 } } }, 'Fibre-optic link: a 5 km spool on the drone. Radio jamming no longer reaches the controls or the video.') }, 'Fibre-optic link'),
+      el('button', { type: 'button', onclick: () => apply({ ...opsCfg, payload: { name: 'payload', massG: 300, cdA: 0.004, releaseAux: 6 } }, 'A 300 g payload under the drone. Drop it with the button, AUX6 (channel 10), or the API.') }, 'Carry 300 g'),
+      el('button', { type: 'button', onclick: () => { d.bridge.opsDrop(); opsStatus.textContent = 'Payload released.'; } }, 'Drop payload')),
+    el('div', { class: 'actions' },
+      el('button', { type: 'button', onclick: () => inject({ at: 3, kind: 'motor_failure', motor: 2 }, 'Motor 2 fails in 3 seconds.') }, 'Motor 2 fails in 3 s'),
+      el('button', { type: 'button', onclick: () => inject({ at: 3, kind: 'prop_damage', motor: 1, value: 0.4 }, 'Prop 1 loses 40 % of its thrust in 3 seconds.') }, 'Damage prop 1 in 3 s'),
+      el('button', { type: 'button', onclick: () => inject({ at: 2, kind: 'rc_loss', duration: 3 }, 'The RC link drops for 3 s, 2 seconds from now.') }, 'Lose RC for 3 s'),
+      el('button', { type: 'button', onclick: () => inject({ at: 2, kind: 'gyro_bias', axis: 'x', value: 15, duration: 5 }, 'The gyro reads 15 deg/s of roll that isn\'t there, for 5 s.') }, 'Gyro bias')),
+    el('div', { class: 'actions' },
+      el('button', { type: 'button', class: 'primary', onclick: () => d.fly() }, 'Fly'),
+      el('button', { type: 'button', onclick: () => apply({}, 'Operational environment cleared.') }, 'Clear all')),
+    opsStatus);
+
+  root.append(runSec, dsSec, scSec, opsSec, apiSec);
   return root;
 }
+
+/** what the Operations section has set up (kept while the menu closes and opens) */
+let opsCfg: OpsConfig = {};
 
 function summary(m: Record<string, unknown>): string {
   const n = (k: string, unit = '', digits = 2) => (typeof m[k] === 'number' ? `${(m[k] as number).toFixed(digits)}${unit}` : null);

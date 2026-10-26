@@ -24,6 +24,8 @@ export interface Action {
   beeper?: boolean;
 }
 
+import type { OpsStatus } from '../worker/ops';
+
 export interface Observation {
   /** episode time (s) */
   t: number;
@@ -54,6 +56,13 @@ export interface Observation {
   gate: { next: number; total: number };
   /** peak impact speed in this step (m/s, 0 = none) and total prop damage */
   impact: number; damage: number;
+  /**
+   * navigation sensors (scenario observations.nav): magnetometer (gauss, body FLU), downward
+   * rangefinder (m; null without a return), optical flow (rad/s about body x / y; null without a range)
+   */
+  nav?: { mag: [number, number, number]; rangeM: number | null; flow: { x: number; y: number; quality: number } | null };
+  /** the operational picture when the scenario has `ops`: links and jamming, GNSS, fibre, payload, faults in force */
+  ops?: OpsStatus;
 }
 
 /** Write an action into RC channels (µs): the given sticks and switches change, the rest stay. */
