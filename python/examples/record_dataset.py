@@ -37,7 +37,7 @@ def on_frame(e):
 with Client() as sim:
     print("connected to", sim.hello()["app"])
     sim.on("frame", on_frame)
-    sim.record("start", hz=hz, rgb=True, depth=True, segmentation=True, stream=True)
+    sim.record("start", hz=hz, rgb=True, depth=True, segmentation=True)
     time.sleep(seconds)
     r = sim.record("stop")
     time.sleep(0.5)

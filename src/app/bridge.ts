@@ -28,6 +28,7 @@ export class WorkerBridge implements BfBridge {
   private batchWaiters = new Map<number, (s: string) => void>();
   private bblWaiters = new Map<number, (m: { data: ArrayBuffer; sessions: number }) => void>();
   private runWaiters = new Map<number, (m: { data: ArrayBuffer; seconds: number; reason: string }) => void>();
+  private syncWaiters = new Map<number, () => void>();
   private batchId = 1;
   private init: InitMsg | null = null;
   private maps = new Map<string, MapMsg>();
@@ -47,6 +48,7 @@ export class WorkerBridge implements BfBridge {
       if (m.type === 'cliOut') { for (const l of this.cliListeners) l(m.text); return; }
       if (m.type === 'cliBatchDone') { this.batchWaiters.get(m.id)?.(m.output); this.batchWaiters.delete(m.id); return; }
       if (m.type === 'bbl') { this.bblWaiters.get(m.id)?.({ data: m.data, sessions: m.sessions }); this.bblWaiters.delete(m.id); return; }
+      if (m.type === 'synced') { this.syncWaiters.get(m.id)?.(); this.syncWaiters.delete(m.id); return; }
       if (m.type === 'run') { this.runWaiters.get(m.id)?.({ data: m.data, seconds: m.seconds, reason: m.reason }); this.runWaiters.delete(m.id); return; }
       if (m.type === 'fatal') { this.died(m.reason); return; }
       this.onMessage(m);
@@ -63,7 +65,8 @@ export class WorkerBridge implements BfBridge {
     for (const r of this.batchWaiters.values()) r('');
     for (const r of this.bblWaiters.values()) r({ data: new ArrayBuffer(0), sessions: 0 });
     for (const r of this.runWaiters.values()) r({ data: new ArrayBuffer(0), seconds: 0, reason: 'the simulator stopped' });
-    this.batchWaiters.clear(); this.bblWaiters.clear(); this.runWaiters.clear();
+    for (const r of this.syncWaiters.values()) r();
+    this.batchWaiters.clear(); this.bblWaiters.clear(); this.runWaiters.clear(); this.syncWaiters.clear();
     if (this.restarts >= this.maxRestarts || !this.init) {
       this.failed = true;
       this.onMessage({ type: 'fatal', reason });
@@ -97,6 +100,11 @@ export class WorkerBridge implements BfBridge {
     const id = this.batchId++; this.bblWaiters.set(id, res); this.send({ type: 'getBbl', id });
   });
   clearBbl = () => this.send({ type: 'clearBbl' });
+  /** Resolves once the worker has handled everything sent before (a new drone's firmware setup included). */
+  sync = () => new Promise<void>((res) => {
+    if (this.failed) { res(); return; }
+    const id = this.batchId++; this.syncWaiters.set(id, res); this.send({ type: 'sync', id });
+  });
   /** Begin a reproducible run (the worker reboots Betaflight and records every RC packet). */
   runStart = (seed: number) => this.send({ type: 'runStart', seed: seed >>> 0 });
   /** Stop the run (or fetch the last one) as a .fpvrun file; empty data: there was none. */

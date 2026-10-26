@@ -16,6 +16,8 @@ export interface LiveDeps {
   respawn(fullBattery: boolean): void;
   teleport(pos: V3, yawDeg: number): void;
   cliBatch(lines: string[]): Promise<string>;
+  /** resolves once the worker has handled everything sent before (WorkerBridge.sync) */
+  sync(): Promise<void>;
   /** the simulator's own hardware lines for after an imported diff (simHardwareCli) */
   hardwareCli(keepOsdLayout: boolean, propsOut: boolean | null): Promise<string[]>;
   /** close the menu into flight / open the pause menu */

@@ -76,6 +76,8 @@ const bbl = new BblRecorder();
 /** the reproducible run being recorded, and the last one that ended */
 let run: RunRecorder | null = null;
 let lastRun: RunLog | null = null;
+/** the pilot's own "lower the physics rate automatically" setting, held off while a run records */
+let runAutoRate: boolean | undefined;
 
 const kv = new IdbKv(undefined, (why) => post({ type: 'log', text: `Settings storage unavailable (${why}): Betaflight changes won't be kept after a reload` }));
 const eeprom = new EepromStore(kv);
@@ -145,6 +147,8 @@ async function loadMap(id: string): Promise<boolean> {
   if (!hasMap(id)) { error = `unknown map "${id}"`; id = 'field'; }
   else await preloadMap(id).catch((e) => { console.warn(e); error = (e as Error)?.message ?? String(e); id = 'field'; });
   if (core.map && want !== core.settings.mapId) return false; // superseded by a newer map change while loading
+  // (a run that began while this map was loading flew the old one: it can't go on)
+  stopRun('the map changed');
   let m: MapDef;
   try { m = withCourse(MAPS[id](), core.settings.courseId); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
   core.setMap(m);
@@ -489,7 +493,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
 };
 
 function dispatch(m: ToWorker) {
-  if (m.type === 'spec' || m.type === 'cli' || m.type === 'cliBatch' || m.type === 'factoryReset' || m.type === 'runStart' || m.type === 'runStop') fwOps = fwOps.then(() => guarded(() => firmwareOp(m)));
+  if (m.type === 'spec' || m.type === 'cli' || m.type === 'cliBatch' || m.type === 'factoryReset' || m.type === 'runStart' || m.type === 'runStop' || m.type === 'sync') fwOps = fwOps.then(() => guarded(() => firmwareOp(m)));
   else void guarded(() => handle(m));
 }
 
@@ -520,6 +524,7 @@ function stopRun(reason: string) {
   lastRun = run.finish(core.steps, reason);
   run = null;
   core.endRun();
+  core.settings = { ...core.settings, autoRate: runAutoRate };
   post({ type: 'runState', active: false, reason });
 }
 
@@ -527,6 +532,7 @@ async function firmwareOp(m: ToWorker) {
   // anything that changes the flight controller or the airframe ends a reproducible run
   if (run && (m.type === 'spec' || m.type === 'cli' || m.type === 'cliBatch' || m.type === 'factoryReset')) stopRun(m.type === 'spec' ? 'the drone changed' : 'Betaflight was configured');
   switch (m.type) {
+    case 'sync': post({ type: 'synced', id: m.id }); break;
     case 'runStart': {
       const bf = core.bf;
       if (!bf || fwState !== 2) { post({ type: 'log', text: 'Reproducible run: Betaflight is not running' }); break; }
@@ -535,6 +541,7 @@ async function firmwareOp(m: ToWorker) {
       // stream seeded: what follows depends only on the sticks of each RC packet, which are recorded
       const eeprom = bf.eepromGet().slice();
       const fresh = await bf.spawn();
+      runAutoRate = core.settings.autoRate;
       core.settings = { ...core.settings, autoRate: false };
       core.beginRun(fresh, eeprom, m.seed, RUN_GPS_EPOCH_MS);
       governor.reset();
@@ -611,7 +618,7 @@ async function handle(m: ToWorker) {
       const prev = core.settings;
       if (run && physicsKey({ ...m.settings, autoRate: false }) !== runKey) stopRun('the simulation settings changed');
       // (a run keeps the physics rate fixed)
-      if (run) m = { ...m, settings: { ...m.settings, autoRate: false } };
+      if (run) { runAutoRate = m.settings.autoRate; m = { ...m, settings: { ...m.settings, autoRate: false } }; }
       const mapChanged = m.settings.mapId !== prev.mapId || (m.settings.courseId ?? '') !== (prev.courseId ?? '');
       const rateChanged = m.settings.physicsHz !== prev.physicsHz;
       core.settings = m.settings;

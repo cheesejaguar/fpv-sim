@@ -56,11 +56,8 @@ export interface Commands {
   metrics: Record<string, never>;
   /** live game: grab the next camera frame with ground truth and labels (see docs/DATASET.md) */
   capture: { rgb?: boolean; received?: boolean; depth?: boolean; segmentation?: boolean; labels?: boolean };
-  /**
-   * live game: record frames + ground truth + labels at hz (sim time); stream: one "frame" event per
-   * frame (default), else stop returns the .zip (base64)
-   */
-  record: { action: 'start' | 'stop'; hz?: number; rgb?: boolean; received?: boolean; depth?: boolean; segmentation?: boolean; stream?: boolean; maxFrames?: number };
+  /** live game: record frames + ground truth + labels at hz (sim time), one "frame" event per frame; stop says how many */
+  record: { action: 'start' | 'stop'; hz?: number; rgb?: boolean; received?: boolean; depth?: boolean; segmentation?: boolean; maxFrames?: number };
   bye: Record<string, never>;
 }
 
@@ -88,7 +85,7 @@ export type ApiEvent =
   | { event: 'episode'; reason: string; metrics: TaskMetrics }
   /** live game: who flies the quad now */
   | { event: 'control'; by: 'api' | 'pilot' }
-  /** live game, recording with stream: one recorded frame (labels; PNGs as base64) */
+  /** live game, recording: one recorded frame (labels; PNGs as base64) */
   | { event: 'frame'; labels: unknown; classes: readonly string[]; rgb?: string; received?: string; depth?: string; segmentation?: string; instance?: string }
   | { event: 'bye'; reason?: string };
 
@@ -140,6 +137,7 @@ export function parseRequest(text: string): { req: Request; error?: undefined } 
     case 'record':
       if (m.action !== 'start' && m.action !== 'stop') return bad('action: "start" or "stop"');
       if (m.hz !== undefined && !(finite(m.hz) && (m.hz as number) > 0 && (m.hz as number) <= 60)) return bad('hz: 0 .. 60');
+      if (m.maxFrames !== undefined && !(Number.isInteger(m.maxFrames) && (m.maxFrames as number) >= 1)) return bad('maxFrames: a positive integer');
       break;
   }
   return { req: m as unknown as Request };

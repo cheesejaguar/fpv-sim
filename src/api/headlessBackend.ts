@@ -129,6 +129,7 @@ export class HeadlessBackend implements ApiBackend {
   private resync() { this.wallStart = this.now(); this.simAtWallStart = this.env.core?.simT ?? 0; }
 
   private startClock() {
+    if (this.closed) return; // the client left while the reset was still booting
     this.resync();
     if (this.running) return;
     this.running = true;

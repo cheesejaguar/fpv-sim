@@ -78,7 +78,9 @@ Requests are answered in the order they arrive. Events have an `event` field and
 
 Messages are limited to 1 MiB (the live relay accepts 16 MiB from the page: captures carry
 images). Unknown commands, unknown keys in an action and out-of-range values are refused before
-any simulation sees them.
+any simulation sees them. A connection whose first line is not a JSON object (an HTTP request a web
+page made a browser send, for example) is closed. A client that stops reading has events dropped
+once 32 MiB are waiting, and is disconnected if a reply can't be queued.
 
 ## Commands
 
@@ -98,7 +100,7 @@ any simulation sees them.
 | `pause` / `resume` | | | | ✓ | ✓ |
 | `metrics` | | `metrics` | ✓ | ✓ | ✓ |
 | `capture` | `rgb?`, `received?`, `depth?`, `segmentation?` | `labels`, PNGs (base64) | | | ✓ |
-| `record` | `action: "start" \| "stop"`, `hz?`, kinds, `stream?`, `maxFrames?` | see [DATASET.md](DATASET.md) | | | ✓ |
+| `record` | `action: "start" \| "stop"`, `hz?`, kinds, `maxFrames?` | `frame` events; stop: `frames`, `dropped`, `meta` ([DATASET.md](DATASET.md)) | | | ✓ |
 | `bye` | | | ✓ | ✓ | ✓ |
 
 **reset** starts an episode. The scenario ([SCENARIO_FORMAT.md](SCENARIO_FORMAT.md)) sets up the
@@ -196,7 +198,7 @@ or other cylinders.
 | `episode` | `reason`, `metrics` | the task ended: `success`, `crash`, `out_of_bounds`, `timeout` (live game: also `respawn`) |
 | `log` | `text` | simulator and Betaflight messages |
 | `control` | `by`: `api` / `pilot` | live game: who flies |
-| `frame` | `labels`, PNGs | live game: a recorded dataset frame (`record` with `stream`) |
+| `frame` | `labels`, PNGs | live game: a recorded dataset frame (`record`) |
 | `bye` | `reason` | live game: the page went away |
 
 Lock-step episodes report gates, impacts and logs in `step`'s `info.events` instead.

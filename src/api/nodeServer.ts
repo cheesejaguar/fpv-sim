@@ -10,20 +10,38 @@ import { HeadlessBackend } from './headlessBackend';
 import { API_MAX_MESSAGE, ApiSession, Clock, parseRequest } from './protocol';
 import { attachWebSocket, WsPeer } from './wsServer';
 
-/** Split a byte stream into lines; refuses a line over the message limit. */
-function lines(onLine: (l: string) => void, onTooLong: () => void) {
+/**
+ * Split a socket's text into lines (the socket must be in utf8 mode, so a character split across
+ * chunks stays whole). A line over the message limit, or anything that isn't a JSON object, ends the
+ * connection: a web page can make a browser POST to a local port, and its body must never be read
+ * as commands (an HTTP request line is the first thing such a connection sends).
+ */
+function lines(socket: Socket, onLine: (l: string) => void, reject: (why: string) => void) {
   let buf = '';
-  return (chunk: Buffer | string) => {
-    buf += chunk.toString();
-    if (buf.length > API_MAX_MESSAGE && !buf.includes('\n')) { buf = ''; onTooLong(); return; }
+  socket.setEncoding('utf8');
+  socket.on('data', (chunk: string) => {
+    if (socket.destroyed) return;
+    buf += chunk;
+    if (buf.length > API_MAX_MESSAGE && !buf.includes('\n')) { buf = ''; reject('message too large'); return; }
     let i: number;
-    while ((i = buf.indexOf('\n')) >= 0) {
+    while ((i = buf.indexOf('\n')) >= 0 && !socket.destroyed) {
       const l = buf.slice(0, i).trim();
       buf = buf.slice(i + 1);
-      if (l) onLine(l);
+      if (!l) continue;
+      if (!l.startsWith('{')) { reject(/^[A-Z]+ \S+ HTTP\/\d/.test(l) ? 'HTTP is not spoken here' : 'not a JSON object'); return; }
+      onLine(l);
     }
-  };
+  });
 }
+
+/** Above this much unsent data a client is not reading: events are dropped, then it is disconnected. */
+const MAX_BACKLOG = 32 << 20;
+function writeTo(s: Socket, text: string, event: boolean) {
+  if (s.destroyed) return;
+  if (s.writableLength > MAX_BACKLOG) { if (event) return; s.destroy(); return; }
+  s.write(text + '\n');
+}
+const refuse = (s: Socket, why: string) => { if (!s.destroyed) s.end(JSON.stringify({ ok: false, error: `${why}: closing the connection` }) + '\n'); s.destroy(); };
 
 export interface HeadlessServerOptions {
   clock: Clock;
@@ -44,14 +62,15 @@ export async function serveHeadless(o: HeadlessServerOptions): Promise<{ port: n
     socket.setNoDelay(true);
     const peer = `${socket.remoteAddress}:${socket.remotePort}`;
     log(`client ${peer} connected`);
+    let backend: HeadlessBackend | null = null;
+    socket.on('close', () => { backend?.close(); conns.delete(socket); log(`client ${peer} left`); });
     const ready = createNodeEnv().then((env) => {
-      const session = new ApiSession({ handle: (r) => backend.handle(r) }, (t) => { if (!socket.destroyed) socket.write(t + '\n'); });
-      const backend = new HeadlessBackend(env, { clock: o.clock, app: o.app, scenario: o.scenario, emit: (e) => session.event(e) });
-      socket.on('close', () => backend.close());
+      if (socket.destroyed) return null;
+      const session = new ApiSession({ handle: (r) => b.handle(r) }, (t) => writeTo(socket, t, t.startsWith('{"event"')));
+      const b = backend = new HeadlessBackend(env, { clock: o.clock, app: o.app, scenario: o.scenario, emit: (e) => session.event(e) });
       return session;
-    });
-    socket.on('data', lines((l) => { void ready.then((s) => s.receive(l)); }, () => socket.destroy()));
-    socket.on('close', () => { conns.delete(socket); log(`client ${peer} left`); });
+    }, (e) => { refuse(socket, `the simulator could not start (${(e as Error).message})`); return null; });
+    lines(socket, (l) => { void ready.then((s) => s?.receive(l)); }, (why) => refuse(socket, why));
     socket.on('error', () => {});
   });
   await new Promise<void>((res, rej) => { server.once('error', rej); server.listen(o.port ?? 7878, o.host ?? '127.0.0.1', () => res()); });
@@ -65,7 +84,14 @@ export async function serveStdio(o: Omit<HeadlessServerOptions, 'host' | 'port'>
   const out = (t: string) => process.stdout.write(t + '\n');
   const session = new ApiSession({ handle: (r) => backend.handle(r) }, out);
   const backend = new HeadlessBackend(env, { clock: o.clock, app: o.app, scenario: o.scenario, emit: (e) => session.event(e) });
-  process.stdin.on('data', lines((l) => void session.receive(l), () => process.exit(2)));
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk: string) => {
+    buf += chunk;
+    if (buf.length > API_MAX_MESSAGE && !buf.includes('\n')) process.exit(2);
+    let i: number;
+    while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) void session.receive(l); }
+  });
   await new Promise<void>((res) => process.stdin.on('end', () => { backend.close(); res(); }));
 }
 
@@ -94,12 +120,14 @@ export async function serveRelay(o: RelayOptions): Promise<{ port: number; wsPor
   const clients = new Set<Socket>();
   const pending = new Map<number, { socket: Socket; id: number | string | undefined }>();
   let nextId = 1;
-  const toClient = (s: Socket, m: unknown) => { if (!s.destroyed) s.write(JSON.stringify(m) + '\n'); };
-  const broadcast = (m: unknown) => { for (const c of clients) toClient(c, m); };
+  const toClient = (s: Socket, m: unknown, event = false) => writeTo(s, JSON.stringify(m), event);
+  const broadcast = (m: unknown) => { for (const c of clients) toClient(c, m, true); };
+  /** requests the page will never answer (it left, or another tab took over) */
+  const failPending = (why: string) => { for (const [id, p] of pending) { toClient(p.socket, { id: p.id, ok: false, error: why }); pending.delete(id); } };
 
   const http = createHttpServer((_req, res) => { res.writeHead(426, { 'Content-Type': 'text/plain' }); res.end('FPV Sim API relay: the simulator page connects here over WebSocket.\n'); });
   attachWebSocket(http, (peer) => {
-    if (page) page.close(4000, 'another simulator tab took over');
+    if (page) { page.close(4000, 'another simulator tab took over'); failPending('another simulator tab took over'); }
     page = peer;
     log(`simulator page connected (${peer.origin || 'no origin'})`);
     broadcast({ event: 'log', text: `simulator page connected (${peer.origin || 'no origin'})` });
@@ -115,7 +143,7 @@ export async function serveRelay(o: RelayOptions): Promise<{ port: number; wsPor
       if (page !== peer) return;
       page = null;
       log('simulator page left');
-      for (const [id, p] of pending) { toClient(p.socket, { id: p.id, ok: false, error: 'the simulator page closed' }); pending.delete(id); }
+      failPending('the simulator page closed');
       broadcast({ event: 'bye', reason: 'the simulator page closed' });
     };
   }, {
@@ -128,14 +156,14 @@ export async function serveRelay(o: RelayOptions): Promise<{ port: number; wsPor
   const tcp = createTcpServer((socket) => {
     clients.add(socket);
     socket.setNoDelay(true);
-    socket.on('data', lines((l) => {
+    lines(socket, (l) => {
       const p = parseRequest(l);
       if (p.error !== undefined) { toClient(socket, { id: p.id, ok: false, error: p.error }); return; }
       if (!page) { toClient(socket, { id: p.req.id, ok: false, error: `no simulator page connected: open the simulator with ?api=ws://127.0.0.1:${wsPort} in the address` }); return; }
       const id = nextId++;
       pending.set(id, { socket, id: p.req.id });
       page.send(JSON.stringify({ ...p.req, id }));
-    }, () => socket.destroy()));
+    }, (why) => refuse(socket, why));
     socket.on('close', () => { clients.delete(socket); for (const [id, p] of pending) if (p.socket === socket) pending.delete(id); });
     socket.on('error', () => {});
   });

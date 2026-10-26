@@ -169,6 +169,7 @@ const apiHost = new ApiHost({
   respawn: (full) => sendReset(full),
   teleport: (p, yawDeg) => teleport(p, yawDeg),
   cliBatch: (lines) => bridge.cliBatch(lines),
+  sync: () => bridge.sync(),
   hardwareCli: async (keepOsdLayout, propsOut) => (await import('./bf/defaults')).simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
   fly: () => { if (ctx.menuOpen) gameMenu.resume(); },
   pause: () => { if (!ctx.menuOpen) { gameMenu.inFlight = true; gameMenu.open('pause'); } },

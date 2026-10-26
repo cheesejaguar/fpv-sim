@@ -6,7 +6,7 @@ and corner regression for drone racing, depth estimation, segmentation, visual o
 poses and IMU.
 
 - Record from **Settings → Research → Camera dataset** (a `.zip`), or through the control API's
-  `capture` and `record` ([API.md](API.md)). Over the API, frames stream as events and
+  `capture` and `record` ([API.md](API.md)). Over the API, every frame arrives as a `frame` event, and
   [`python/examples/record_dataset.py`](../python/examples/record_dataset.py) writes them to a folder.
 - It works in flight and in lap replays (FPV camera), so a leaderboard lap can become a dataset.
 - Code: [`src/app/dataset.ts`](../src/app/dataset.ts), [`src/render/groundTruth.ts`](../src/render/groundTruth.ts),

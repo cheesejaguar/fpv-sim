@@ -34,7 +34,6 @@ export class LiveBackend implements ApiBackend {
   private ended = false;
   private probeDirs: V3[] = [];
   private lastImpactT = -1;
-  private stepImpact = 0;
   private url = '';
   /** the program wants the quad armed; armTimer flips the switch the way a pilot would (see armHelper) */
   private armWanted = false;
@@ -117,7 +116,6 @@ export class LiveBackend implements ApiBackend {
     const imp = tel.impact;
     if (imp && imp.t >= 0 && imp.t !== this.lastImpactT) {
       this.lastImpactT = imp.t;
-      this.stepImpact = Math.max(this.stepImpact, imp.speed);
       this.emit({ event: 'impact', speed: imp.speed, t: imp.t - this.t0 });
       const ep = this.episode;
       if (ep && this.task && !this.ended && ep.endOnCrash && imp.speed >= ep.crashSpeedMs && imp.t >= this.t0) this.endEpisode('crash');
@@ -166,8 +164,8 @@ export class LiveBackend implements ApiBackend {
       case 'capture': return (await import('./dataset')).capture(ctx, req);
       case 'record': {
         const ds = await import('./dataset');
-        // over the API frames stream as events by default (a long recording would not fit one message)
-        return req.action === 'start' ? ds.startRecording(ctx, { ...req, stream: req.stream ?? true }, (e) => this.emit(e as ApiEvent)) : ds.stopRecording(ctx);
+        // over the API frames always stream as events (a recording would not fit one message)
+        return req.action === 'start' ? ds.startRecording(ctx, { ...req, stream: true }, (e) => this.emit(e as ApiEvent)) : ds.stopRecording(ctx);
       }
       case 'bye': setTimeout(() => this.disconnect(), 0); return {};
     }
@@ -192,6 +190,8 @@ export class LiveBackend implements ApiBackend {
         const keepOsd = plan.apply.some((l) => /^set osd_\w+_pos\b/.test(l));
         await this.deps.cliBatch([...plan.apply, ...(await this.deps.hardwareCli(keepOsd, plan.propsOut)), 'save']);
       }
+      // the worker has the new drone (its firmware setup and reboot included) before the respawn below
+      await this.deps.sync();
       // the renderer follows the map once it has loaded
       const t0 = performance.now();
       while (ctx.map.id !== ep.mapId && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));
@@ -202,8 +202,6 @@ export class LiveBackend implements ApiBackend {
     ep ??= this.episode;
     this.deps.fly();
     this.deps.respawn(true);
-    // let the worker take the respawn before placing the quad / starting the clock
-    await new Promise((r) => setTimeout(r, 120));
     if (ep) {
       const st = ep.start, sp = ctx.map.spawn, off = st.offset;
       if (st.pos || off.some((x) => x !== 0) || st.yawOffsetDeg !== 0 || st.yawDeg !== null) {
@@ -213,9 +211,13 @@ export class LiveBackend implements ApiBackend {
       }
       // the scenario's switches; arming takes over the sticks (throttle down) until released
       if (!pilot && (st.armed || st.mode !== 'acro')) this.takeSticks({ throttle: 0, roll: 0, pitch: 0, yaw: 0, mode: st.mode, arm: st.armed });
+    }
+    // the worker has taken the respawn (and the placement): every state from here on is the new episode's
+    await this.deps.sync();
+    if (ep) {
       this.task = new TaskRunner(ep.task, ctx.map);
-      this.t0 = newestTime(ctx.sh) + 0.12;
-      this.lastTaskT = -1; this.ended = false; this.stepImpact = 0;
+      this.t0 = newestTime(ctx.sh);
+      this.lastTaskT = -1; this.ended = false;
       if (!this.taskTimer) this.taskTimer = setInterval(() => this.feedTask(), 10);
     }
     return { obs: this.observe(), info: { seed: ep?.seed ?? null, episode: ep, reproducible: false }, vectorLabels: obsVectorLabels(this.probeDirs.length) };
@@ -226,7 +228,7 @@ export class LiveBackend implements ApiBackend {
     const task = this.task, ep = this.episode, ctx = this.ctx;
     if (!task || !ep || this.ended) return;
     const t = newestTime(ctx.sh);
-    if (t <= this.lastTaskT || t < this.t0 || !sampleRing(ctx.sh, t, this.rec)) return;
+    if (t <= this.lastTaskT || t <= this.t0 || !sampleRing(ctx.sh, t, this.rec)) return;
     this.lastTaskT = t;
     const r = this.rec;
     const st = task.step({ t: t - this.t0, pos: { x: r[R.px], y: r[R.py], z: r[R.pz] }, vel: { x: r[R.vx], y: r[R.vy], z: r[R.vz] }, w: { x: r[R.wx], y: r[R.wy], z: r[R.wz] }, armed: r[R.armed] > 0.5 });
@@ -239,6 +241,8 @@ export class LiveBackend implements ApiBackend {
   private endEpisode(reason: string) {
     if (!this.task || this.ended) return;
     this.ended = true;
+    if (this.taskTimer) clearInterval(this.taskTimer);
+    this.taskTimer = null;
     this.emit({ event: 'episode', reason, metrics: this.task.metrics() });
   }
 
@@ -317,7 +321,8 @@ export class LiveBackend implements ApiBackend {
     const range = this.episode?.probeRangeM ?? 20;
     const probes = this.probeDirs.map((d) => Math.min(range, ctx.world.raycast(pos, rot(q, d), range)));
     const cells = Math.max(1, Math.round(r[R.vbus] / Math.max(0.1, r[R.cellV])));
-    const impact = this.stepImpact; this.stepImpact = 0;
+    // the newest impact, while it is recent (every observer sees it: nothing is consumed)
+    const imp = tel?.impact, impact = imp && imp.t >= 0 && r[R.t] - imp.t < 0.25 ? imp.speed : 0;
     return {
       t: r[R.t] - this.t0,
       pos: [pos.x, pos.y, pos.z], vel: [r[R.vx], r[R.vy], r[R.vz]],

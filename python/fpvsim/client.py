@@ -92,12 +92,14 @@ class Client:
         return cls(_streams=(proc.stdout, proc.stdin), _proc=proc)
 
     def close(self) -> None:
-        if self._closed:
+        if getattr(self, "_shut", False):
             return
-        try:
-            self.call("bye", timeout=5)
-        except Exception:
-            pass
+        self._shut = True
+        if not self._closed:
+            try:
+                self.call("bye", timeout=5)
+            except Exception:
+                pass
         self._closed = True
         # end the stream first, so the reader thread sees EOF instead of blocking on a closed file
         # (closing a buffered file another thread is reading can deadlock)
@@ -129,6 +131,19 @@ class Client:
         self.close()
 
     def _read(self) -> None:
+        try:
+            self._read_lines()
+        except (OSError, ValueError):
+            pass  # the connection reset or was closed under us
+        finally:
+            # the connection ended: no answer will come, wake everyone waiting
+            self._closed = True
+            for rid in list(self._waiting):
+                q = self._waiting.pop(rid, None)
+                if q is not None:
+                    q.put({"ok": False, "error": "connection closed"})
+
+    def _read_lines(self) -> None:
         for line in self._rfile:
             line = line.strip()
             if not line:
@@ -136,6 +151,8 @@ class Client:
             try:
                 m = json.loads(line)
             except ValueError:
+                continue
+            if not isinstance(m, dict):
                 continue
             if "event" in m and "id" not in m:
                 hs = self._handlers.get(m["event"], []) + self._handlers.get("*", [])
@@ -152,10 +169,6 @@ class Client:
             q = self._waiting.pop(m.get("id"), None)
             if q is not None:
                 q.put(m)
-        # the connection ended: wake everyone waiting
-        for q in list(self._waiting.values()):
-            q.put({"ok": False, "error": "connection closed"})
-        self._waiting.clear()
 
     # -- requests ---------------------------------------------------------------------------------
 
@@ -166,10 +179,17 @@ class Client:
         rid = next(self._ids)
         q: "queue.Queue[dict]" = queue.Queue(maxsize=1)
         self._waiting[rid] = q
+        if self._closed:  # the reader ended between the check above and now
+            self._waiting.pop(rid, None)
+            raise ApiError("connection closed")
         msg = json.dumps({"id": rid, "cmd": cmd, **{k: v for k, v in params.items() if v is not None}}, separators=(",", ":"))
-        with self._lock:
-            self._wfile.write(msg + "\n")
-            self._wfile.flush()
+        try:
+            with self._lock:
+                self._wfile.write(msg + "\n")
+                self._wfile.flush()
+        except (OSError, ValueError) as e:
+            self._waiting.pop(rid, None)
+            raise ApiError(f"{cmd}: connection closed ({e})") from None
         try:
             r = q.get(timeout=timeout if timeout is not None else self.timeout)
         except queue.Empty:
@@ -241,5 +261,6 @@ class Client:
         return self.call("capture", rgb=rgb, depth=depth, segmentation=segmentation, labels=labels)
 
     def record(self, action: str, hz: float | None = None, **kinds: bool) -> dict:
-        """Live game only: record('start', hz=10, depth=True) ... record('stop') -> {'zip': base64}."""
+        """Live game only: record('start', hz=10, depth=True) ... record('stop'). Frames arrive as
+        'frame' events (register a handler with on('frame', f) first); stop returns how many."""
         return self.call("record", action=action, hz=hz, **kinds)

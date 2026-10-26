@@ -154,6 +154,35 @@ describe('live relay', () => {
     } finally { await relay.close(); }
   });
 
+  test('a browser POST to the TCP port never runs as commands; a tab taking over fails what the old one owed', async () => {
+    const relay = await serveRelay({ port: 0, wsPort: 0 });
+    try {
+      const seen: string[] = [];
+      const page = new WebSocket(`ws://127.0.0.1:${relay.wsPort}`);
+      await new Promise((res, rej) => { page.onopen = res; page.onerror = rej; });
+      page.onmessage = (ev) => { seen.push(JSON.parse(String(ev.data)).cmd); };
+      // what fetch('http://127.0.0.1:7878/', { method: 'POST', mode: 'no-cors', body }) sends
+      const reply = await new Promise<string>((res) => {
+        const s = createConnection(relay.port, '127.0.0.1', () => {
+          s.write('POST / HTTP/1.1\r\nHost: 127.0.0.1:7878\r\nContent-Type: text/plain\r\n\r\n\n{"cmd":"cli","lines":["defaults"]}\n');
+        });
+        let out = ''; s.on('data', (d) => { out += d; }); s.on('close', () => res(out));
+      });
+      expect(reply).toMatch(/HTTP is not spoken here/);
+      await new Promise((res) => setTimeout(res, 100));
+      expect(seen).toEqual([]);
+      // a request owed by a tab that is replaced fails at once instead of hanging
+      const c = client(relay.port); await c.ready;
+      page.onmessage = () => { /* this tab never answers */ };
+      const owed = c.call('state');
+      await new Promise((res) => setTimeout(res, 50));
+      const page2 = new WebSocket(`ws://127.0.0.1:${relay.wsPort}`);
+      await new Promise((res, rej) => { page2.onopen = res; page2.onerror = rej; });
+      expect((await owed).error).toMatch(/another simulator tab took over/);
+      page2.close(); c.close();
+    } finally { await relay.close(); }
+  });
+
   test('pages from other sites are refused', async () => {
     const relay = await serveRelay({ port: 0, wsPort: 0 });
     try {

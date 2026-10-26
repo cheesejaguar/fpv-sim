@@ -282,6 +282,8 @@ export type ToWorker =
   | { type: 'runStart'; seed: number }
   /** stop the run (or fetch the last one): answered by { type: 'run' } */
   | { type: 'runStop'; id: number }
+  /** answered by { type: 'synced' } once every message before it, firmware work included, is done */
+  | { type: 'sync'; id: number }
   | { type: 'registerMap'; id: string; info: { name: string; author: string; license: string }; urls: Record<string, string> };
 
 export interface Telemetry {
@@ -332,6 +334,7 @@ export type FromWorker =
   | { type: 'bbl'; id: number; data: ArrayBuffer; sessions: number }
   /** a reproducible run began / ended (reason: why it ended) */
   | { type: 'runState'; active: boolean; seed?: number; reason?: string }
+  | { type: 'synced'; id: number }
   /** the run as a .fpvrun file (empty when there was none) */
   | { type: 'run'; id: number; data: ArrayBuffer; seconds: number; reason: string };
 
