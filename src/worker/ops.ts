@@ -257,6 +257,8 @@ export class OpsLayer {
     h.rcLink.cut = this.cutNow();
     this.attached = !!this.config.payload; this.released = false; this.proj = null; this.impact = null;
     this.updateMass(h);
+    // a warm receiver: it has a solution from the first sample on, not 0.1 s later
+    this.fixAcc = 0; this.updateFix(h, this.time(h.simT));
   }
 
   /** Remove every effect from the quad (the configuration is being replaced or dropped). */
