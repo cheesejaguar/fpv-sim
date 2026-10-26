@@ -45,6 +45,7 @@ function buildRemote(peer: Peer): Remote {
   const k = FRAME_SCALE[peer.info.frame] ?? 1;
   const ky = Math.max(0.55, k); // heights shrink less than spans (a whoop is not a flat 5")
   const group = new THREE.Group();
+  group.userData.gt = 'drone_other';
   const col = new THREE.Color(peer.info.color);
   const frameMat = T(new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 0.5 }));
   const accent = T(new THREE.MeshStandardMaterial({ color: col, roughness: 0.4, emissive: col, emissiveIntensity: 0.25 }));

@@ -18,7 +18,7 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; media-src 'self' blob:; connect-src 'self' blob: https://fpv-sim-rooms.newsanjose.workers.dev wss://fpv-sim-rooms.newsanjose.workers.dev wss: https:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; media-src 'self' blob:; connect-src 'self' blob: https://fpv-sim-rooms.newsanjose.workers.dev wss://fpv-sim-rooms.newsanjose.workers.dev wss: https: ws://127.0.0.1:* ws://localhost:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         },
         {
           "key": "X-Content-Type-Options",

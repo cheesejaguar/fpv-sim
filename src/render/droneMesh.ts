@@ -47,6 +47,7 @@ export function cameraMountZ(frame: { stackHeightMm: number; ducted?: boolean; d
 
 export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x: number; y: number; z: number; dir: number }[], cg: { x: number; y: number; z: number }): DroneModel {
   const root = new THREE.Group();
+  root.userData.gt = 'drone_self'; // dataset ground truth: the quad's own props and ducts in view
   const disp: { dispose(): void }[] = [];
   const T = <X extends { dispose(): void }>(x: X) => (disp.push(x), x);
   const carbon = T(new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 0.45, metalness: 0.2 }));

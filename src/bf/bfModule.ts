@@ -103,7 +103,19 @@ export class Betaflight {
    */
   static async fromFactory(factory: (o: object) => Promise<unknown>, wasm?: Promise<WebAssembly.Module>): Promise<Betaflight> {
     const m = await Betaflight.instantiate(factory, wasm);
-    return new Betaflight(m, wasm ? Betaflight.readVersion(m) : 'Betaflight 4.5.5 (WASM)');
+    const bf = new Betaflight(m, wasm ? Betaflight.readVersion(m) : 'Betaflight 4.5.5 (WASM)');
+    bf.spawner = () => Betaflight.fromFactory(factory, wasm);
+    return bf;
+  }
+
+  private spawner: (() => Promise<Betaflight>) | null = null;
+  /**
+   * A new, never-booted flight controller from the same firmware build (no download, no compile:
+   * milliseconds). A reproducible run starts on one, exactly as the headless simulator does.
+   */
+  spawn(): Promise<Betaflight> {
+    if (!this.spawner) return Promise.reject(new Error('this firmware instance cannot spawn another'));
+    return this.spawner();
   }
 
   private static async instantiate(factory: (o: object) => Promise<unknown>, wasm?: Promise<WebAssembly.Module>): Promise<EmModule> {
@@ -159,7 +171,9 @@ export class Betaflight {
     URL.revokeObjectURL(blobUrl);
     const factory = mod.default ?? mod.createBetaflight ?? mod;
     const m = await Betaflight.instantiate(factory, wasm);
-    return new Betaflight(m, Betaflight.readVersion(m));
+    const bf = new Betaflight(m, Betaflight.readVersion(m));
+    bf.spawner = () => Betaflight.fromFactory(factory, wasm);
+    return bf;
   }
 
   init(): number { return this.xInit(); }

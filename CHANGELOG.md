@@ -6,6 +6,37 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Research, training and the control API
+- **Control API** (docs/API.md): one JSON protocol for driving the simulator from a program.
+  - The headless simulator, lock-step (`npm run api`) or on the wall clock (`--realtime`).
+  - The live browser game: start the relay with `npm run api -- --live` and open the sim with
+    `?api=ws://127.0.0.1:8765`. The page asks first, a banner shows while a program is connected
+    or flying, and one click takes the controls back.
+  - In the page: `window.fpvSim`.
+  - Arming through the API works like a pilot: throttle down, the switch flicked again if
+    Betaflight latched it during a reboot.
+- **Python** (`python/`): an API client, a Gymnasium environment (passes Gymnasium's env checker,
+  seeds included) and five examples.
+- **Headless simulator**: the browser's flight core (Betaflight WASM + the 8 kHz plant, now
+  `src/worker/flightCore.ts`) stepped by a program. Episodes are seeded end to end and repeat bit
+  for bit. It reports hover / gates / waypoints rewards and metrics, plus proximity probes.
+- **Scenario files** (docs/SCENARIO_FORMAT.md, `schemas/scenario.v1.schema.json`, six examples in
+  `scenarios/`): map, drone, conditions, a Betaflight `diff all`, start, task, limits and
+  observations. Domain randomization covers built drones (parts and override scales through the
+  drone builder), wind and starts.
+- **Reproducible runs** (Settings → Research): a recorded live flight re-simulates headless exactly
+  (`npm run resim -- flight.fpvrun`), with the full state as CSV.
+- **Camera datasets** (Settings → Research, or the API; docs/DATASET.md): the FPV picture with
+  range, semantic classes and gate instances rendered through the same fisheye and rolling shutter.
+  Labels per frame: intrinsics, camera pose, the quad's state, and gate corners projected with
+  their visibility. Works in replays too.
+- **Training** (Settings → Training): seven drills with an adaptive curriculum (HyperDrone's rule:
+  up after clean passes, down after failures, in small steps). Each has a HUD card and a hover
+  marker, and attempts export as CSV / JSON.
+- The worker's lock-step moved into a shared `FlightCore` without changing a bit of its output. A
+  test now runs the real worker in Node on a fake clock.
+- The CSP allows WebSocket connections to `ws://127.0.0.1` and `ws://localhost` (the local relay).
+
 ### Performance
 - **The physics needs far less CPU.**
   - Collision queries, the prop-wash wake (now stepped once per ms, exactly) and the motor, battery, wind and rotor maths are cheaper.

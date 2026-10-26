@@ -278,6 +278,12 @@ export type ToWorker =
   /** Betaflight's own blackbox log (.bbl, one log per armed session) recorded so far */
   | { type: 'getBbl'; id: number }
   | { type: 'clearBbl' }
+  /** begin a reproducible run (runLog.ts) with this seed: a fresh FC, everything reseeded, sticks recorded */
+  | { type: 'runStart'; seed: number }
+  /** stop the run (or fetch the last one): answered by { type: 'run' } */
+  | { type: 'runStop'; id: number }
+  /** answered by { type: 'synced' } once every message before it, firmware work included, is done */
+  | { type: 'sync'; id: number }
   | { type: 'registerMap'; id: string; info: { name: string; author: string; license: string }; urls: Record<string, string> };
 
 export interface Telemetry {
@@ -302,6 +308,8 @@ export interface Telemetry {
   cpuLoad: number;
   /** GPS as the flight controller sees it; null on firmware without GPS */
   gps: { fix: boolean; sats: number; homeDistM: number; homeDirDeg: number } | null;
+  /** peak approach speed of the newest impact (m/s) and its sim time (s); t < 0: none yet */
+  impact?: { speed: number; t: number };
 }
 
 export type FromWorker =
@@ -323,7 +331,12 @@ export type FromWorker =
   | { type: 'mapLoaded'; id: string; requested: string; ok: boolean; error?: string }
   /** the machine can't keep real time: the worker lowered the physics rate */
   | { type: 'overload'; simRate: number; physicsHz: number }
-  | { type: 'bbl'; id: number; data: ArrayBuffer; sessions: number };
+  | { type: 'bbl'; id: number; data: ArrayBuffer; sessions: number }
+  /** a reproducible run began / ended (reason: why it ended) */
+  | { type: 'runState'; active: boolean; seed?: number; reason?: string }
+  | { type: 'synced'; id: number }
+  /** the run as a .fpvrun file (empty when there was none) */
+  | { type: 'run'; id: number; data: ArrayBuffer; seconds: number; reason: string };
 
 /**
  * Gyro noise spectra computed in the worker (the 1 kHz state ring is too slow for this).

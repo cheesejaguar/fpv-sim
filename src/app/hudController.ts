@@ -191,11 +191,11 @@ export class HudController {
       if (!this.telOn || now - this.telAt >= TEL_MS) { this.telAt = now; hud.tel(this.telLines(tel, video.kind)); }
       this.telOn = true;
       hud.sticks(true);
-      const ch = input.channels, d = this.sticksDrawn;
+      const ch = this.ctx.rcOverride ?? input.channels, d = this.sticksDrawn;
       if (ch[0] !== d[0] || ch[1] !== d[1] || ch[2] !== d[2] || ch[3] !== d[3]) { d[0] = ch[0]; d[1] = ch[1]; d[2] = ch[2]; d[3] = ch[3]; this.sticks.draw(ch); }
     } else { this.telOn = false; this.sticksDrawn.fill(NaN); hud.tel(null); hud.sticks(false); }
     hud.spectrum(this.spectrum.shown);
-    hud.race(raceInfo(ctx), updateDrill(ctx, head, armed), now);
+    hud.race(raceInfo(ctx), updateDrill(ctx, head, armed) ?? ctx.trainingHud?.() ?? null, now);
     // crash banner; haptic thump + impact sound on a new crash, scaled by impact speed ("Impact 12.3 m/s")
     const crash = tel?.crash ?? null;
     if (crash && this.crashUpper?.src !== crash) this.crashUpper = { src: crash, up: crash.toUpperCase() };

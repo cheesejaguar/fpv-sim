@@ -43,3 +43,31 @@ ol { padding-left: 18px; } li { margin: 4px 0; }
 .builder-bar .spacer { flex: 1; }
 .builder-dirty, .bf-dirty { color: var(--mut); font-size: 13px; }
 .builder-dirty.on, .bf-dirty.on { color: var(--acc2); font-weight: 600; }
+
+/* Control API banner (src/app/liveApi.ts): who flies the quad, and the way back to the controller */
+.api-banner {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px); flex-wrap: wrap; justify-content: center;
+  padding: 6px 10px 6px 12px; border-radius: 999px; font: 600 13px/1.3 'Chakra Petch', system-ui, sans-serif;
+  color: #e2e8f0; background: rgba(15, 15, 35, 0.86); border: 1px solid rgba(167, 139, 250, 0.4); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.api-banner button {
+  font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  color: #fff; background: #7c3aed; border: 1px solid #7c3aed; min-height: 28px;
+}
+.api-banner button + button { background: transparent; border-color: rgba(167, 139, 250, 0.5); }
+.api-dot { width: 9px; height: 9px; border-radius: 50%; background: #38bdf8; flex: none; }
+.api-dot.api-flying { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25); }
+@media (prefers-reduced-motion: no-preference) { .api-dot.api-flying { animation: api-pulse 1.4s ease-in-out infinite; } }
+@keyframes api-pulse { 50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.05); } }
+
+/* Settings → Training: level meter and the attempts table; Research: recording banner */
+.training .level { height: 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; margin: 6px 0; }
+.training .level i { display: block; height: 100%; background: linear-gradient(90deg, #7c3aed, #38bdf8); }
+.training .attempts th { text-align: left; color: var(--mut); font-weight: 600; padding-right: 10px; }
+.training .attempts td { padding-right: 10px; font-variant-numeric: tabular-nums; }
+.training .attempts tr.pass td:nth-child(3) { color: #4ade80; }
+.training .attempts tr.fail td:nth-child(3) { color: #fca5a5; }
+.research .field.inline { display: inline-flex; align-items: center; gap: 8px; }
+.research input[type="text"], .research input[type="number"] { background: #07090b; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.rec-banner { top: 52px; }

@@ -1,0 +1,43 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario",
+  "version": 1,
+  "meta": {
+    "id": "my-tune",
+    "name": "Bring your tune",
+    "description": "Fly a Betaflight diff all on the simulated FC: firmware.cli takes the lines of a diff all (board-hardware lines are filtered out, exactly as Settings → Betaflight → Bring your real quad does). This one: softer roll PIDs and 720 °/s Actual rates (srate 72 = 720 °/s).",
+    "author": "fpv-sim",
+    "license": "CC0-1.0"
+  },
+  "seed": 6,
+  "map": {
+    "id": "field"
+  },
+  "drone": {
+    "preset": "5\" Freestyle 6S"
+  },
+  "firmware": {
+    "cli": [
+      "# Betaflight / STM32F7X2 (S7X2) 4.5.1 Nov 12 2024 / 09:20:08 (77d01ba3b) MSP API: 1.46",
+      "profile 0",
+      "set p_roll = 50",
+      "set d_roll = 40",
+      "set f_roll = 110",
+      "rateprofile 0",
+      "set rates_type = ACTUAL",
+      "set roll_srate = 72",
+      "set pitch_srate = 72",
+      "set yaw_srate = 54"
+    ]
+  },
+  "start": {
+    "armed": true,
+    "mode": "acro"
+  },
+  "task": {
+    "type": "free"
+  },
+  "episode": {
+    "maxSeconds": 30
+  }
+}

@@ -4,6 +4,7 @@
 import { bootDone, onBeforeReset, showFatal } from './app/boot';
 import * as THREE from 'three';
 import './style.css';
+import { ApiHost } from './app/apiHost';
 import { WorkerBridge } from './app/bridge';
 import { AppCtx, makeLog } from './app/context';
 import { initDvr } from './app/dvr';
@@ -113,7 +114,7 @@ const ctx: AppCtx = {
   fpv: new FpvCamera(renderer, view0.cubeSize || autoCubeSize(build0.info.components.video, view0.renderScale)), osd: new OsdRenderer(), link: new VideoLink(), audio: new MotorAudio(),
   input: new InputManager(), mp: new MultiplayerClient(), remotes: new RemoteQuads(), blackbox: new Blackbox(),
   tel: null, fwStatus: 'Loading Betaflight firmware…', menuOpen: false,
-  rec: new Float64Array(REC), pilot: { x: 0, y: 0, z: 1.6 },
+  rec: new Float64Array(REC), rcOverride: null, run: { active: false }, pilot: { x: 0, y: 0, z: 1.6 },
   race: newRace(), drill: newDrill(), lb: new LapBoard(), replays: new LapRecorder(), replay: null, logLines, log: makeLog(logLines),
 };
 ctx.scene.scene.add(ctx.drone.root);
@@ -138,10 +139,11 @@ bridge.onMessage = (m) => {
       });
       break;
     }
-    case 'telemetry': ctx.tel = m.tel; break;
-    case 'log': ctx.log(m.text); break;
-    case 'gate': onGate(ctx, m.gate, m.t); break;
+    case 'telemetry': ctx.tel = m.tel; apiHost.onTelemetry(m.tel); break;
+    case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
+    case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
+    case 'runState': ctx.run = { active: m.active, seed: m.seed ?? ctx.run.seed, reason: m.reason }; if (!m.active && m.reason) ctx.log(`Reproducible run ended: ${m.reason}`); break;
     case 'mapLoaded': onWorkerMap(m.id, m.requested, m.ok, m.error); break;
     case 'overload': {
       // the worker already flies at the lower rate: settings follow, so later messages don't undo it,
@@ -156,7 +158,22 @@ bridge.onMessage = (m) => {
 
 // ---------------------------------------------------------------------------------------------
 // Settings changes
-function sendReset(fullBattery = false) { ctx.input.disarm(); onRespawn(ctx); ctx.send({ type: 'reset', repair: true, fullBattery }); }
+function sendReset(fullBattery = false) { ctx.input.disarm(); onRespawn(ctx); apiHost.onRespawn(); ctx.send({ type: 'reset', repair: true, fullBattery }); }
+function teleport(p: { x: number; y: number; z: number }, yawDeg = 0) { onRespawn(ctx); apiHost.onRespawn(); ctx.send({ type: 'reset', repair: true, at: { x: p.x, y: p.y, z: p.z, yawDeg } }); }
+
+// The control API (src/app/apiHost.ts): a program flying through window.fpvSim or a local relay
+const apiHost = new ApiHost({
+  ctx,
+  applySim: (s) => applySim(s),
+  applySpec: (s) => applySpec(s),
+  respawn: (full) => sendReset(full),
+  teleport: (p, yawDeg) => teleport(p, yawDeg),
+  cliBatch: (lines) => bridge.cliBatch(lines),
+  sync: () => bridge.sync(),
+  hardwareCli: async (keepOsdLayout, propsOut) => (await import('./bf/defaults')).simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
+  fly: () => { if (ctx.menuOpen) gameMenu.resume(); },
+  pause: () => { if (!ctx.menuOpen) { gameMenu.inFlight = true; gameMenu.open('pause'); } },
+});
 
 let specSeq = 0;
 function applySpec(s: DroneSpec) {
@@ -247,7 +264,7 @@ function applyView(v: ViewSettings) {
 // ---------------------------------------------------------------------------------------------
 // Input: poll fast (250 Hz) for low latency, independent of the render rate
 const input = ctx.input;
-input.onReset = () => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true }); };
+input.onReset = () => { onRespawn(ctx); apiHost.onRespawn(); ctx.send({ type: 'reset', repair: true }); };
 input.onMenu = () => gameMenu.toggle();
 input.onAction = (a) => simAction(a);
 /** Shared by keyboard keys and controller buttons (B, D-pad). */
@@ -260,7 +277,9 @@ function simAction(a: SimAction) {
 }
 // ~1 kHz, timestamped samples into the shared stick ring (~125 Hz while a menu has the controls and the
 // simulation is paused; back to full rate the moment the menu hands them back)
-const stickPoller = WorkerBridge.pollSticks(sh, () => input.poll(), () => input.active, { slow: () => input.suspended });
+// (a program flying through the control API replaces the pilot's channels; the pad is still polled
+// for the menu and for taking the controls back)
+const stickPoller = WorkerBridge.pollSticks(sh, () => { const ch = input.poll(); return apiHost.rc ?? ch; }, () => (apiHost.rc ? null : input.active), { slow: () => input.suspended });
 input.onResume = stickPoller.wake;
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
@@ -366,6 +385,8 @@ const bfLazy = lazyTab(() => Promise.all([import('./ui/bfPanel'), import('./bf/d
   factoryReset: () => ctx.send({ type: 'factoryReset' }),
 }));
 const builderLazy = lazyTab(() => import('./ui/builderPanel'), (m) => m.builderPanel(() => ctx.spec, (s) => { applySpec(s); gameMenu.resume(); }));
+const researchLazy = lazyTab(() => import('./ui/researchPanel'), (m) => m.researchPanel({ ctx, api: apiHost, bridge, fly: () => gameMenu.resume() }));
+const trainingLazy = lazyTab(() => import('./ui/trainingPanel'), (m) => m.trainingPanel({ ctx, api: apiHost, fly: () => { toggleDrill(ctx, false); gameMenu.resume(); } }));
 const controllerTab = controllerLazy.render, bfTab = bfLazy.render, builderTab = builderLazy.render;
 
 const gameMenu = new GameMenu({
@@ -384,6 +405,8 @@ const gameMenu = new GameMenu({
     { id: 'builder', label: 'Drone builder', icon: 'wrench', render: builderTab },
     { id: 'mp', label: 'Multiplayer', icon: 'users', render: () => multiplayerPanel(ctx.mp, joinRoom) },
     { id: 'blackbox', label: 'Blackbox', icon: 'database', render: blackboxPanel },
+    { id: 'training', label: 'Training', icon: 'target', render: trainingLazy.render },
+    { id: 'research', label: 'Research', icon: 'activity', render: researchLazy.render },
   ],
   startFlight, joinRoom,
   onOpenChange: (open) => {
@@ -411,6 +434,8 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+apiHost.installWindowApi();
+void apiHost.connectFromUrl().catch((e) => ctx.log(`Control API: ${(e as Error)?.message ?? e}`));
 // The title backdrop's shaders, compiled in the background while the menu is up, so its first frame
 // (once the simulation runs) doesn't stall on them. Only where the driver links in parallel
 // (KHR_parallel_shader_compile): without it compileAsync blocks just like the first frame would.
@@ -433,7 +458,7 @@ setTimeout(() => {
 // debugging handle (inspect from devtools), see `debug` above
 if (debug) (window as any).__fpv = {
   ctx, mp: ctx.mp, menu: gameMenu, hud: hudCtl.hud, input, link: ctx.link, sh: ctx.sh, R, REC, sampleRing, newestTime, replays: ctx.replays, shots,
-  teleport: (x: number, y: number, z: number, yawDeg = 0) => { onRespawn(ctx); ctx.send({ type: 'reset', repair: true, at: { x, y, z, yawDeg } }); },
+  teleport: (x: number, y: number, z: number, yawDeg = 0) => teleport({ x, y, z }, yawDeg),
   osdCells: () => hudCtl.osdCells(), frameRect: () => ctx.fpv.layout.frame,
   get scene() { return ctx.scene.scene; }, get tel() { return ctx.tel; }, get spectrum() { return spectrum.data; },
   cli: (lines: string[]) => bridge.cliBatch(lines),

@@ -1,0 +1,155 @@
+{
+  "$schema": "../schemas/scenario.v1.schema.json",
+  "format": "fpvsim-scenario",
+  "version": 1,
+  "meta": {
+    "id": "hover-randomized",
+    "name": "Hover under domain randomization",
+    "description": "A learning setup in the spirit of HyperDrone / RAPTOR: hover 2 m above the pad on a randomized 5\" build (battery, motors, mass and thrust scatter, a new unit each episode), in randomized wind, from a jittered airborne start. Every episode is reproducible from its seed.",
+    "author": "fpv-sim",
+    "license": "CC0-1.0"
+  },
+  "seed": 42,
+  "map": {
+    "id": "practice"
+  },
+  "drone": {
+    "preset": "5\" Freestyle 6S"
+  },
+  "start": {
+    "armed": true,
+    "mode": "angle"
+  },
+  "task": {
+    "type": "hover",
+    "heightM": 2,
+    "radiusM": 1
+  },
+  "episode": {
+    "maxSeconds": 10,
+    "controlHz": 100,
+    "crashSpeedMs": 3
+  },
+  "observations": {
+    "probes": 16,
+    "probeRangeM": 20
+  },
+  "randomize": {
+    "drone": {
+      "parts": {
+        "battery": {
+          "choice": [
+            "b6s1300",
+            "b6s1100",
+            "b6s1300hv"
+          ]
+        },
+        "motor": {
+          "choice": [
+            "m2207-1950",
+            "m2207-1750",
+            "m2207-2750"
+          ],
+          "weights": [
+            2,
+            1,
+            1
+          ]
+        }
+      },
+      "overrides": {
+        "massScale": {
+          "uniform": [
+            0.9,
+            1.15
+          ]
+        },
+        "inertiaScale": {
+          "uniform": [
+            0.9,
+            1.1
+          ]
+        },
+        "propThrustScale": {
+          "normal": [
+            1,
+            0.05
+          ],
+          "min": 0.85,
+          "max": 1.15
+        }
+      },
+      "batterySoc": {
+        "uniform": [
+          0.6,
+          1
+        ]
+      },
+      "cameraUptiltDeg": {
+        "uniform": [
+          20,
+          40
+        ]
+      },
+      "unit": true
+    },
+    "sim": {
+      "windSpeed": {
+        "uniform": [
+          0,
+          6
+        ]
+      },
+      "windDirection": {
+        "uniform": [
+          0,
+          360
+        ]
+      },
+      "windTurbulence": {
+        "uniform": [
+          0.5,
+          1.5
+        ]
+      },
+      "windGusts": {
+        "uniform": [
+          0,
+          3
+        ]
+      },
+      "ambientC": {
+        "uniform": [
+          0,
+          35
+        ]
+      }
+    },
+    "start": {
+      "dx": {
+        "uniform": [
+          -1,
+          1
+        ]
+      },
+      "dy": {
+        "uniform": [
+          -1,
+          1
+        ]
+      },
+      "dz": {
+        "uniform": [
+          1.5,
+          2.5
+        ]
+      },
+      "yawDeg": {
+        "uniform": [
+          -180,
+          180
+        ]
+      }
+    }
+  }
+}

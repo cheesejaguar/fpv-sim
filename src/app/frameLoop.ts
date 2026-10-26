@@ -220,7 +220,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
       // (frames only move forward: per-frame jitter must never re-capture an older pose)
       // a frozen digital decoder shows its last frame, but the link itself keeps being evaluated
       // every camera frame, or it could never recover (fly back / respawn)
-      let tick = false;
+      let tick = false, captured = false;
       if (tCap > lastCap && poseAt(tCap)) {
         tick = true;
         const dtw = (now - lastCapWall) / 1000; lastCapWall = now;
@@ -251,6 +251,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           for (const o of drone.fpvHidden) o.visible = false;
           fpv.capture(sceneB.scene, lensPos, lensQ, dtw, drone.root);
           for (const o of drone.fpvHidden) o.visible = true;
+          captured = true;
         }
         // link budget at capture time
         const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
@@ -277,6 +278,8 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         fpv.present(osd.texture, (osd.cols * 12) / (osd.rows * 18) * (v.kind === 'analog' ? 0.9 : 1), now / 1000, link.state, view.osd && osd.hasContent, gogOn ? gog : null);
         presentDue = false;
       }
+      // a new picture: the dataset recorder grabs it with its ground truth while the lens state is current
+      if (captured && ctx.onCameraFrame) ctx.onCameraFrame({ t: tCap, lensPos: lensPos.clone(), lensQ: lensQ.clone(), rec: Float64Array.from(rec) });
     } else {
       // spectator views show the true (undelayed) state; behind a menu screen at ~10 Hz
       if ((!dimmed || backdropReady(now, DIMMED_MS)) && poseAt(head)) {
@@ -325,11 +328,14 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         marker.visible = false;
       }
     }
-    ctx.blackbox.pump(sh, ctx.input.channels);
+    ctx.blackbox.pump(sh, ctx.rcOverride ?? ctx.input.channels);
     ctx.replays.pump(sh, ctx.race.lapStart >= 0 ? ctx.race.lapStart - PRE_S : null, ctx.tel?.modeFlags ?? 0, now);
     if (drillMesh.parent !== sceneB.scene) sceneB.scene.add(drillMesh);
-    drillMesh.visible = ctx.drill.on && !rp;
-    if (ctx.drill.on) enuToThree(ctx.map.spawn.pos.x, ctx.map.spawn.pos.y, spawnGroundZ(ctx.map) + 3, drillMesh.position);
+    // the hover box: the classic drill's, or a training drill's (its own size and height)
+    const tgt = ctx.trainingTarget;
+    drillMesh.visible = (ctx.drill.on || !!tgt) && !rp;
+    if (tgt) { enuToThree(tgt.x, tgt.y, tgt.z, drillMesh.position); drillMesh.scale.setScalar(tgt.radius / 1.5); }
+    else if (ctx.drill.on) { enuToThree(ctx.map.spawn.pos.x, ctx.map.spawn.pos.y, spawnGroundZ(ctx.map) + 3, drillMesh.position); drillMesh.scale.setScalar(1); }
     // where the listener is: the pilot (FPV / line of sight) or the chase camera
     const quad = { x: rec[R.px], y: rec[R.py], z: rec[R.pz] };
     const earView = rp ? (rp.cam === 'orbit' ? 'chase' : rp.cam) : view.view, cam = earView === 'chase';

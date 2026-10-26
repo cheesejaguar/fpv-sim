@@ -51,6 +51,16 @@ export interface ReplayView {
   close(): void;
 }
 
+/** A camera frame the FPV camera just captured (frame loop -> dataset recorder). */
+export interface CameraFrame {
+  /** sim time of the capture (s) */
+  t: number;
+  /** lens pose (three world space) of the frame's middle row */
+  lensPos: THREE.Vector3; lensQ: THREE.Quaternion;
+  /** the quad's state at t (ring record layout) */
+  rec: Float64Array;
+}
+
 export interface AppCtx {
   // persisted settings (replaced as a whole when they change)
   spec: DroneSpec;
@@ -81,6 +91,15 @@ export interface AppCtx {
   menuOpen: boolean;
   /** newest ring sample (written by the frame loop / HUD each frame) */
   rec: Float64Array;
+  /** the RC channels a program flies with through the control API (null: the pilot's controller) */
+  rcOverride: Float32Array | null;
+  /** the reproducible run (worker 'runState'): recording now, its seed, why the last one ended */
+  run: { active: boolean; seed?: number; reason?: string };
+  /** a training drill in progress: its HUD card (hover drills) and the marker to draw (ENU, m) */
+  trainingHud?: () => import('../ui/hud/hud').DrillInfo | null;
+  trainingTarget?: { x: number; y: number; z: number; radius: number } | null;
+  /** called right after the FPV camera captured and presented a new frame (the dataset recorder) */
+  onCameraFrame?: (f: CameraFrame) => void;
   /** where the pilot stands (ENU), for the video link, audio and line-of-sight view */
   pilot: { x: number; y: number; z: number };
   race: RaceState;
