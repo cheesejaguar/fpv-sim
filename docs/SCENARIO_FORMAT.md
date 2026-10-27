@@ -65,7 +65,8 @@ back to a default.
 | `start` | `pos` [x, y, z] (default: the map's or course's spawn pad), `yawDeg` (counter-clockwise from east), `armed` (arm once Betaflight's boot grace is over), `mode` (`acro`, `horizon`, `angle`: AUX2), `spawn` (one of the map's named `spawns`: its pose and pilot position; an error when the map is loaded and has no such spawn). |
 | `task` | what the episode asks (below). Default: `{ "type": "free" }`. |
 | `episode` | `maxSeconds` (default 30), `controlHz` (actions per second, default 100), `endOnCrash` (default true) at `crashSpeedMs` (default 4 m/s), `endOutOfBounds` (default true). |
-| `observations` | `probes`: proximity rays (0–256, default 0); `probeRangeM` (default 20); `actors`: `true` adds `actors` to the observation (every target's position and velocity, the detectors holding a detection, the RC link margin) and its numbers at the end of the vector ([API.md](API.md#observations)). |
+| `observations` | `probes`: proximity rays (0–256, default 0); `probeRangeM` (default 20); `nav`: add the magnetometer, downward rangefinder and optical flow to the observations; `actors`: `true` adds `actors` to the observation (every target's position and velocity, the detectors holding a detection, the RC link margin) and its numbers at the end of the vector ([API.md](API.md#observations)). |
+| `ops` | the operational environment: `link` (`type` radio / `fiber`, `band` 2.4 / 900, `fiber` spool), `emitters` (jammers and GNSS spoofers), `faults` (scheduled failures), `payload`, `field` (the Earth's magnetic field). See [OPERATIONS.md](OPERATIONS.md). |
 | `randomize` | domain randomization (below). |
 
 ## Tasks
@@ -79,6 +80,7 @@ back to a default.
 | `reach-target` | `target` (a target actor's id), `radiusM` (default: the target's own `radiusM`), `holdS` (default 0) | within `radiusM` of the target's centre for `holdS` in a row; it may be moving |
 | `track-target` | `target`, `rangeM` (default 15), `fovDeg` (default 60), `holdS` (default 5) | the target within `rangeM` and within `fovDeg` (full angle) of the camera axis (the drone's camera uptilt) for `holdS` in a row |
 | `detect-avoid` | `points` [[x, y, z], …] and / or `target` (the route ends there), `radiusM` (default 1), `maxDetectedS` (default 0) | the route flown with the quad detected (by the map's detectors) for at most `maxDetectedS` in all. More than that ends the episode, failed (`reason: "detected"`) |
+| `drop` | `target` [x, y, z], `radiusM` (default 2) | the payload (`ops.payload`) lands within `radiusM` of the target, horizontally; a miss is a `failure` |
 
 The actor tasks need a map with actors ([MAP_FORMAT.md](MAP_FORMAT.md#paths-and-actors)). Target
 ids are checked when the map is loaded. On a map with detectors every task's metrics include
@@ -103,6 +105,7 @@ Every randomized value is a **distribution**:
 | `randomize.drone` | `preset` (names), `parts.{frame, motor, prop, battery, esc, fc, video}` (catalogue ids), `overrides.<name>` (any builder override: `massScale`, `inertiaScale`, `propThrustScale`, `kv`, `cdAScale`, `irPerCellMohm` …), `cameraUptiltDeg`, `batterySoc`, `batteryAge`, `extraMassG`, `extraMassZmm`, `motorTiltDeg`, `unit` (a new unit per episode, default true) |
 | `randomize.sim` | `windSpeed`, `windDirection`, `windTurbulence`, `windGusts`, `ambientC`, `propwash`, `rcLinkHz`, `rcTxPowerMw` |
 | `randomize.start` | `dx`, `dy`, `dz` (offsets from the start, m), `yawDeg` (added to the start yaw) |
+| `randomize.ops` | `faultPick` (keep this many of the listed faults, at random), `faultAt` (every fault's start, s), `faultMotor` (every motor fault's motor), `erpScale` (every emitter's power ×), `emitterOffsetM` (every emitter moves along x and y), `payloadMassG` |
 | `randomize.spawn` | `"any"` (the map's default spawn or any of its named spawns, equally likely) or a list of spawn ids: the spawn the episode starts from (over `start.spawn`) |
 | `randomize.actors` | `jitterM`: fixed actors (except solid targets) and whole paths move by up to this much in x and y; `speedScale`: each path's speed is scaled by a draw of this distribution. Headless only: the live game flies the map as it is |
 
@@ -112,10 +115,10 @@ models from them. A heavier draw moves the CG and the inertia with it, and anoth
 the sag and the weight together. RAPTOR-style policies need exactly these correlations.
 
 **Seeds.** An episode's seed decides everything random in it. Each randomized group draws from its
-own stream (`subSeed(seed, 1)` for the drone, 2 for the conditions, 3 for the start, 4 for the
-spawn, 5 for the actors), so adding a drone range doesn't change the wind a seed draws. The map's
-actors have their own stream in the simulation too (each detector's looks): a map without actors
-runs exactly as before. The episode seed also seeds every random process
+own stream (`subSeed(seed, 1)` for the drone, 2 for the conditions, 3 for the start, 4 for ops, 5
+for the spawn, 6 for the actors), so adding a drone range doesn't change the wind a seed draws. The
+map's actors have their own stream in the simulation too (each detector's looks): a map without
+actors runs exactly as before. The episode seed also seeds every random process
 in the simulation: wind turbulence, sensor noise, the radio link, rotor-wash noise. Headless,
 `reset({ seed })` therefore repeats an episode bit for bit, given the same actions and firmware build.
 

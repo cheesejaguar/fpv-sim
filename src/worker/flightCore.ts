@@ -25,6 +25,7 @@ import { BaroModel, Brownout, CurrentSensor, seedOf } from './fcHardware';
 import { runCliBatch } from './fwCli';
 import { DEFAULT_SETTINGS, SimSettings } from './shared';
 import { GPS_ORIGIN, UbxReceiver } from './ubxGps';
+import { OpsConfig, OpsLayer } from './ops';
 
 /** What the host provides. Only `sticks` is required. */
 export interface FlightHooks {
@@ -107,6 +108,21 @@ export class FlightCore {
   /** physics steps since the run began (beginRun), or since the core was made */
   steps = 0;
   /**
+   * The operational layer (ops.ts): radio environment and jamming, fibre link, faults, payload,
+   * navigation sensors. null: none of it (the plain simulator).
+   */
+  ops: OpsLayer | null = null;
+  /** the IMU sample the firmware last read (the chip's output, or what a sensor fault made of it) */
+  fcGyro: V3 = { x: 0, y: 0, z: 0 }; fcAcc: V3 = { x: 0, y: 0, z: G0 };
+  /**
+   * Motor throttles (0..1, Betaflight's motor order) from an external autopilot (src/sitl/): used
+   * instead of the firmware when there is no Betaflight (bf null).
+   */
+  external: Float32Array | null = null;
+  /** motor commands as the ESCs receive them (after motor faults) */
+  readonly escCmd = new Uint16Array(4);
+  private gpsCep0 = 0;
+  /**
    * GPS UTC time = gpsEpochMs + firmware time, instead of the host's wall clock: a seeded run must
    * never read the wall clock (null: hooks.wallMs, else Date.now)
    */
@@ -182,6 +198,19 @@ export class FlightCore {
     return { world: this.world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
   }
 
+  /**
+   * Apply an operational configuration (null: remove it). Its times count from now (or from core
+   * time t0). Seeded from the core's seed.
+   */
+  setOps(config: OpsConfig | null, t0 = this.simT) {
+    if (this.ops && this.quad) { this.ops.detach(this); this.gps.cepM = this.gpsCep0 || this.gps.cepM; }
+    this.ops = config ? new OpsLayer(config, t0, this.seed ?? 0x0b5) : null;
+    if (this.ops && this.quad) this.ops.attach(this, true);
+  }
+
+  /** where the pilot (and the RC transmitter and video receiver) stands */
+  pilot(): V3 { return pilotPos(this.map, this.pilotTmp); }
+
   /** Fly this map from now on (its collision world, wind, GPS origin and actors). */
   setMap(m: MapDef) {
     this.map = m;
@@ -222,6 +251,7 @@ export class FlightCore {
     const prev = this.quad as QuadSim | undefined;
     const quad = new QuadSim(this.build.params, settings.physicsHz, spec.batterySoc, settings.ambientC, this.seed === undefined ? undefined : this.sub(0x9a1d));
     this.quad = quad;
+    this.ops?.attach(this, true);
     this.imuHold = 0; this.imuFresh = true;
     if (keepBattery && prev) quad.battery.s = { ...prev.battery.s };
     else this.current.reset();
@@ -252,6 +282,7 @@ export class FlightCore {
     this.lastPos = { ...this.quad.s.pos };
     this.nextGate = 0;
     if (this.actors) this.resetActors();
+    this.ops?.attach(this, false);
   }
 
   /**
@@ -315,6 +346,7 @@ export class FlightCore {
         rcLink.updateBudget(this.world, site.pos, quad.s.pos, this.linkAcc, act.rcInterferenceMw(t, quad.s.pos, obs, rcLink.rxGainDbi));
       } else rcLink.updateBudget(this.world, pilotPos(map, this.pilotTmp), quad.s.pos, this.linkAcc);
       this.linkAcc = 0;
+      this.ops?.updateLinks(this);
     }
     if (this.rcAcc >= 1 / settings.rcLinkHz) {
       this.rcAcc -= 1 / settings.rcLinkHz;
@@ -338,7 +370,8 @@ export class FlightCore {
       this.baroAcc = 0;
       const air = isa(quad.s.pos.z + map.elevationM, settings.ambientC - 15);
       const thrust = quad.rotorOut.reduce((a, o) => a + o.thrust, 0);
-      bf.setBaro(this.baro.read(air.pressure, air.rho, quad.s.pos.z - map.terrain(quad.s.pos.x, quad.s.pos.y), thrust, this.diskArea, this.rotorR));
+      const pa = this.baro.read(air.pressure, air.rho, quad.s.pos.z - map.terrain(quad.s.pos.x, quad.s.pos.y), thrust, this.diskArea, this.rotorR);
+      bf.setBaro(this.ops ? this.ops.baro(pa, air.rho) : pa);
     }
     this.gpsAcc += dt;
     if (this.gpsAcc >= 0.005) {
@@ -346,7 +379,14 @@ export class FlightCore {
       this.gps.fromFc(bf.serialRead(BF_PORT.gps));
       const p = quad.s.pos, v = quad.s.vel;
       const wall = this.gpsEpochMs !== null ? this.gpsEpochMs + this.fcT * 1000 : this.hooks.wallMs ? this.hooks.wallMs() : Date.now();
-      const out = this.gps.tick(this.fcT, { e: p.x, n: p.y, u: p.z, ve: held ? 0 : v.x, vn: held ? 0 : v.y, vu: held ? 0 : v.z }, wall);
+      let out: Uint8Array;
+      if (this.ops) {
+        // jamming, spoofing and GNSS faults: fewer satellites, a larger error, a counterfeit position
+        const rep = this.ops.gnssReport(), o = rep.offset;
+        this.gpsCep0 ||= this.gps.cepM;
+        this.gps.cepM = this.gpsCep0 * rep.cepScale;
+        out = this.gps.tick(this.fcT, { e: p.x + (o?.x ?? 0), n: p.y + (o?.y ?? 0), u: p.z + (o?.z ?? 0), ve: held ? 0 : v.x, vn: held ? 0 : v.y, vu: held ? 0 : v.z }, wall, rep.numSV);
+      } else out = this.gps.tick(this.fcT, { e: p.x, n: p.y, u: p.z, ve: held ? 0 : v.x, vn: held ? 0 : v.y, vu: held ? 0 : v.z }, wall);
       if (out.length) bf.serialWrite(BF_PORT.gps, out);
     }
     this.bblAcc += dt;
@@ -362,7 +402,9 @@ export class FlightCore {
     const bf = this.bf;
     if (!bf) return;
     if (this.imuFresh) {
-      const g = this.quad.imu.gyroOut, a = this.quad.imu.accOut;
+      let g = this.quad.imu.gyroOut, a = this.quad.imu.accOut;
+      if (this.ops?.imuTouched) { g = this.ops.gyro(g); a = this.ops.acc(a); }
+      this.fcGyro = g; this.fcAcc = a;
       bf.setImu(g.x, g.y, g.z, a.x, a.y, a.z);
       this.imuFresh = false;
     }
@@ -439,7 +481,20 @@ export class FlightCore {
       bf.setErpm(this.erpm);
       this.stepFirmware(dt);
       this.armed = bf.getMotors(this.motorCmd);
-      quad.command(this.motorCmd, bf.motorsReversed());
+      if (this.ops?.motorsTouched) { this.escCmd.set(this.motorCmd); this.ops.motors(this.escCmd); quad.command(this.escCmd, bf.motorsReversed()); }
+      else quad.command(this.motorCmd, bf.motorsReversed());
+    } else if (this.external) {
+      // an external autopilot (PX4 / ArduPilot SITL) drives the ESCs: 0 stops a motor, 0..1 is the throttle
+      const ext = this.external;
+      let any = false;
+      for (let k = 0; k < this.motorCmd.length; k++) {
+        const x = ext[k] ?? 0;
+        this.motorCmd[k] = x > 0 ? Math.round(48 + Math.min(1, x) * 1999) : 0;
+        if (x > 0) any = true;
+      }
+      this.armed = any;
+      if (this.ops?.motorsTouched) { this.escCmd.set(this.motorCmd); this.ops.motors(this.escCmd); quad.command(this.escCmd, false); }
+      else quad.command(this.motorCmd, false);
     } else {
       this.motorCmd.fill(0); this.armed = false;
       quad.command(this.motorCmd, false);
@@ -461,7 +516,7 @@ export class FlightCore {
 
     // state record + gate check at 1 kHz (with which targets the quad is at)
     this.ringAcc += dt;
-    if (this.ringAcc >= RECORD_DT) { this.ringAcc -= RECORD_DT; this.actors?.record(this.actorT, quad.s.pos); this.hooks.record?.(); this.detectGates(); }
+    if (this.ringAcc >= RECORD_DT) { this.ringAcc -= RECORD_DT; this.actors?.record(this.actorT, quad.s.pos); this.ops?.tick(this, RECORD_DT); this.hooks.record?.(); this.detectGates(); }
 
     // crash events
     // An impact spans many physics steps while the contact decelerates the quad; report the peak

@@ -264,3 +264,24 @@ class Client:
         """Live game only: record('start', hz=10, depth=True) ... record('stop'). Frames arrive as
         'frame' events (register a handler with on('frame', f) first); stop returns how many."""
         return self.call("record", action=action, hz=hz, **kinds)
+
+    # ---- operations (docs/OPERATIONS.md) ----
+
+    def fault(self, *faults: dict) -> dict:
+        """Inject faults now; each one's "at" counts from now (seconds), e.g.
+        fault({"at": 0, "kind": "motor_failure", "motor": 2}, {"at": 1, "kind": "gps_loss", "duration": 5})."""
+        return self.call("fault", faults=list(faults))
+
+    def drop(self) -> dict:
+        """Release the payload (the scenario's ops.payload)."""
+        return self.call("drop")
+
+    def ops(self, config: dict | None) -> dict:
+        """Replace the operational environment: link (radio / fibre), jammers and spoofers, faults,
+        payload. None removes it."""
+        return self.call("ops", config=config)
+
+    def linkmap(self, centre: Iterable[float] | None = None, half_m: float = 200, n: int = 21, height_m: float = 20) -> dict:
+        """Headless: a planning map of the RC link margin (dB), jammed share of hops and GNSS
+        satellites over a square, from the pilot's position with the current emitters."""
+        return self.call("linkmap", centre=list(centre) if centre is not None else None, halfM=half_m, n=n, heightM=height_m)["map"]

@@ -240,6 +240,7 @@ export class HudController {
       `${spd.toFixed(0)} km/h  alt ${(rec[R.pz] - ctx.map.terrain(rec[R.px], rec[R.py])).toFixed(1)} m  wash ${(rec[R.vrs] * 100).toFixed(0)} %`,
       `video ${ctx.link.state.distance.toFixed(0)} m  ${ctx.link.state.rssiDbm.toFixed(0)} dBm${videoKind === 'analog' ? `  CNR ${ctx.link.state.cnr.toFixed(0)} dB` : ''}`,
       `props ${tel.rotorDamage.map((d) => (d.broken ? 'BROKEN' : `${(d.thrust * 100).toFixed(0)}%`)).join(' ')}`,
+      ...(tel.ops ? [opsLine(tel.ops)] : []),
       ...ctx.logLines.slice(-2),
     ];
   }
@@ -255,3 +256,12 @@ export class HudController {
 
 /** Only touch the DOM when the text actually changes (the HUD is fed every frame). */
 function setText(n: HTMLElement, t: string): boolean { if (n.textContent === t) return false; n.textContent = t; return true; }
+
+/** The operational picture in one line: the link and its jamming, GNSS, fibre, payload, faults in force. */
+function opsLine(o: NonNullable<Telemetry['ops']>): string {
+  const l = o.link;
+  const link = l.type === 'fiber' ? `fibre ${o.fiber ? (o.fiber.broken ? 'BROKEN' : `${(o.fiber.remainingM / 1000).toFixed(2)} km left`) : ''}` : `${l.band === '900' ? '900 MHz' : '2.4 GHz'} LQ ${l.lq}${l.jamDbm !== null && l.jamHitFrac > 0 ? `  JAM ${l.jamDbm.toFixed(0)} dBm (${(l.jamHitFrac * 100).toFixed(0)}% hops)` : ''}`;
+  const g = o.gnss.state === 'ok' ? '' : `  GNSS ${o.gnss.state.toUpperCase()} ${o.gnss.numSV} sats`;
+  const p = o.payload ? `  ${o.payload.name} ${o.payload.attached ? 'on' : 'dropped'}` : '';
+  return `ops ${link}${g}${p}${o.faults.length ? '  faults: ' + o.faults.join(', ') : ''}`;
+}

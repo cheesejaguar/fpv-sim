@@ -260,7 +260,9 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         }
         // link budget at capture time
         const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
-        if (rp ? rp.link : view.linkEffects) link.update(v, ctx.world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]), rp ? undefined : actorTime(tCap));
+        const ops = rp ? undefined : ctx.tel?.ops;
+        link.ew.jamDbm = ops?.video.jamDbm ?? -Infinity; link.ew.wired = ops?.link.type === 'fiber'; link.ew.lost = !!ops?.video.lost;
+        if (rp ? rp.link : view.linkEffects || !!ops) link.update(v, ctx.world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]), rp ? undefined : actorTime(tCap));
         else link.clean(v);
       }
       // 1S brownout: on a punch a whoop's pack sags below what the camera / VTX regulators need

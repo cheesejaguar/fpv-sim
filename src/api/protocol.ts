@@ -14,6 +14,9 @@
 //   event     { "event": "gate", ... }                    (no id; after "subscribe", or always for gates)
 import type { Action, Observation, StepResult } from '../headless/env';
 import type { TaskMetrics } from '../scenario/tasks';
+import type { OpsConfig, OpsEvent } from '../worker/ops';
+import type { FaultSpec } from '../sim/faults';
+import { checkFaults } from '../sim/faults';
 
 export const API_PROTOCOL = 'fpvsim-api';
 export const API_VERSION = 1;
@@ -58,6 +61,14 @@ export interface Commands {
   capture: { rgb?: boolean; received?: boolean; depth?: boolean; segmentation?: boolean; labels?: boolean };
   /** live game: record frames + ground truth + labels at hz (sim time), one "frame" event per frame; stop says how many */
   record: { action: 'start' | 'stop'; hz?: number; rgb?: boolean; received?: boolean; depth?: boolean; segmentation?: boolean; maxFrames?: number };
+  /** inject faults now (each `at` counts from now; docs/OPERATIONS.md) */
+  fault: { faults: FaultSpec[] };
+  /** release the payload */
+  drop: Record<string, never>;
+  /** replace the operational environment (links, jammers, spoofers, faults, payload); null removes it */
+  ops: { config?: OpsConfig | null };
+  /** headless: a planning map of the RC link margin and GNSS satellites over a square around a point, with the current emitters */
+  linkmap: { centre?: [number, number]; halfM?: number; n?: number; heightM?: number };
   bye: Record<string, never>;
 }
 
@@ -83,13 +94,17 @@ export type ApiEvent =
   | { event: 'impact'; speed: number; t: number }
   | { event: 'log'; text: string; t?: number }
   | { event: 'episode'; reason: string; metrics: TaskMetrics }
+  /** a detector of the map's actors began (on) or stopped holding a detection of the quad */
+  | { event: 'detect'; detector: string; on: boolean; t: number }
   /** live game: who flies the quad now */
   | { event: 'control'; by: 'api' | 'pilot' }
   /** live game, recording: one recorded frame (labels; PNGs as base64) */
   | { event: 'frame'; labels: unknown; classes: readonly string[]; rgb?: string; received?: string; depth?: string; segmentation?: string; instance?: string }
+  /** the operational layer: a fault on / off, the payload released / landed, the fibre broke, the GNSS state changed */
+  | ({ event: 'ops' } & OpsEvent)
   | { event: 'bye'; reason?: string };
 
-export const COMMANDS: readonly Command[] = ['hello', 'reset', 'step', 'act', 'release', 'state', 'subscribe', 'unsubscribe', 'cli', 'respawn', 'teleport', 'pause', 'resume', 'metrics', 'capture', 'record', 'bye'];
+export const COMMANDS: readonly Command[] = ['hello', 'reset', 'step', 'act', 'release', 'state', 'subscribe', 'unsubscribe', 'cli', 'respawn', 'teleport', 'pause', 'resume', 'metrics', 'capture', 'record', 'fault', 'drop', 'ops', 'linkmap', 'bye'];
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const finite = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
@@ -138,6 +153,12 @@ export function parseRequest(text: string): { req: Request; error?: undefined } 
       if (m.action !== 'start' && m.action !== 'stop') return bad('action: "start" or "stop"');
       if (m.hz !== undefined && !(finite(m.hz) && (m.hz as number) > 0 && (m.hz as number) <= 60)) return bad('hz: 0 .. 60');
       if (m.maxFrames !== undefined && !(Number.isInteger(m.maxFrames) && (m.maxFrames as number) >= 1)) return bad('maxFrames: a positive integer');
+      break;
+    case 'fault': { const e = checkFaults(m.faults); if (e.length) return bad(e.join('; ')); break; }
+    case 'ops': if (m.config !== undefined && m.config !== null && !isObj(m.config)) return bad('config: an ops configuration or null'); break;
+    case 'linkmap':
+      if (m.n !== undefined && !(Number.isInteger(m.n) && (m.n as number) >= 2 && (m.n as number) <= 101)) return bad('n: 2 .. 101');
+      if (m.halfM !== undefined && !(finite(m.halfM) && (m.halfM as number) > 0)) return bad('halfM: metres > 0');
       break;
   }
   return { req: m as unknown as Request };

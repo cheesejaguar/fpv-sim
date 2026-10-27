@@ -10,7 +10,8 @@ import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO } from '../data/cata
 import { Rng, subSeed } from '../sim/math';
 import { DEFAULT_SETTINGS, SimSettings } from '../worker/shared';
 import type { MapDef } from '../maps/world';
-import { checkDist, Randomization, sample, sampleBuild, sampleSim, sampleSpawn, sampleStart } from './randomize';
+import { checkDist, Randomization, sample, sampleBuild, sampleOps, sampleSim, sampleSpawn, sampleStart } from './randomize';
+import { checkOps, OpsConfig } from '../worker/ops';
 import type { TaskDef, Vec3 } from './tasks';
 
 export const SCENARIO_FORMAT = 'fpvsim-scenario';
@@ -57,9 +58,16 @@ export interface Scenario {
     /** proximity probes: rays from the quad on a Fibonacci sphere (0 = none) */
     probes?: number;
     probeRangeM?: number;
+    /** navigation sensors in the observations: magnetometer, rangefinder, optical flow */
+    nav?: boolean;
     /** add Observation.actors (targets, detections, RC link margin) and its numbers at the end of the vector */
     actors?: boolean;
   };
+  /**
+   * The operational environment: radio links (radio or fibre), jammers and spoofers, scheduled
+   * faults, a payload (docs/OPERATIONS.md)
+   */
+  ops?: OpsConfig;
   randomize?: Randomization;
 }
 
@@ -94,6 +102,8 @@ export interface Episode {
   endOutOfBounds: boolean;
   probes: number;
   probeRangeM: number;
+  nav: boolean;
+  ops: OpsConfig | null;
   /** observations.actors: the target ids observed (map order), null when not observed */
   observeActors: string[] | null;
   /** randomize.actors drawn for this episode: apply with randomizeActors(map, ...), null when none */
@@ -116,7 +126,7 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean, fa
   const err = (e: string) => errors.push(e);
   if (!isObj(raw)) return { scenario: null, errors: ['a scenario is a JSON object'] };
   const allow = (o: Record<string, unknown>, path: string, keys: readonly string[]) => { for (const k of Object.keys(o)) if (!keys.includes(k)) err(`${path}${k}: unknown key`); };
-  allow(raw, '', ['$schema', 'format', 'version', 'meta', 'seed', 'map', 'drone', 'sim', 'firmware', 'start', 'task', 'episode', 'observations', 'randomize']);
+  allow(raw, '', ['$schema', 'format', 'version', 'meta', 'seed', 'map', 'drone', 'sim', 'firmware', 'start', 'task', 'episode', 'observations', 'randomize', 'ops']);
   if (raw.format !== SCENARIO_FORMAT) err(`format: expected "${SCENARIO_FORMAT}"`);
   if (raw.version !== SCENARIO_VERSION) err(`version: this simulator reads version ${SCENARIO_VERSION}`);
   if (raw.meta !== undefined) {
@@ -197,12 +207,14 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean, fa
     const o = raw.observations;
     if (!isObj(o)) err('observations: expected an object');
     else {
-      allow(o, 'observations.', ['probes', 'probeRangeM', 'actors']);
+      allow(o, 'observations.', ['probes', 'probeRangeM', 'nav', 'actors']);
+      if (o.nav !== undefined && typeof o.nav !== 'boolean') err('observations.nav: expected true or false');
       if (o.actors !== undefined && typeof o.actors !== 'boolean') err('observations.actors: expected true or false');
       if (o.probes !== undefined && !(Number.isInteger(o.probes) && (o.probes as number) >= 0 && (o.probes as number) <= 256)) err('observations.probes: 0 .. 256');
       if (o.probeRangeM !== undefined && !(num(o.probeRangeM) && o.probeRangeM > 0 && o.probeRangeM <= 500)) err('observations.probeRangeM: 0 .. 500');
     }
   }
+  if (raw.ops !== undefined) errors.push(...checkOps(raw.ops));
   if (raw.randomize !== undefined) errors.push(...checkRandomize(raw.randomize));
   // ids that name things on the map: checked when the map is known (loaded)
   const mapId = isObj(raw.map) && typeof raw.map.id === 'string' ? raw.map.id : DEFAULT_SETTINGS.mapId;
@@ -222,11 +234,12 @@ function checkTask(t: unknown): string[] {
   const out: string[] = [];
   if (!isObj(t)) return ['task: expected an object with a "type"'];
   const keys: Record<string, string[]> = {
-    free: [], hover: ['target', 'heightM', 'radiusM', 'holdS'], gates: ['laps'], waypoints: ['points', 'radiusM'],
+    free: [], hover: ['target', 'heightM', 'radiusM', 'holdS'], gates: ['laps'], waypoints: ['points', 'radiusM'], drop: ['target', 'radiusM'],
     'reach-target': ['target', 'radiusM', 'holdS'], 'track-target': ['target', 'rangeM', 'fovDeg', 'holdS'], 'detect-avoid': ['points', 'target', 'radiusM', 'maxDetectedS'],
   };
   const type = t.type as string;
   if (!Object.hasOwn(keys, type)) return [`task.type: ${Object.keys(keys).join(', ')}`];
+  if (type === 'drop' && !vec3(t.target)) out.push('task.target: required for a drop task');
   for (const k of Object.keys(t)) if (k !== 'type' && !keys[type].includes(k)) out.push(`task.${k}: unknown key for a ${type} task`);
   // hover: a point; the actor tasks: a target actor's id
   if (type === 'hover' && t.target !== undefined && !vec3(t.target)) out.push('task.target: expected [x, y, z]');
@@ -247,7 +260,7 @@ function checkTask(t: unknown): string[] {
 function checkRandomize(r: unknown): string[] {
   const out: string[] = [];
   if (!isObj(r)) return ['randomize: expected an object'];
-  for (const k of Object.keys(r)) if (!['drone', 'sim', 'start', 'spawn', 'actors'].includes(k)) out.push(`randomize.${k}: unknown key`);
+  for (const k of Object.keys(r)) if (!['drone', 'sim', 'start', 'ops', 'spawn', 'actors'].includes(k)) out.push(`randomize.${k}: unknown key`);
   if (r.spawn !== undefined && r.spawn !== 'any' && !(Array.isArray(r.spawn) && r.spawn.length > 0 && r.spawn.every((x) => typeof x === 'string' && x.length > 0))) out.push('randomize.spawn: "any" or a list of spawn ids');
   if (r.actors !== undefined) {
     const a = r.actors;
@@ -300,6 +313,15 @@ function checkRandomize(r: unknown): string[] {
   }
   group(r.sim, 'randomize.sim', ['windSpeed', 'windDirection', 'windTurbulence', 'windGusts', 'ambientC', 'propwash', 'rcLinkHz', 'rcTxPowerMw']);
   group(r.start, 'randomize.start', ['dx', 'dy', 'dz', 'yawDeg']);
+  if (r.ops !== undefined) {
+    const o = r.ops;
+    if (!isObj(o)) out.push('randomize.ops: expected an object');
+    else for (const [k, d] of Object.entries(o)) {
+      if (k === 'faultPick') { if (!(Number.isInteger(d) && (d as number) >= 0)) out.push('randomize.ops.faultPick: an integer >= 0'); continue; }
+      if (!['faultAt', 'faultMotor', 'erpScale', 'emitterOffsetM', 'payloadMassG'].includes(k)) { out.push(`randomize.ops.${k}: unknown key`); continue; }
+      out.push(...checkDist(d, `randomize.ops.${k}`));
+    }
+  }
   return out;
 }
 
@@ -341,13 +363,14 @@ export function resolveEpisode(sc: Scenario, seed?: number, map?: MapFacts | nul
   const spec = sampleBuild(scenarioSpec(sc), rnd?.drone, new Rng(subSeed(s, 1)));
   const settings = sampleSim(scenarioSettings(sc, map?.wind), rnd?.sim, new Rng(subSeed(s, 2)));
   const off = sampleStart(rnd?.start, new Rng(subSeed(s, 3)));
-  // the spawn variant (stream 4), the actors (stream 5): new streams, the others draw as before
-  const spawn = rnd?.spawn !== undefined ? sampleSpawn(rnd.spawn, map?.spawns ?? null, new Rng(subSeed(s, 4))) ?? sc.start?.spawn : sc.start?.spawn;
+  const ops = sc.ops ? sampleOps(sc.ops, rnd?.ops, new Rng(subSeed(s, 4))) : null;
+  // the spawn variant (stream 5), the actors (stream 6): new streams, the others draw as before
+  const spawn = rnd?.spawn !== undefined ? sampleSpawn(rnd.spawn, map?.spawns ?? null, new Rng(subSeed(s, 5))) ?? sc.start?.spawn : sc.start?.spawn;
   if (spawn) settings.spawnId = spawn;
   const ra = rnd?.actors;
   let actors: Episode['actors'] = null;
   if (ra) {
-    const r = new Rng(subSeed(s, 5));
+    const r = new Rng(subSeed(s, 6));
     actors = { jitterM: ra.jitterM ?? 0, speedScale: [], seed: Math.floor(r.next() * 4294967296) };
     // one speed scale per path of the map (in map order), drawn up front
     const nPaths = 32;
@@ -372,6 +395,8 @@ export function resolveEpisode(sc: Scenario, seed?: number, map?: MapFacts | nul
     endOutOfBounds: e.endOutOfBounds ?? true,
     probes: sc.observations?.probes ?? 0,
     probeRangeM: sc.observations?.probeRangeM ?? 20,
+    nav: sc.observations?.nav ?? false,
+    ops,
     observeActors: sc.observations?.actors ? (map?.actors ?? []).filter((a) => a.type === 'target').map((a) => a.id) : null,
     actors,
   };

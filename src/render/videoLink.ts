@@ -42,6 +42,11 @@ export class VideoLink {
   // map actors (actorRf): interference at the receiving site and its antenna gain (null: the goggles')
   private interfMw = 0;
   private rxOverride: number | null = null;
+  /**
+   * The operational environment (src/worker/ops.ts): jamming in the goggles' channel (dBm), a
+   * fibre-optic link (no radio: a clean picture), the video lost (a fault, a broken fibre)
+   */
+  ew = { jamDbm: -Infinity, wired: false, lost: false };
 
   /** Link effects switched off: a perfect link (distance / RSSI keep their last values). */
   clean(video: VideoSpec) {
@@ -93,8 +98,9 @@ export class VideoLink {
     this.fade = this.fadeV * (2 + Math.min(4, this.obsDb / 6));
     const ptx = 10 * Math.log10(Math.max(1, video.vtxPowerMw));
     const rssi = ptx + this.txGainDbi + (this.rxOverride ?? this.rxGainDbi) - fspl + twoRay - this.obsDb + pattern + bodyBlock + this.fade;
-    // (in-band emitters of the map: signal over noise + interference)
-    const snr = this.interfMw > 0 ? sinrDb(rssi, NOISE_FLOOR_DBM, this.interfMw) : rssi - NOISE_FLOOR_DBM;
+    // jamming adds to the receiver's noise floor; in-band emitters of the map: signal over that floor + their interference
+    const floor = Number.isFinite(this.ew.jamDbm) ? 10 * Math.log10(Math.pow(10, NOISE_FLOOR_DBM / 10) + Math.pow(10, this.ew.jamDbm / 10)) : NOISE_FLOOR_DBM;
+    const snr = this.ew.lost ? -40 : this.ew.wired ? 50 : this.interfMw > 0 ? sinrDb(rssi, floor, this.interfMw) : rssi - floor;
     const s = this.state;
     s.distance = d; s.rssiDbm = rssi;
     if (video.kind === 'analog') {

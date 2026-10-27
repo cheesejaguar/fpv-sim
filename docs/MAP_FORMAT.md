@@ -276,7 +276,8 @@ optional `name`, and either a fixed `pos` or a `path` it moves along.
   EIRP, optional directional `antenna` `{ yawDeg, pitchDeg, beamDeg }`). Links whose band it
   overlaps (2.4 GHz RC, 5.8 GHz video) see its power as noise: the RC link margin and the video
   signal-to-noise ratio drop, so a jammer close to the quad causes packet loss, video break-up and
-  in the end failsafe.
+  in the end failsafe. A scenario's `ops.emitters` ([OPERATIONS.md](OPERATIONS.md)) are the
+  per-experiment counterpart; both apply when both are present.
 - **ground-station**: another site for the `rc` uplink (a relay transmitting with `txPowerMw`)
   and / or the `video` downlink (a diversity receiver). The best site carries each link.
 - **detector**: a `camera`, `radar` or `rf` sensor looking along `yawDeg` / `pitchDeg` with a

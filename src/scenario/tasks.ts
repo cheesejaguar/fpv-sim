@@ -1,6 +1,6 @@
 // What an episode asks of the pilot (or the policy), how it is scored, and when it ends: hover in a
-// box, fly the course's gates, visit waypoints, fly free, or the map actors' tasks: reach a target,
-// keep one in the camera, fly a route without being detected. The same evaluators score a headless
+// box, fly the course's gates, visit waypoints, deliver a payload onto a target, fly free, or the map
+// actors' tasks: reach a target, keep one in the camera, fly a route without being detected. The same evaluators score a headless
 // episode (reward, termination) and an in-app drill (the metrics behind the adaptive curriculum), so a
 // policy and a person flying the same scenario are measured the same way.
 import { openingCentre } from '../maps/gates';
@@ -24,7 +24,9 @@ export type TaskDef =
   /** keep a target actor within rangeM (15) and within fovDeg (60) of the camera axis for holdS (5) in a row */
   | { type: 'track-target'; target: string; rangeM?: number; fovDeg?: number; holdS?: number }
   /** fly the points in order and / or to a target (each within radiusM, 1), detected for at most maxDetectedS (0) in all */
-  | { type: 'detect-avoid'; points?: Vec3[]; target?: string; radiusM?: number; maxDetectedS?: number };
+  | { type: 'detect-avoid'; points?: Vec3[]; target?: string; radiusM?: number; maxDetectedS?: number }
+  /** release the payload (scenario ops.payload) so it lands within radiusM of target (horizontal miss) */
+  | { type: 'drop'; target: Vec3; radiusM?: number };
 
 /** One state sample, in the world frame (ENU, z up) and body rates (FLU). */
 export interface TaskSample {
@@ -46,10 +48,10 @@ export interface TaskStatus {
   reward: number;
   /** the task is complete (success) */
   success: boolean;
+  /** the task can no longer succeed (a drop that missed; detect-avoid: detected for too long) */
+  failed?: boolean;
   /** 0..1, how much of the task is done */
   progress: number;
-  /** the task can no longer succeed (detect-avoid: detected for too long): the episode ends */
-  failed?: boolean;
 }
 
 /** Summary numbers of an attempt (all optional; which ones exist depends on the task). */
@@ -73,6 +75,8 @@ export interface TaskMetrics {
   /** map with detectors: seconds the quad was detected, and when it first was (s since the start; null: never) */
   detectedS?: number; firstDetectT?: number | null;
   failed?: boolean;
+  // drop
+  missM?: number; impactSpeedMs?: number; impactPos?: Vec3;
   // every task
   distanceM: number; maxSpeedMs: number;
 }
@@ -130,6 +134,8 @@ export class TaskRunner {
   private tracked = 0; private trackRun = 0; private sampledT = 0;
   private cosFov = 0.5; private rangeM = 15; private uptilt = 0;
   private detS = 0; private firstDet: number | null = null; private sawDetect = false;
+  // drop
+  private impact: { pos: V3; speed: number } | null = null;
   private failed = false;
 
   constructor(def: TaskDef, map: MapDef, opts: TaskOptions = {}) {
@@ -147,6 +153,17 @@ export class TaskRunner {
     if (def.type === 'reach-target') this.radius = def.radiusM ?? (this.actor?.type === 'target' ? this.actor.radius : 1);
     if (def.type === 'track-target') { this.rangeM = def.rangeM ?? 15; this.cosFov = Math.cos(((def.fovDeg ?? 60) / 2) * (Math.PI / 180)); this.uptilt = ((opts.cameraUptiltDeg ?? 30) * Math.PI) / 180; }
     if (def.type === 'detect-avoid') { this.points = (def.points ?? []).map(v); this.radius = def.radiusM ?? 1; }
+    if (def.type === 'drop') { this.target = v(def.target); this.radius = def.radiusM ?? 2; }
+  }
+
+  /** The payload landed (drop task): scored on the horizontal miss distance. */
+  onPayload(pos: V3, speed: number): number {
+    if (this.def.type !== 'drop' || this.done || this.failed) return 0;
+    this.impact = { pos: { ...pos }, speed };
+    const miss = Math.hypot(pos.x - this.target.x, pos.y - this.target.y);
+    if (miss <= this.radius) { this.done = true; this.ret += 10; return 10; }
+    this.failed = true;
+    return 0;
   }
 
   /** Number of targets: gates × laps plus the finish through gate 0, the waypoints, or detect-avoid's route. */
@@ -161,7 +178,7 @@ export class TaskRunner {
   /** Where the pilot should go next (hover target, the middle of the next gate's opening, next waypoint, the target), or null. */
   goal(): V3 | null {
     const d = this.def;
-    if (d.type === 'hover') return this.target;
+    if (d.type === 'hover' || d.type === 'drop') return this.target;
     if (d.type === 'gates') return this.gates.length && this.next < this.total ? this.centres[this.next % this.gates.length] : null;
     if (d.type === 'waypoints') return this.points[this.next] ?? null;
     if (d.type === 'reach-target' || d.type === 'track-target') return this.tgtPos;
@@ -247,8 +264,14 @@ export class TaskRunner {
       if (this.detS > (def.maxDetectedS ?? 0)) this.failed = true;
       else if (this.next >= this.total && this.total > 0) this.done = true;
     }
+    if (def.type === 'drop' && !this.done && !this.failed) {
+      // shaping: horizontal metres closed toward the target
+      const d = Math.hypot(s.pos.x - this.target.x, s.pos.y - this.target.y);
+      if (!Number.isNaN(this.prevD)) reward += this.prevD - d;
+      this.prevD = d;
+    }
     this.ret += reward;
-    return { reward, success: this.done, progress: this.progress(), ...(this.failed && { failed: true }) };
+    return { reward, success: this.done, failed: this.failed, progress: this.progress() };
   }
 
   /** The target within the task's field of view around the camera axis (body forward, tilted up by the uptilt). */
@@ -271,6 +294,7 @@ export class TaskRunner {
     if (d.type === 'gates' || d.type === 'waypoints' || d.type === 'detect-avoid') return this.total ? Math.min(1, this.next / this.total) : 0;
     if (d.type === 'reach-target') return this.done ? 1 : d.holdS ? Math.min(1, this.insideRun / d.holdS) : 0;
     if (d.type === 'track-target') return Math.min(1, this.trackRun / (d.holdS ?? 5));
+    if (d.type === 'drop') return this.done ? 1 : 0;
     return 0;
   }
 
@@ -304,6 +328,10 @@ export class TaskRunner {
     }
     if (this.sawDetect) { m.detectedS = this.detS; m.firstDetectT = this.firstDet; }
     if (this.failed) m.failed = true;
+    if (this.def.type === 'drop' && this.impact) {
+      const p = this.impact.pos;
+      Object.assign(m, { missM: Math.hypot(p.x - this.target.x, p.y - this.target.y), impactSpeedMs: this.impact.speed, impactPos: [p.x, p.y, p.z] });
+    }
     return m;
   }
 }

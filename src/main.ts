@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import './style.css';
 import { ApiHost } from './app/apiHost';
 import { WorkerBridge } from './app/bridge';
+import { opsEventText } from './app/opsText';
 import { AppCtx, makeLog } from './app/context';
 import { initDvr } from './app/dvr';
 import { parseReplayLink } from './app/replayLink';
@@ -146,6 +147,7 @@ bridge.onMessage = (m) => {
     }
     case 'telemetry': ctx.tel = m.tel; apiHost.onTelemetry(m.tel); break;
     case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
+    case 'opsEvent': ctx.log(opsEventText(m.e)); apiHost.onOps(m.e); break;
     case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
     case 'detect': if (m.on) ctx.log(`Detected by ${m.name}`); break; // (the HUD alert reads the shared flags)
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
@@ -176,6 +178,9 @@ const apiHost = new ApiHost({
   teleport: (p, yawDeg) => teleport(p, yawDeg),
   cliBatch: (lines) => bridge.cliBatch(lines),
   sync: () => bridge.sync(),
+  setOps: (config) => bridge.setOps(config),
+  injectFaults: (faults) => bridge.opsFaults(faults),
+  dropPayload: () => bridge.opsDrop(),
   hardwareCli: async (keepOsdLayout, propsOut) => (await import('./bf/defaults')).simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
   fly: () => { if (ctx.menuOpen) gameMenu.resume(); },
   pause: () => { if (!ctx.menuOpen) { gameMenu.inFlight = true; gameMenu.open('pause'); } },

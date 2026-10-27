@@ -21,7 +21,10 @@
     "check:bundle": "node scripts/check-bundle-size.mjs",
     "bench:sim": "node scripts/bench-sim.mjs",
     "api": "node scripts/fpv-api.mjs",
-    "resim": "node scripts/resim.mjs"
+    "resim": "node scripts/resim.mjs",
+    "sitl": "node scripts/fpv-sitl.mjs",
+    "campaign": "node scripts/fpv-campaign.mjs",
+    "twin": "node scripts/fpv-twin.mjs"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",

@@ -110,6 +110,10 @@ export class HeadlessBackend implements ApiBackend {
       case 'resume': if (!this.realtime) throw new Error('resume: lock-step only moves when stepped'); this.paused = false; this.resync(); return {};
       case 'metrics': ready(); return { metrics: env.metrics() };
       case 'capture': case 'record': throw new Error(`${req.cmd}: needs the live game's renderer (headless has no camera)`);
+      case 'fault': ready(); env.injectFaults(req.faults); return {};
+      case 'drop': ready(); if (!env.release()) throw new Error('drop: no payload on board (scenario ops.payload)'); return {};
+      case 'ops': ready(); env.applyOps(req.config ?? null); return { status: env.core.ops ? env.core.ops.status(env.core) : null };
+      case 'linkmap': ready(); return { map: env.linkMap(req) };
       case 'bye': this.close(); return {};
     }
     throw new Error(`unknown command ${(req as { cmd: string }).cmd}`);
@@ -156,6 +160,8 @@ export class HeadlessBackend implements ApiBackend {
       for (const e of res.info.events) {
         if (e.type === 'gate') this.opts.emit({ event: 'gate', gate: e.gate, t: e.t });
         else if (e.type === 'impact') this.opts.emit({ event: 'impact', speed: e.speed, t: e.t });
+        else if (e.type === 'detect') this.opts.emit({ event: 'detect', detector: e.detector, on: e.on, t: e.t });
+        else if (e.type !== 'log') this.opts.emit({ event: 'ops', ...e });
       }
       if ((res.terminated || res.truncated) && !this.episodeReported) {
         this.episodeReported = true;

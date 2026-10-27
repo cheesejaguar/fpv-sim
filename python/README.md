@@ -30,6 +30,18 @@ with Client.launch() as sim:            # starts `node scripts/fpv-api.mjs --std
 `Client.launch(realtime=True)` runs the simulation on the wall clock: use `act`, `subscribe` and
 event handlers (`sim.on("state", f)`), as a game engine would.
 
+## Operations: jamming, faults, payloads
+
+```python
+sim.reset(scenario="scenarios/ew-jammer-hover.json")      # a scenario with an "ops" block
+sim.fault({"at": 0, "kind": "motor_failure", "motor": 2}) # inject faults now ("at" counts from now)
+sim.ops({"link": {"type": "fiber"}})                      # replace the operational environment (None removes it)
+sim.drop()                                                # release the payload
+grid = sim.linkmap(centre=[0, 0], half_m=250, n=21)       # RC link margin / GNSS satellites over an area
+```
+
+`python3 python/examples/ops_demo.py` shows each of them ([docs/OPERATIONS.md](../docs/OPERATIONS.md)).
+
 ## Gymnasium
 
 ```python

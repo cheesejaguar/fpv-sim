@@ -1,0 +1,21 @@
+{
+  "format": "fpvsim-campaign", "version": 1,
+  "meta": { "id": "battery-trade", "name": "Trade study: battery vs payload on a delivery leg", "description": "Which pack carries which payload best? Each variant flies the same 12 seeded delivery runs (common random numbers) with the real firmware in the loop; the Pareto front balances energy used against success and accuracy." },
+  "runs": 12, "seed": 99,
+  "pilot": { "type": "reference", "cruiseMs": 6, "cruiseAglM": 8 },
+  "sweep": {
+    "drone.spec.battery": ["b6s1100", "b6s1300", "b6s1p-p45b"],
+    "ops.payload.massG": [150, 400]
+  },
+  "scenario": {
+    "format": "fpvsim-scenario", "version": 1,
+    "map": { "id": "field" }, "drone": { "preset": "5\" Freestyle 6S" },
+    "sim": { "wind": { "speed": 4, "direction": 90, "turbulence": 1, "gusts": 1.5 } },
+    "task": { "type": "drop", "target": [-10, 0, 0], "radiusM": 3 },
+    "episode": { "maxSeconds": 40, "controlHz": 50 },
+    "ops": { "payload": { "name": "parcel", "massG": 300, "cdA": 0.004 } },
+    "randomize": { "sim": { "windSpeed": { "uniform": [1, 6] }, "windDirection": { "uniform": [0, 360] } } }
+  },
+  "objectives": [{ "metric": "energyWh", "goal": "min" }, { "metric": "success", "goal": "max" }, { "metric": "missM", "goal": "min" }],
+  "requirements": [{ "id": "TS-1", "text": "delivers", "metric": "success", "rate": ">=", "value": 0.75, "confidence": 0.8 }]
+}

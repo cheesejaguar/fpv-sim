@@ -16,6 +16,8 @@ import { Action, applyAction, AUX, MODE_US, Observation, ObservedActors, probeDi
 import { resolveEpisode, Episode, MapFacts, mapFacts, Scenario, defaultScenario, parseScenario } from '../scenario/scenario';
 import { TaskMetrics, TaskRunner } from '../scenario/tasks';
 import { FlightCore } from '../worker/flightCore';
+import { OpsConfig, OpsEvent } from '../worker/ops';
+import type { FaultSpec } from '../sim/faults';
 
 export interface StepResult {
   obs: Observation;
@@ -24,10 +26,10 @@ export interface StepResult {
   terminated: boolean;
   /** the episode hit its time limit */
   truncated: boolean;
-  info: { reason?: 'success' | 'crash' | 'out_of_bounds' | 'timeout' | 'detected'; metrics: TaskMetrics; events: EnvEvent[] };
+  info: { reason?: 'success' | 'failure' | 'crash' | 'out_of_bounds' | 'timeout' | 'detected'; metrics: TaskMetrics; events: EnvEvent[] };
 }
 
-export type EnvEvent = { type: 'gate'; gate: number; t: number } | { type: 'impact'; speed: number; t: number } | { type: 'log'; text: string; t: number }
+export type EnvEvent = { type: 'gate'; gate: number; t: number } | { type: 'impact'; speed: number; t: number } | { type: 'log'; text: string; t: number } | OpsEvent
   /** a detector of the map's actors began (on) or stopped holding a detection of the quad */
   | { type: 'detect'; detector: string; on: boolean; t: number };
 
@@ -173,11 +175,43 @@ export class FpvEnv {
     // the actors start with the episode (their clock, their detectors' looks)
     core.resetActors();
     this.task = new TaskRunner(ep.task, core.map, { cameraUptiltDeg: spec.cameraUptiltDeg });
+    // the operational layer starts with the episode (its times are episode times)
+    this.applyOps(ep.ops ?? (ep.nav ? {} : null));
     this.probeDirs = probeDirections(ep.probes);
     this.ended = false;
     this.events = [];
     return { obs: this.observe(), info: { seed, episode: this.episode, bootS, cliErrors, drone: droneFacts(core.build) } };
   }
+
+  /** Replace the operational configuration (null: none); its times count from the episode start. */
+  applyOps(config: OpsConfig | null) {
+    const core = this.core;
+    core.setOps(config, this.t0);
+    if (core.ops) core.ops.onEvent = (e) => {
+      this.events.push(e);
+      if (e.type === 'payload_impact') this.task?.onPayload(e.pos, e.speed);
+    };
+  }
+
+  /**
+   * Inject faults now (their `at` counts from now; see src/sim/faults.ts). An episode without an ops
+   * configuration gets an empty one first.
+   */
+  injectFaults(faults: FaultSpec[]) {
+    if (!this.core.ops) this.applyOps({});
+    this.core.ops!.schedule(faults.map((f) => ({ ...f, at: this.time + f.at })));
+  }
+
+  /** RC link margin / jamming / GNSS planning map over a square (see OpsLayer.linkMap). */
+  linkMap(o: { centre?: [number, number]; halfM?: number; n?: number; heightM?: number } = {}) {
+    const core = this.core;
+    if (!core.ops) this.applyOps({});
+    const p = core.quad.s.pos;
+    return core.ops!.linkMap(core, { centre: o.centre ?? [p.x, p.y], halfM: o.halfM ?? 200, n: o.n ?? 21, heightM: o.heightM ?? 20, txPowerMw: core.settings.rcTxPowerMw ?? 250, rateHz: core.settings.rcLinkHz });
+  }
+
+  /** Release the payload now; false if there is none (or it is gone). */
+  release(): boolean { return this.core.ops?.release(this.core) ?? false; }
 
   /** Set the sticks / switches the FC receives from now on (also used by real-time hosts). */
   setAction(a: Action) { applyAction(this.rc, a); }
@@ -199,7 +233,7 @@ export class FpvEnv {
     if (!this.core) throw new Error('reset() first');
     const ep = this.episode, core = this.core;
     this.setAction(action);
-    this.events = [];
+    // (events since the last step, e.g. a payload released between steps, belong to this one)
     this.stepImpact = 0;
     const n = physicsSteps ?? Math.max(1, Math.round(core.settings.physicsHz / ep.controlHz));
     this.advance(n);
@@ -209,13 +243,15 @@ export class FpvEnv {
     const st = this.task.step({ t: this.time, pos: s.pos, vel: s.vel, w: s.w, armed: core.armed, q: s.q, actorT: core.actorT, ...(act && act.detectors.length ? { detected: act.anyDetected } : {}) });
     let reason: StepResult['info']['reason'];
     if (st.success) reason = 'success';
-    else if (st.failed) reason = 'detected';
+    else if (st.failed) reason = this.episode.task.type === 'detect-avoid' ? 'detected' : 'failure'; // (detect-avoid: detected for too long)
     else if (ep.endOnCrash && this.stepImpact >= ep.crashSpeedMs) reason = 'crash';
     else if (ep.endOutOfBounds && this.outOfBounds()) reason = 'out_of_bounds';
     const truncated = !reason && this.time >= ep.maxSeconds - 1e-9;
     if (truncated) reason = 'timeout';
     this.ended = !!reason;
-    return { obs: this.observe(), reward: st.reward, terminated: !!reason && !truncated, truncated, info: { reason, metrics: this.task.metrics(), events: this.events } };
+    const events = this.events;
+    this.events = [];
+    return { obs: this.observe(), reward: st.reward, terminated: !!reason && !truncated, truncated, info: { reason, metrics: this.task.metrics(), events } };
   }
 
   /** The episode has ended (step() after that keeps simulating, but the task is over). */
@@ -246,7 +282,7 @@ export class FpvEnv {
     const roll = Math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y));
     const pitch = -Math.asin(Math.max(-1, Math.min(1, 2 * (q.w * q.y - q.z * q.x))));
     const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
-    const g = quad.imu.gyroOut, a = quad.imu.accOut, b = quad.battery.s;
+    const touched = core.ops?.imuTouched, g = touched ? core.fcGyro : quad.imu.gyroOut, a = touched ? core.fcAcc : quad.imu.accOut, b = quad.battery.s;
     const goal = this.task?.goal() ?? null;
     let goalBody: [number, number, number] | null = null;
     if (goal) {
@@ -274,6 +310,8 @@ export class FpvEnv {
       probes,
       gate: { next: core.map.gates.length ? core.nextGate % core.map.gates.length : 0, total: core.map.gates.length },
       impact: this.stepImpact, damage: core.damageTotal(),
+      ...(this.episode.nav && core.ops ? { nav: core.ops.navSensors(core) } : {}),
+      ...(core.ops && this.episode.ops ? { ops: core.ops.status(core) } : {}),
       ...(this.episode.observeActors && { actors: this.observeActors() }),
     };
   }

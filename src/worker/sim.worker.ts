@@ -380,6 +380,7 @@ function sendTelemetry() {
     impact: core.lastImpact,
     actorT0: core.actorT0,
     rc: { marginDb: core.rcLink.marginDb, interfMw: core.rcLink.interfMw, lq: core.rcLink.lq },
+    ...(core.ops ? { ops: core.ops.status(core) } : {}),
   };
   core.beeperSeen = false; core.beaconSeen = false;
   post({ type: 'telemetry', tel });
@@ -543,6 +544,8 @@ async function firmwareOp(m: ToWorker) {
       const bf = core.bf;
       if (!bf || fwState !== 2) { post({ type: 'log', text: 'Reproducible run: Betaflight is not running' }); break; }
       stopRun('a new run started');
+      // a run records sticks only: the operational environment can't be replayed, so it ends here
+      if (core.ops) { core.setOps(null); post({ type: 'log', text: 'Reproducible run: the operational environment (jammers, faults, payload) was removed' }); }
       // a never-booted FC with the current configuration, the world and the quad rebuilt, every random
       // stream seeded: what follows depends only on the sticks of each RC packet, which are recorded
       const eeprom = bf.eepromGet().slice();
@@ -643,6 +646,21 @@ async function handle(m: ToWorker) {
       if (core.settings.mapId === m.id && core.quad) { if (await loadMap(m.id)) respawn(); }
       break;
     }
+    case 'ops': {
+      if (run) stopRun('the operational environment changed');
+      core.setOps(m.config);
+      if (core.ops) core.ops.onEvent = (e) => post({ type: 'opsEvent', e });
+      break;
+    }
+    case 'opsFaults': {
+      if (!core.quad) break;
+      if (run) stopRun('faults were injected');
+      if (!core.ops) { core.setOps({}); core.ops!.onEvent = (e) => post({ type: 'opsEvent', e }); }
+      const now = core.ops!.time(core.simT);
+      core.ops!.schedule(m.faults.map((f) => ({ ...f, at: now + f.at })));
+      break;
+    }
+    case 'opsDrop': core.ops?.release(core); break;
     case 'reset': {
       if (!core.quad) break;
       const ev = { repair: !!m.repair, fullBattery: !!m.fullBattery, at: m.at ? { ...m.at } : undefined };

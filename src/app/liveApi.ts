@@ -4,6 +4,7 @@
 // comes from the worker's 1 kHz state ring, and a scenario sets up map, drone, conditions, Betaflight
 // and a scored task. Reached through a local relay over WebSocket (scripts/fpv-api.mjs --live) or
 // window.fpvSim in the page.
+import type { OpsEvent } from '../worker/ops';
 import { Action, applyAction, AUX, MODE_US, Observation, obsVector, obsVectorLabels, probeDirections, rot, rotInv } from '../api/types';
 import { ApiBackend, ApiEvent, ApiSession, API_PROTOCOL, API_VERSION, COMMANDS, Hello, parseRequest, Request } from '../api/protocol';
 import { planDiffImport } from '../bf/diffImport';
@@ -125,6 +126,15 @@ export class LiveBackend implements ApiBackend {
 
   onLog(text: string) { if (this.session || this.listeners.size) this.emit({ event: 'log', text }); }
 
+  onOps(e: OpsEvent) {
+    this.emit({ event: 'ops', ...e });
+    if (e.type === 'payload_impact' && this.task && !this.ended) {
+      this.task.onPayload(e.pos, e.speed);
+      const m = this.task.metrics();
+      if (m.success) this.endEpisode('success'); else if (m.missM !== undefined) this.endEpisode('failure');
+    }
+  }
+
   onRespawn() { if (this.task && !this.ended) this.endEpisode('respawn'); }
 
   // -------------------------------------------------------------------------------------------
@@ -168,6 +178,10 @@ export class LiveBackend implements ApiBackend {
         // over the API frames always stream as events (a recording would not fit one message)
         return req.action === 'start' ? ds.startRecording(ctx, { ...req, stream: true }, (e) => this.emit(e as ApiEvent)) : ds.stopRecording(ctx);
       }
+      case 'fault': this.deps.injectFaults(req.faults); return {};
+      case 'drop': this.deps.dropPayload(); return {};
+      case 'ops': this.deps.setOps(req.config ?? null); await this.deps.sync(); return {};
+      case 'linkmap': throw new Error('linkmap: a planning tool of the headless simulator (npm run api)');
       case 'bye': setTimeout(() => this.disconnect(), 0); return {};
     }
     throw new Error(`unknown command ${(req as { cmd: string }).cmd}`);
@@ -208,6 +222,8 @@ export class LiveBackend implements ApiBackend {
     ep ??= this.episode;
     this.deps.fly();
     this.deps.respawn(true);
+    // the scenario's operational environment (or none), its clock starting with the episode
+    if (raw !== undefined) this.deps.setOps(ep?.ops ?? null);
     if (ep) {
       const st = ep.start, sp = ctx.map.spawn, off = st.offset;
       if (st.pos || off.some((x) => x !== 0) || st.yawOffsetDeg !== 0 || st.yawDeg !== null) {
