@@ -406,6 +406,27 @@ npm run map:validate -- path/to/my-map
 
 Use `--local` to skip the repository rules (licence files, folder name) while you iterate.
 
+## Publishing a user map
+
+Instead of a pull request, a map can be published from the app (the map editor's **Publish**) to
+the relay that hosts the rooms (`server/src/mapStore.ts`). Published maps are **user maps**:
+
+- They are listed apart from the official maps (**User maps** in New game and in Simulation →
+  World), always carry a "User map · not reviewed" badge, and the first one a pilot opens shows a
+  disclaimer: made by players, not reviewed, may be removed, no warranty.
+- They never have an official leaderboard; personal bests stay on the pilot's device.
+- Their id is `u-` followed by 20 characters of the SHA-256 of the package's file list (each
+  file's path and SHA-256), so the same files always get the same id and the app re-checks every
+  download against it. Share a map with its link (`/?map=u-…`), or pick it as a room host: each
+  pilot in the room is asked before it downloads. Maps loaded from disk can't be sent to a room;
+  publish them (unlisted is fine) first.
+- **Unlisted** maps open only by link or in a room; **listed** maps also appear in the browser.
+- The relay checks what the validator checks, and more strictly: an accepted licence and its text
+  (`LICENSE.txt` for licences that require it), every referenced file present, image and `.glb`
+  headers, the budgets, and names that are not blank or offensive. Publishing requires confirming
+  that you made the map or may share every asset in it under its licence.
+- Anyone can report a map; after several reports it is hidden until it is reviewed.
+
 ## Versioning
 
 `formatVersion` is the format's major version. Within v1, new optional properties may be added,

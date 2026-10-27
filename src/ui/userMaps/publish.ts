@@ -36,7 +36,7 @@ export function publishDialog(files: Map<string, Blob>, meta: MapMeta): Promise<
         el('dt', {}, 'By'), el('dd', {}, meta.author),
         el('dt', {}, 'Licence'), el('dd', {}, meta.license),
         el('dt', {}, 'Version'), el('dd', {}, meta.version),
-        el('dt', {}, 'Package'), el('dd', {}, `${files.size} file${files.size === 1 ? '' : 's'}, ${(bytes / 1048576).toFixed(1)} MiB`)),
+        el('dt', {}, 'Package'), el('dd', {}, `${files.size} file${files.size === 1 ? '' : 's'}, ${bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`}`)),
       el('div', { class: 'gm-callout warn' }, el('p', {}, `Published maps are user maps: they show as “${BADGE_TEXT}”, are kept apart from the official maps and never count on the official leaderboards. fpv-sim does not review them and may remove them; anyone with the link can download the package. Publishing the same files again gives the same link.`)),
       form, status,
       el('div', { class: 'gm-actions' }, cancel, go));
