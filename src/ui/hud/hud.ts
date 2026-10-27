@@ -57,6 +57,9 @@ export class Hud {
   private keysEl = el('div', { class: 'card keys' });
   private telEl = el('div', { class: 'card tel' });
   private crashEl = el('div', { class: 'crash', role: 'alert' });
+  /** "DETECTED · radar-1": a detector of the map's actors holds a detection of the quad */
+  private alertEl = el('div', { class: 'detect-alert', role: 'alert' });
+  private alertText = '';
   private noticeEl = el('div', { class: 'notices', role: 'status' });
   private coachEl = el('div', { class: 'card coach', role: 'status' });
   private keysSig = '';
@@ -98,6 +101,7 @@ export class Hud {
     };
     // order = placement priority (must-show widgets first: their fallback may not avoid later ones)
     add('crash', this.crashEl, [{ center: 0.3 }, { center: 0.5 }, { edge: 'top', pref: 'center' }]);
+    add('alert', this.alertEl, [{ edge: 'top', pref: 'center' }, { center: 0.18 }, { center: 0.4 }, { edge: 'left', pref: 'start' }]);
     add('notices', this.noticeEl, [{ center: 0.62 }, { edge: 'bottom', pref: 'center' }, { center: 0.4 }, { edge: 'left', pref: 'center' }, { edge: 'right', pref: 'center' }, { edge: 'top', pref: 'center' }]);
     add('race', this.raceEl, [{ bar: 'left', at: 'top' }, { bar: 'right', at: 'top' }, { edge: 'top', pref: 'center' }, { edge: 'left', pref: 'center' }, { edge: 'right', pref: 'center' }, { edge: 'bottom', pref: 'center' }]);
     // optional, so after the must-show widgets: it finds a gap around them or waits
@@ -235,6 +239,12 @@ export class Hud {
     if (text && text !== this.crashText) { this.crashText = text; this.crashEl.textContent = text; this.w.crash.dirty = true; }
     if (!text) this.crashText = '';
     this.show('crash', !!text);
+  }
+  /** The detection alert ("DETECTED · radar-1"), or null to hide it. */
+  alert(text: string | null) {
+    if (text && text !== this.alertText) { this.alertText = text; this.alertEl.textContent = text; this.w.alert.dirty = true; }
+    if (!text) this.alertText = '';
+    this.show('alert', !!text);
   }
   /** The notice cards to show (persistent elements): the list is only re-attached when it changes.
    *  A card's own text changing is reported with invalidate('notices'). */

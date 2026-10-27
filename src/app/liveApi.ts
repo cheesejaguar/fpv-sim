@@ -7,8 +7,9 @@
 import { Action, applyAction, AUX, MODE_US, Observation, obsVector, obsVectorLabels, probeDirections, rot, rotInv } from '../api/types';
 import { ApiBackend, ApiEvent, ApiSession, API_PROTOCOL, API_VERSION, COMMANDS, Hello, parseRequest, Request } from '../api/protocol';
 import { planDiffImport } from '../bf/diffImport';
-import { hasMap } from '../maps/maps';
-import { parseScenario, resolveEpisode, Episode } from '../scenario/scenario';
+import { hasMap, MAPS, preloadMap } from '../maps/maps';
+import { mapFacts, MapFacts, parseScenario, resolveEpisode, Episode } from '../scenario/scenario';
+import { detectedFromMask, posAt, velAt } from '../sim/actors';
 import { TaskRunner } from '../scenario/tasks';
 import type { V3 } from '../sim/math';
 import { el } from '../ui/dom';
@@ -136,7 +137,7 @@ export class LiveBackend implements ApiBackend {
         const h: Hello = {
           protocol: API_PROTOCOL, version: API_VERSION, backend: 'live', clock: 'realtime', app: `fpv-sim ${APP_VERSION}`,
           firmware: ctx.tel?.fw ?? 'loading', commands: COMMANDS.filter((c) => c !== 'step'),
-          vectorLabels: obsVectorLabels(this.probeDirs.length),
+          vectorLabels: obsVectorLabels(this.probeDirs.length, this.episode?.observeActors),
         };
         return { ...h };
       }
@@ -177,9 +178,14 @@ export class LiveBackend implements ApiBackend {
     const ctx = this.ctx;
     let ep: Episode | null = null;
     if (raw !== undefined) {
-      const { scenario, errors } = parseScenario(raw, hasMap);
+      // the scenario's map is loaded first: its spawns, actors and wind are checked and used
+      const rawMap = (raw as { map?: { id?: unknown } } | null)?.map?.id, mapId = typeof rawMap === 'string' ? rawMap : 'field';
+      if (hasMap(mapId)) await preloadMap(mapId).catch(() => { /* the map switch below reports it */ });
+      const facts = (id: string): MapFacts | null => { try { return mapFacts(MAPS[id]()); } catch { return null; } };
+      const { scenario, errors } = parseScenario(raw, hasMap, facts);
       if (!scenario) throw new Error(`invalid scenario:\n  ${errors.join('\n  ')}`);
-      ep = resolveEpisode(scenario, seed);
+      // (randomize.actors needs the headless simulator: the live game flies the map as it is)
+      ep = resolveEpisode(scenario, seed, facts(scenario.map?.id ?? 'field'));
       // map, course and conditions (the time scale and pause stay the app's), then the drone
       const plan = ep.cli.length ? planDiffImport(ep.cli.join('\n')) : null;
       const spec = plan?.propsOut != null ? { ...ep.spec, propDirection: plan.propsOut ? 'props-out' as const : 'props-in' as const } : ep.spec;
@@ -215,12 +221,12 @@ export class LiveBackend implements ApiBackend {
     // the worker has taken the respawn (and the placement): every state from here on is the new episode's
     await this.deps.sync();
     if (ep) {
-      this.task = new TaskRunner(ep.task, ctx.map);
+      this.task = new TaskRunner(ep.task, ctx.map, { cameraUptiltDeg: ep.spec.cameraUptiltDeg });
       this.t0 = newestTime(ctx.sh);
       this.lastTaskT = -1; this.ended = false;
       if (!this.taskTimer) this.taskTimer = setInterval(() => this.feedTask(), 10);
     }
-    return { obs: this.observe(), info: { seed: ep?.seed ?? null, episode: ep, reproducible: false }, vectorLabels: obsVectorLabels(this.probeDirs.length) };
+    return { obs: this.observe(), info: { seed: ep?.seed ?? null, episode: ep, reproducible: false }, vectorLabels: obsVectorLabels(this.probeDirs.length, ep?.observeActors) };
   }
 
   /** Feed the task the newest state (100 Hz), end the episode on success / timeout / leaving the map. */
@@ -231,9 +237,15 @@ export class LiveBackend implements ApiBackend {
     if (t <= this.lastTaskT || t <= this.t0 || !sampleRing(ctx.sh, t, this.rec)) return;
     this.lastTaskT = t;
     const r = this.rec;
-    const st = task.step({ t: t - this.t0, pos: { x: r[R.px], y: r[R.py], z: r[R.pz] }, vel: { x: r[R.vx], y: r[R.vy], z: r[R.vz] }, w: { x: r[R.wx], y: r[R.wy], z: r[R.wz] }, armed: r[R.armed] > 0.5 });
+    const hasDetectors = !!ctx.map.actors?.some((a) => a.type === 'detector');
+    const st = task.step({
+      t: t - this.t0, pos: { x: r[R.px], y: r[R.py], z: r[R.pz] }, vel: { x: r[R.vx], y: r[R.vy], z: r[R.vz] }, w: { x: r[R.wx], y: r[R.wy], z: r[R.wz] }, armed: r[R.armed] > 0.5,
+      q: { w: r[R.qw], x: r[R.qx], y: r[R.qy], z: r[R.qz] }, actorT: t - (ctx.tel?.actorT0 ?? 0),
+      ...(hasDetectors ? { detected: Atomics.load(ctx.sh.ctrl, 10) !== 0 } : {}),
+    });
     const m = ctx.map;
     if (st.success) this.endEpisode('success');
+    else if (st.failed) this.endEpisode('detected');
     else if (ep.endOutOfBounds && (Math.abs(r[R.px]) > m.size || Math.abs(r[R.py]) > m.size)) this.endEpisode('out_of_bounds');
     else if (t - this.t0 >= ep.maxSeconds) this.endEpisode('timeout');
   }
@@ -336,7 +348,18 @@ export class LiveBackend implements ApiBackend {
       goal: goal ? [goal.x, goal.y, goal.z] : null, goalBody, probes,
       gate: { next: ctx.race.nextGate, total: ctx.map.gates.length },
       impact, damage: r[R.damage],
+      ...(this.episode?.observeActors && { actors: this.observeActors(r[R.t]) }),
     };
+  }
+
+  /** observations.actors from the map (positions are a function of actor time) and the worker's shared flags. */
+  private observeActors(t: number) {
+    const ctx = this.ctx, m = ctx.map, at = t - (ctx.tel?.actorT0 ?? 0);
+    const targets = (m.actors ?? []).filter((a) => a.type === 'target').map((a) => {
+      const p = posAt(a, m.paths, at), v = velAt(a, m.paths, at);
+      return { id: a.id, pos: [p.x, p.y, p.z] as [number, number, number], vel: [v.x, v.y, v.z] as [number, number, number] };
+    });
+    return { targets, detected: detectedFromMask(m, Atomics.load(ctx.sh.ctrl, 10)).map((d) => d.id), rcMarginDb: ctx.tel?.rc?.marginDb ?? 0 };
   }
 
   // -------------------------------------------------------------------------------------------

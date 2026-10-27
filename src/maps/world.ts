@@ -83,6 +83,9 @@ export interface MapDef {
 /** A named start: the quad's pose, and optionally where the pilot / video receiver stands for it. */
 export interface SpawnDef { id: string; name: string; pos: V3; yaw: number; groundZ?: number; pilot?: V3 }
 
+/** PrimitiveWorld.losLoss: total obstruction (dB, = obstructionDb), and its solid and foliage parts. */
+export interface LosLoss { db: number; hardDb: number; foliageDb: number }
+
 /** An actor path: points in order, travelled at speed (m/s) from sim time delay (s). */
 export interface PathDef { id: string; points: V3[]; speed: number; mode: 'loop' | 'pingpong' | 'once'; delay: number }
 
@@ -413,7 +416,22 @@ export class PrimitiveWorld implements CollisionWorld {
   }
 
   /** Line-of-sight obstruction loss (dB) between two points, used by the video link model. */
-  obstructionDb(a: V3, b: V3): number {
+  obstructionDb(a: V3, b: V3): number { return this.sampleLos(a, b, null); }
+
+  /**
+   * Line of sight between two points, split by what is in the way: `db` is obstructionDb (the
+   * same sampler, the same number), `hardDb` the part from terrain, walls and other solids, and
+   * `foliageDb` the part from tree canopies and foliage (which a sensor sees through, weakened).
+   * Detectors (src/sim/actors.ts) treat hardDb > 0 as blocked.
+   */
+  losLoss(a: V3, b: V3, out: LosLoss = { db: 0, hardDb: 0, foliageDb: 0 }): LosLoss {
+    out.hardDb = 0; out.foliageDb = 0;
+    out.db = this.sampleLos(a, b, out);
+    return out;
+  }
+
+  /** The obstruction sampler (loss summed in sample order, as it always was); `split` also tallies hard / foliage parts. */
+  private sampleLos(a: V3, b: V3, split: LosLoss | null): number {
     const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
     const L = Math.hypot(dx, dy, dz);
     if (L < 0.5) return 0;
@@ -423,19 +441,24 @@ export class PrimitiveWorld implements CollisionWorld {
     for (let i = 1; i < n; i++) {
       const t = i / n;
       const x = a.x + dx * t, y = a.y + dy * t, z = a.z + dz * t;
-      if (z < this.map.terrain(x, y)) loss += 1.2;
+      if (z < this.map.terrain(x, y)) { loss += 1.2; if (split) split.hardDb += 1.2; }
       const key = this.key(Math.floor(x / this.cell), Math.floor(y / this.cell));
       const cl = this.canopies.get(key);
-      if (cl) for (const pr of cl) if (!seen.has(pr) && this.inside(pr, x, y, z)) { seen.add(pr); loss += 4; }
+      if (cl) for (const pr of cl) if (!seen.has(pr) && this.inside(pr, x, y, z)) { seen.add(pr); loss += 4; if (split) split.foliageDb += 4; }
       const l = this.grid.get(key);
       if (!l) continue;
       for (const pr of l) {
         if (seen.has(pr)) continue;
         if (pr.mat === 'wood' && pr.kind === 'sphere') continue; // canopy core: already counted as foliage
-        if (this.inside(pr, x, y, z)) { seen.add(pr); loss += pr.mat === 'concrete' ? 14 : pr.mat === 'metal' ? 18 : pr.mat === 'foliage' ? 4 : 6; }
+        if (this.inside(pr, x, y, z)) {
+          seen.add(pr);
+          const db = pr.mat === 'concrete' ? 14 : pr.mat === 'metal' ? 18 : pr.mat === 'foliage' ? 4 : 6;
+          loss += db;
+          if (split) { if (pr.mat === 'foliage') split.foliageDb += db; else split.hardDb += db; }
+        }
       }
     }
-    if (this.brushes.count) loss += this.brushes.obstructionDb(a, b);
+    if (this.brushes.count) { const bd = this.brushes.obstructionDb(a, b); loss += bd; if (split) split.hardDb += bd; }
     return Math.min(loss, 60);
   }
 

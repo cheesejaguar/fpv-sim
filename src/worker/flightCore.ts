@@ -12,7 +12,8 @@
 import { BF_PORT, Betaflight } from '../bf/bfModule';
 import { buildDrone, DroneBuild, DroneSpec } from '../builder/derive';
 import { gatePassed } from '../maps/gates';
-import { GateDef, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from '../maps/world';
+import { GateDef, LosLoss, MapDef, pilotPos, PrimitiveWorld, spawnGroundZ } from '../maps/world';
+import { ActorSim, DetectEvent, LookContext, lightLevel, REF_SIZE_M } from '../sim/actors';
 import { G0, isa } from '../sim/atmosphere';
 import { rotateInv, subSeed, V3 } from '../sim/math';
 import { QuadEnv, QuadSim } from '../sim/quad';
@@ -45,6 +46,8 @@ export interface FlightHooks {
   afterFirmware?(dt: number): void;
   /** wall clock for the GPS's UTC time (ms since the epoch); default Date.now */
   wallMs?(): number;
+  /** a detector of the map's actors began (on) or stopped holding a detection of the quad, at actor time e.t */
+  detect?(e: DetectEvent): void;
 }
 
 export interface FlightCoreOptions {
@@ -118,6 +121,16 @@ export class FlightCore {
   private readonly wakeWind: V3 = { x: 0, y: 0, z: 0 };
   private readonly restForce: V3 = { x: 0, y: 0, z: G0 };
   seed: number | undefined;
+  /**
+   * The map's actors (null: none, and nothing below runs). Actor time is sim time since actorT0:
+   * the map was set, the run began or the quad respawned (src/sim/actors.ts posAt).
+   */
+  actors: ActorSim | null = null;
+  actorT0 = 0;
+  /** the RC uplink's transmitter: -1 the pilot, else the index of a ground station (ActorSim.rcSite) */
+  rcSiteIndex = -1;
+  private readonly losTmp: LosLoss = { db: 0, hardDb: 0, foliageDb: 0 };
+  private lookCtx: LookContext | null = null;
 
   constructor(public hooks: FlightHooks, opts: FlightCoreOptions = {}) {
     this.seed = opts.seed;
@@ -169,12 +182,26 @@ export class FlightCore {
     return { world: this.world, wind: w, wake: new WakeField(), ambientC: settings.ambientC, altitudeOffset: map.elevationM, damageEnabled: settings.damage };
   }
 
-  /** Fly this map from now on (its collision world, wind and GPS origin). */
+  /** Fly this map from now on (its collision world, wind, GPS origin and actors). */
   setMap(m: MapDef) {
     this.map = m;
     this.world = new PrimitiveWorld(m);
     this.env = this.makeEnv();
     this.gps.origin = { ...GPS_ORIGIN, altM: m.elevationM ?? 0 };
+    // actors draw from their own stream: a map without them changes nothing else
+    this.actors = m.actors?.length ? new ActorSim(m, this.sub(0xac70)) : null;
+    this.resetActors();
+  }
+
+  /** Sim time of the actors (s): their paths start over when the map is set, the run begins or the quad respawns. */
+  get actorT(): number { return this.simT - this.actorT0; }
+
+  /** The actors start over from now: back at the start of their paths, detectors without looks. */
+  resetActors() {
+    this.actorT0 = this.simT;
+    this.rcSiteIndex = -1;
+    this.lookCtx = null;
+    this.actors?.reset(this.sub(0xac70));
   }
 
   /** The wind follows changed settings without restarting its turbulence. */
@@ -224,6 +251,7 @@ export class FlightCore {
     this.env.wake.reset(); this.wakeAcc = 0;
     this.lastPos = { ...this.quad.s.pos };
     this.nextGate = 0;
+    if (this.actors) this.resetActors();
   }
 
   /**
@@ -277,7 +305,15 @@ export class FlightCore {
       // slowly varying uplink budget: range, walls, fading (pilot stands at the map's pilot spot)
       rcLink.txPowerMw = settings.rcTxPowerMw ?? 250;
       rcLink.rateHz = settings.rcLinkHz;
-      rcLink.updateBudget(this.world, pilotPos(map, this.pilotTmp), quad.s.pos, this.linkAcc);
+      const act = this.actors;
+      if (act) {
+        // the map's actors: the best uplink site (pilot or a ground station), jammers in the band
+        const t = this.actorT, obs = (a: V3, b: V3) => this.world.obstructionDb(a, b);
+        const site = act.rcSite(t, pilotPos(map, this.pilotTmp), rcLink.txPowerMw, quad.s.pos, obs, this.rcSiteIndex);
+        this.rcSiteIndex = site.index;
+        rcLink.txPowerMw = site.txPowerMw; rcLink.txGainDbi = site.gainDbi;
+        rcLink.updateBudget(this.world, site.pos, quad.s.pos, this.linkAcc, act.rcInterferenceMw(t, quad.s.pos, obs, rcLink.rxGainDbi));
+      } else rcLink.updateBudget(this.world, pilotPos(map, this.pilotTmp), quad.s.pos, this.linkAcc);
       this.linkAcc = 0;
     }
     if (this.rcAcc >= 1 / settings.rcLinkHz) {
@@ -420,10 +456,12 @@ export class FlightCore {
     }
     this.simT += dt;
     this.steps++;
+    // detectors look on a step-count cadence
+    if (this.actors?.detectors.length) this.actors.stepDetectors(this.steps, this.settings.physicsHz, this.actorT, quad.s.pos, this.lookContext(), this.hooks.detect);
 
-    // state record + gate check at 1 kHz
+    // state record + gate check at 1 kHz (with which targets the quad is at)
     this.ringAcc += dt;
-    if (this.ringAcc >= RECORD_DT) { this.ringAcc -= RECORD_DT; this.hooks.record?.(); this.detectGates(); }
+    if (this.ringAcc >= RECORD_DT) { this.ringAcc -= RECORD_DT; this.actors?.record(this.actorT, quad.s.pos); this.hooks.record?.(); this.detectGates(); }
 
     // crash events
     // An impact spans many physics steps while the contact decelerates the quad; report the peak
@@ -458,6 +496,20 @@ export class FlightCore {
         this.crashMsg = `${this.impactMsg} · ${this.damageMsg}`;
       }
     }
+  }
+
+  /** What a detector's look needs to know about the quad and the map (rebuilt with the actors). */
+  private lookContext(): LookContext {
+    if (this.lookCtx) return this.lookCtx;
+    const c = this.build.info.components;
+    // across the props: the motor diagonal plus one prop diameter (a 5": ~0.35 m)
+    const sizeM = c.frame.wheelbaseMm / 1000 + c.prop.diameterIn * 0.0254;
+    return this.lookCtx = {
+      sizeM: Number.isFinite(sizeM) && sizeM > 0 ? sizeM : REF_SIZE_M,
+      vtxDbm: 10 * Math.log10(Math.max(1, c.video.vtxPowerMw)),
+      light: lightLevel(this.map.sky),
+      los: (a, b) => this.world.losLoss(a, b, this.losTmp),
+    };
   }
 
   detectGates() {

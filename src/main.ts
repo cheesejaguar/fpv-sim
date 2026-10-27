@@ -146,6 +146,7 @@ bridge.onMessage = (m) => {
     case 'telemetry': ctx.tel = m.tel; apiHost.onTelemetry(m.tel); break;
     case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
     case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
+    case 'detect': if (m.on) ctx.log(`Detected by ${m.name}`); break; // (the HUD alert reads the shared flags)
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
     case 'runState': ctx.run = { active: m.active, seed: m.seed ?? ctx.run.seed, reason: m.reason }; if (!m.active && m.reason) ctx.log(`Reproducible run ended: ${m.reason}`); break;
     case 'mapLoaded': onWorkerMap(m.id, m.requested, m.ok, m.error); break;

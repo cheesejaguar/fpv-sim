@@ -111,6 +111,7 @@ const core = new FlightCore({
   },
   log: (text) => post({ type: 'log', text }),
   gate: (gate, t) => post({ type: 'gate', gate, t }),
+  detect: (e) => post({ type: 'detect', id: e.id, name: e.name, index: e.index, on: e.on, t: e.t }),
   brownout: (ev) => { if (ev === 'down') blankOsd(); },
   blackbox: (bytes, armed) => {
     const was = bbl.full;
@@ -355,6 +356,9 @@ function writeRing() {
   Atomics.store(sh.ctrl, 5, armed ? 1 : 0);
   // live buzzer / DShot beacon bits for sample-accurate audio: bit 0 beeper, bit 1 beacon
   Atomics.store(sh.ctrl, 9, bf && !core.brownout.off ? (bf.beeper() ? 1 : 0) | (bf.beacon() ? 2 : 0) : 0);
+  // map actors: detections and targets reached
+  Atomics.store(sh.ctrl, 10, core.actors ? core.actors.detectedMask : 0);
+  Atomics.store(sh.ctrl, 11, core.actors ? core.actors.targetMask : 0);
 }
 
 function sendTelemetry() {
@@ -374,6 +378,8 @@ function sendTelemetry() {
     beeper: core.beeperSeen, beacon: core.beaconSeen, cpuLoad: on ? on.cpuLoad() : 0,
     gps: gi ? { fix: gi.fix, sats: gi.numSat, homeDistM: gi.homeDistM, homeDirDeg: gi.homeDirDeg } : null,
     impact: core.lastImpact,
+    actorT0: core.actorT0,
+    rc: { marginDb: core.rcLink.marginDb, interfMw: core.rcLink.interfMw, lq: core.rcLink.lq },
   };
   core.beeperSeen = false; core.beaconSeen = false;
   post({ type: 'telemetry', tel });

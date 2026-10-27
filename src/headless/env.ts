@@ -9,10 +9,11 @@ import { defaultCli, simHardwareCli } from '../bf/defaults';
 import { cliErrors as cliErr, planDiffImport } from '../bf/diffImport';
 import { DroneBuild, DroneSpec, preloadPropTable } from '../builder/derive';
 import { MAPS, preloadMap } from '../maps/maps';
-import { spawnGroundZ, withCourse } from '../maps/world';
+import { MapDef, spawnGroundZ, withCourse, withSpawn } from '../maps/world';
+import { posAt, randomizeActors, velAt } from '../sim/actors';
 import { subSeed, V3 } from '../sim/math';
-import { Action, applyAction, AUX, MODE_US, Observation, probeDirections, rot, rotInv } from '../api/types';
-import { resolveEpisode, Episode, Scenario, defaultScenario, parseScenario } from '../scenario/scenario';
+import { Action, applyAction, AUX, MODE_US, Observation, ObservedActors, probeDirections, rot, rotInv } from '../api/types';
+import { resolveEpisode, Episode, MapFacts, mapFacts, Scenario, defaultScenario, parseScenario } from '../scenario/scenario';
 import { TaskMetrics, TaskRunner } from '../scenario/tasks';
 import { FlightCore } from '../worker/flightCore';
 
@@ -23,10 +24,12 @@ export interface StepResult {
   terminated: boolean;
   /** the episode hit its time limit */
   truncated: boolean;
-  info: { reason?: 'success' | 'crash' | 'out_of_bounds' | 'timeout'; metrics: TaskMetrics; events: EnvEvent[] };
+  info: { reason?: 'success' | 'crash' | 'out_of_bounds' | 'timeout' | 'detected'; metrics: TaskMetrics; events: EnvEvent[] };
 }
 
-export type EnvEvent = { type: 'gate'; gate: number; t: number } | { type: 'impact'; speed: number; t: number } | { type: 'log'; text: string; t: number };
+export type EnvEvent = { type: 'gate'; gate: number; t: number } | { type: 'impact'; speed: number; t: number } | { type: 'log'; text: string; t: number }
+  /** a detector of the map's actors began (on) or stopped holding a detection of the quad */
+  | { type: 'detect'; detector: string; on: boolean; t: number };
 
 export interface EnvOptions {
   /** a fresh, un-booted flight controller (each reset boots a new one: no state carries over) */
@@ -85,8 +88,17 @@ export class FpvEnv {
    * exactly); default: the next one of the scenario's sequence.
    */
   async reset(o: { scenario?: Scenario | unknown; seed?: number } = {}): Promise<{ obs: Observation; info: { seed: number; episode: Episode; bootS: number; cliErrors: string[]; drone: DroneFacts } }> {
+    // what the scenario's map has (spawns, actors, wind): it is loaded first, so ids on it can be checked
+    const facts = new Map<string, MapFacts | null>();
+    const factsOf = (id: string) => {
+      if (!facts.has(id)) { let f: MapFacts | null = null; try { f = id in MAPS ? mapFacts(MAPS[id]()) : null; } catch { /* not loaded */ } facts.set(id, f); }
+      return facts.get(id)!;
+    };
+    const rawMap = (o.scenario as { map?: { id?: unknown } } | undefined)?.map?.id;
+    const wantMap = typeof rawMap === 'string' ? rawMap : o.scenario === undefined ? this.scenario?.map?.id ?? 'field' : 'field';
+    if (wantMap in MAPS) await preloadMap(wantMap).catch(() => { /* reported by the parser / the reset below */ });
     if (o.scenario !== undefined) {
-      const { scenario, errors } = parseScenario(o.scenario, (id) => id in MAPS);
+      const { scenario, errors } = parseScenario(o.scenario, (id) => id in MAPS, factsOf);
       if (!scenario) throw new Error(`invalid scenario:\n  ${errors.join('\n  ')}`);
       this.scenario = scenario;
       this.episodeCount = 0;
@@ -95,7 +107,7 @@ export class FpvEnv {
     const sc = this.scenario;
     const seed = o.seed ?? subSeed(sc.seed ?? 0, this.episodeCount);
     this.episodeCount++;
-    const ep = resolveEpisode(sc, seed);
+    const ep = resolveEpisode(sc, seed, factsOf(sc.map?.id ?? 'field'));
     // a diff all decides the prop direction (as the app's import does)
     const plan = ep.cli.length ? planDiffImport(ep.cli.join('\n')) : null;
     const spec: DroneSpec = plan?.propsOut != null ? { ...ep.spec, propDirection: plan.propsOut ? 'props-out' : 'props-in' } : ep.spec;
@@ -107,11 +119,15 @@ export class FpvEnv {
       sticks: (out) => out.set(this.rc),
       log: (text) => { this.events.push({ type: 'log', text, t: this.time }); this.onLog?.(text); },
       gate: (gate, t) => { this.events.push({ type: 'gate', gate, t: t - this.t0 }); this.task?.onGate(gate, t - this.t0); },
+      // (actor time is episode time: the actors start with the episode)
+      detect: (e) => this.events.push({ type: 'detect', detector: e.id, on: e.on, t: e.t }),
     }, { seed });
     core.gpsEpochMs = GPS_EPOCH_MS;
     core.settings = ep.settings;
     core.spec = spec;
-    core.setMap(withCourse(MAPS[ep.mapId](), ep.courseId));
+    let map: MapDef = withSpawn(withCourse(MAPS[ep.mapId](), ep.courseId), ep.settings.spawnId);
+    if (ep.actors) map = randomizeActors(map, ep.actors);
+    core.setMap(map);
     core.buildQuad();
 
     // boot as the worker does on a first boot: 0.5 s on the pad, the defaults over the CLI (plant
@@ -154,7 +170,9 @@ export class FpvEnv {
     } else core.respawn();
     core.nextGate = 0;
     this.t0 = core.simT;
-    this.task = new TaskRunner(ep.task, core.map);
+    // the actors start with the episode (their clock, their detectors' looks)
+    core.resetActors();
+    this.task = new TaskRunner(ep.task, core.map, { cameraUptiltDeg: spec.cameraUptiltDeg });
     this.probeDirs = probeDirections(ep.probes);
     this.ended = false;
     this.events = [];
@@ -187,9 +205,11 @@ export class FpvEnv {
     this.advance(n);
     if (this.stepImpact > 0) this.events.push({ type: 'impact', speed: this.stepImpact, t: this.time });
     const s = core.quad.s;
-    const st = this.task.step({ t: this.time, pos: s.pos, vel: s.vel, w: s.w, armed: core.armed });
+    const act = core.actors;
+    const st = this.task.step({ t: this.time, pos: s.pos, vel: s.vel, w: s.w, armed: core.armed, q: s.q, actorT: core.actorT, ...(act && act.detectors.length ? { detected: act.anyDetected } : {}) });
     let reason: StepResult['info']['reason'];
     if (st.success) reason = 'success';
+    else if (st.failed) reason = 'detected';
     else if (ep.endOnCrash && this.stepImpact >= ep.crashSpeedMs) reason = 'crash';
     else if (ep.endOutOfBounds && this.outOfBounds()) reason = 'out_of_bounds';
     const truncated = !reason && this.time >= ep.maxSeconds - 1e-9;
@@ -254,7 +274,18 @@ export class FpvEnv {
       probes,
       gate: { next: core.map.gates.length ? core.nextGate % core.map.gates.length : 0, total: core.map.gates.length },
       impact: this.stepImpact, damage: core.damageTotal(),
+      ...(this.episode.observeActors && { actors: this.observeActors() }),
     };
+  }
+
+  /** observations.actors: targets (map order), detections, RC margin. */
+  private observeActors(): ObservedActors {
+    const core = this.core, m = core.map, t = core.actorT;
+    const targets = (m.actors ?? []).filter((a) => a.type === 'target').map((a) => {
+      const p = posAt(a, m.paths, t), v = velAt(a, m.paths, t);
+      return { id: a.id, pos: [p.x, p.y, p.z] as [number, number, number], vel: [v.x, v.y, v.z] as [number, number, number] };
+    });
+    return { targets, detected: core.actors?.detectedIds() ?? [], rcMarginDb: core.rcLink.marginDb };
   }
 }
 

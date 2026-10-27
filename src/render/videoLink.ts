@@ -2,7 +2,8 @@
 // obstruction losses (ray-marched through map primitives), antenna orientation, and fast fading.
 // Produces carrier-to-noise ratio for analog FM video, or link margin for digital systems.
 import type { VideoSpec } from '../data/catalog';
-import type { PrimitiveWorld } from '../maps/world';
+import type { ActorDef, PrimitiveWorld } from '../maps/world';
+import { bandOverlap, fsplDb, interferenceMw, posAt, sinrDb, VIDEO_BAND, type EmitterDef } from '../sim/actors';
 import type { V3 } from '../sim/math';
 
 /**
@@ -38,6 +39,9 @@ export class VideoLink {
   state: LinkState = { cnr: 40, freeze: false, lost: 0, block: 0, distance: 0, rssiDbm: -40, latencyExtraMs: 0, margin: 30, bitrateMbps: 0 };
   rxGainDbi = 8;       // goggle patch + omni diversity
   txGainDbi = 2;       // lollipop / pagoda
+  // map actors (actorRf): interference at the receiving site and its antenna gain (null: the goggles')
+  private interfMw = 0;
+  private rxOverride: number | null = null;
 
   /** Link effects switched off: a perfect link (distance / RSSI keep their last values). */
   clean(video: VideoSpec) {
@@ -48,9 +52,19 @@ export class VideoLink {
   /** Respawn: back next to the pilot, the receiver re-acquires quickly. */
   reset() { this.digi = 'resync'; this.digiT = 0.4; this.fade = this.fadeV = 0; this.obsDb = 0; this.obsTimer = 0; }
 
-  /** speed: quad ground speed (m/s), which sets how fast multipath fading decorrelates. */
-  update(video: VideoSpec, world: PrimitiveWorld, pilot: V3, quad: V3, quadUp: V3, dt: number, now: number, speed = 0): LinkState {
+  /**
+   * speed: quad ground speed (m/s), which sets how fast multipath fading decorrelates. actorT: the
+   * map's actor time (s), when its actors take part: ground stations with a video link are more
+   * receivers (diversity: the best signal-to-noise wins), and in-band emitters add to the noise.
+   */
+  update(video: VideoSpec, world: PrimitiveWorld, pilot: V3, quad: V3, quadUp: V3, dt: number, now: number, speed = 0, actorT?: number): LinkState {
     void now;
+    const actors = actorT !== undefined ? world.map.actors : undefined;
+    if (actors?.length) {
+      const rf = this.actorRf(world, actors, actorT!, pilot, quad, dt);
+      if (rf) { pilot = rf.site; this.interfMw = rf.interfMw; this.rxOverride = rf.index ? rf.gainDbi : null; }
+      else { this.interfMw = 0; this.rxOverride = null; }
+    } else { this.interfMw = 0; this.rxOverride = null; }
     const dx = quad.x - pilot.x, dy = quad.y - pilot.y, dz = quad.z - pilot.z;
     const d = Math.max(0.5, Math.hypot(dx, dy, dz));
     const fspl = 20 * Math.log10(d / 1000) + 20 * Math.log10(F_MHZ) + 32.44;
@@ -78,8 +92,9 @@ export class VideoLink {
     this.fadeV = this.fadeV * a + Math.sqrt(1 - a * a) * gauss();
     this.fade = this.fadeV * (2 + Math.min(4, this.obsDb / 6));
     const ptx = 10 * Math.log10(Math.max(1, video.vtxPowerMw));
-    const rssi = ptx + this.txGainDbi + this.rxGainDbi - fspl + twoRay - this.obsDb + pattern + bodyBlock + this.fade;
-    const snr = rssi - NOISE_FLOOR_DBM;
+    const rssi = ptx + this.txGainDbi + (this.rxOverride ?? this.rxGainDbi) - fspl + twoRay - this.obsDb + pattern + bodyBlock + this.fade;
+    // (in-band emitters of the map: signal over noise + interference)
+    const snr = this.interfMw > 0 ? sinrDb(rssi, NOISE_FLOOR_DBM, this.interfMw) : rssi - NOISE_FLOOR_DBM;
     const s = this.state;
     s.distance = d; s.rssiDbm = rssi;
     if (video.kind === 'analog') {
@@ -124,6 +139,52 @@ export class VideoLink {
     s.bitrateMbps += (rate - s.bitrateMbps) * Math.min(1, dt / 0.3);
     return s;
   }
+
+  /**
+   * The map's actors: which receiver hears the quad (index 0 the pilot's goggles, k the k-th video
+   * ground station) and the in-band interference there; null when no actor touches the video link.
+   */
+  actorRf(world: PrimitiveWorld, actors: readonly ActorDef[], t: number, pilot: V3, quad: V3, dt: number): VideoRf | null {
+    return videoRf(this.rf, this.rxGainDbi, world, actors, t, pilot, quad, dt);
+  }
+  private readonly rf: RfState = { timer: 0, siteObs: [], emObs: [], site: 0, out: { x: 0, y: 0, z: 0 } };
+}
+
+export interface VideoRf { site: V3; gainDbi: number; interfMw: number; index: number }
+interface RfState { timer: number; siteObs: number[]; emObs: number[][]; site: number; out: V3 }
+
+function videoRf(self: RfState, rxGainDbi: number, world: PrimitiveWorld, actors: readonly ActorDef[], t: number, pilot: V3, quad: V3, dt: number): VideoRf | null {
+  const paths = world.map.paths;
+  const emitters = actors.filter((a): a is EmitterDef => a.type === 'rf-emitter' && bandOverlap(a.freqMHz, a.bwMHz, VIDEO_BAND) > 0);
+  const stations = actors.filter((a) => a.type === 'ground-station' && a.link !== 'rc');
+  if (!emitters.length && !stations.length) return null;
+  // the receiving sites: the pilot's goggles, then each video ground station
+  const sites: { pos: V3; gain: number }[] = [{ pos: { ...pilot }, gain: rxGainDbi }];
+  for (const s of stations) sites.push({ pos: posAt(s, paths, t), gain: s.type === 'ground-station' ? s.gainDbi : 0 });
+  self.timer -= dt;
+  if (self.timer <= 0 || self.siteObs.length !== sites.length) {
+    self.timer = 0.1;
+    self.siteObs = sites.map((s) => world.obstructionDb(s.pos, quad));
+    self.emObs = sites.map((s) => emitters.map((e) => world.obstructionDb(posAt(e, paths, t), s.pos)));
+  }
+  // each site's signal to noise + interference (deterministic budget: path loss, walls, antenna gain)
+  let best = -Infinity, bi = 0, cur = -Infinity;
+  const interf: number[] = [];
+  sites.forEach((s, k) => {
+    let i = 0;
+    emitters.forEach((e, j) => { i += interferenceMw(e, posAt(e, paths, t), s.pos, VIDEO_BAND, self.emObs[k]?.[j] ?? 0, s.gain); });
+    interf.push(i);
+    const d = Math.max(0.5, Math.hypot(quad.x - s.pos.x, quad.y - s.pos.y, quad.z - s.pos.z));
+    const snr = sinrDb(s.gain - fsplDb(d / 1000, VIDEO_BAND.fMHz) - (self.siteObs[k] ?? 0), NOISE_FLOOR_DBM, i);
+    if (snr > best) { best = snr; bi = k; }
+    if (k === self.site) cur = snr;
+  });
+  // (a diversity receiver switches when another antenna is clearly better)
+  if (self.site < sites.length && cur > best - 2) bi = self.site;
+  self.site = bi;
+  const s = sites[bi];
+  self.out.x = s.pos.x; self.out.y = s.pos.y; self.out.z = s.pos.z;
+  return { site: self.out, gainDbi: s.gain, interfMw: interf[bi], index: bi };
 }
 
 function smooth(e0: number, e1: number, x: number) { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }

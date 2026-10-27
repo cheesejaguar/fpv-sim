@@ -86,10 +86,27 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
     return select('Spawn', [{ value: '', label: 'Default spawn' }, ...sp.map((x) => ({ value: x.id, label: x.name }))], s.spawnId ?? '', (x) => { s.spawnId = x; pushS(); });
   };
   let spawnRow = spawnSelect();
+  const windSpeed = slider({ label: 'Wind (at 6 m)', min: 0, max: 15, step: 0.1, value: s.wind.speed, unit: 'm/s', onInput: (x) => { s.wind.speed = x; pushS(); } });
+  const windDir = slider({ label: 'Wind from', min: 0, max: 359, step: 1, value: s.wind.direction, unit: '°', onInput: (x) => { s.wind.direction = x; pushS(); } });
+  const windTurb = slider({ label: 'Turbulence (Dryden) ×', min: 0, max: 3, step: 0.05, value: s.wind.turbulence, onInput: (x) => { s.wind.turbulence = x; pushS(); } });
+  const windGusts = slider({ label: 'Gusts per minute', min: 0, max: 12, step: 0.5, value: s.wind.gusts, onInput: (x) => { s.wind.gusts = x; pushS(); } });
+  // a map that suggests a wind (environment.wind): one click applies it (the pilot's setting wins otherwise)
+  const mapWindButton = () => {
+    let w: SimSettings['wind'] | undefined;
+    try { w = MAPS[s.mapId]?.().wind; } catch { /* not preloaded yet */ }
+    if (!w) return el('div', { hidden: '' });
+    const mw = w;
+    return el('button', {
+      type: 'button',
+      onclick: () => { s.wind = { ...mw }; windSpeed.set(mw.speed); windDir.set(mw.direction); windTurb.set(mw.turbulence); windGusts.set(mw.gusts); pushS(); },
+    }, `Use map wind (${mw.speed.toFixed(1)} m/s from ${Math.round(mw.direction)}°)`);
+  };
+  let mapWindRow = mapWindButton();
   const mapChanged = (id: string) => {
     s.mapId = id; s.courseId = ''; s.spawnId = ''; credit.textContent = MAP_LIST[id]?.credit ?? '';
     const c = courseSelect(); courseRow.replaceWith(c); courseRow = c;
     const sp = spawnSelect(); spawnRow.replaceWith(sp); spawnRow = sp;
+    const mw = mapWindButton(); mapWindRow.replaceWith(mw); mapWindRow = mw;
   };
   // official maps (and maps from disk); user maps have their own row below
   const mapSelect = () => select('Map', [
@@ -112,10 +129,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
             el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md, public/maps/freedoom/ATTRIBUTION.md and public/maps/community/<map>/ATTRIBUTION.md in the source repository.')),
           localMapLoader(setMap),
           select('Time of day', TIMES_OF_DAY, v.timeOfDay, (x) => { v.timeOfDay = x; pushV(); }),
-          slider({ label: 'Wind (at 6 m)', min: 0, max: 15, step: 0.1, value: s.wind.speed, unit: 'm/s', onInput: (x) => { s.wind.speed = x; pushS(); } }).row,
-          slider({ label: 'Wind from', min: 0, max: 359, step: 1, value: s.wind.direction, unit: '°', onInput: (x) => { s.wind.direction = x; pushS(); } }).row,
-          slider({ label: 'Turbulence (Dryden) ×', min: 0, max: 3, step: 0.05, value: s.wind.turbulence, onInput: (x) => { s.wind.turbulence = x; pushS(); } }).row,
-          slider({ label: 'Gusts per minute', min: 0, max: 12, step: 0.5, value: s.wind.gusts, onInput: (x) => { s.wind.gusts = x; pushS(); } }).row,
+          windSpeed.row, windDir.row, windTurb.row, windGusts.row, mapWindRow,
           slider({ label: 'Air temperature', min: -15, max: 45, step: 1, value: s.ambientC, unit: '°C', hint: 'Affects air density, battery resistance and motor cooling', onInput: (x) => { s.ambientC = x; pushS(); } }).row,
         ),
         section('Physics',

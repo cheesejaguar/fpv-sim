@@ -7,7 +7,7 @@
 import type { Betaflight } from '../bf/bfModule';
 import { preloadPropTable } from '../builder/derive';
 import { MAPS, preloadMap } from '../maps/maps';
-import { withCourse } from '../maps/world';
+import { withCourse, withSpawn } from '../maps/world';
 import { FlightCore } from '../worker/flightCore';
 import { RUN_GPS_EPOCH_MS, RunLog } from '../worker/runLog';
 
@@ -46,7 +46,7 @@ export async function replayRun(run: RunLog, firmware: () => Promise<Betaflight>
   }, { seed: run.seed });
   core.settings = run.settings;
   core.spec = run.spec;
-  core.setMap(withCourse(MAPS[run.mapId](), run.courseId));
+  core.setMap(withSpawn(withCourse(MAPS[run.mapId](), run.courseId), run.settings.spawnId));
   core.beginRun(await firmware(), run.eeprom, run.seed, RUN_GPS_EPOCH_MS);
   t0 = core.simT;
   const dt = 1 / run.settings.physicsHz;
