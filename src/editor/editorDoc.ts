@@ -24,7 +24,10 @@ export type Op =
   | { k: 'rect'; x0: number; y0: number; w: number; h: number; before: Uint16Array; after: Uint16Array };
 
 export interface Command { label: string; ops: Op[]; merge?: string; at: number }
-export interface Change { doc: boolean; assets: boolean; grid: boolean; label: string }
+/** An array element came in (d = 1) or went (d = -1) at path[i]: later elements moved by d. */
+export interface Shift { path: Path; i: number; d: 1 | -1 }
+/** shifts: in the order they happened, so paths held elsewhere (the selection, hidden objects) can follow. */
+export interface Change { doc: boolean; assets: boolean; grid: boolean; label: string; shifts: Shift[] }
 
 const clone = <T>(v: T): T => (v === undefined ? v : structuredClone(v));
 const MAX_UNDO = 200;
@@ -34,6 +37,8 @@ export interface BuilderMeta {
   groups?: Record<string, { prefab: string; params: Record<string, number>; pos: [number, number, number]; yawDeg: number }>;
   credits?: { file: string; author: string; source: string; license: string }[];
   grid?: { step: number; angle: number };
+  /** display names of groups made with Ctrl+G (prefab groups are named after their prefab) */
+  names?: Record<string, string>;
   nextUid?: number;
 }
 
@@ -41,6 +46,7 @@ export class EditorDoc {
   private undoStack: Command[] = [];
   private redoStack: Command[] = [];
   private listeners = new Set<(c: Change) => void>();
+  private shifts: Shift[] = [];
   /** increases with every change (autosave, rebuild checks) */
   rev = 0;
 
@@ -73,14 +79,16 @@ export class EditorDoc {
 
   /**
    * Run ops as one undoable command. merge: a key; a command with the same key right after this one
-   * (a slider drag, typing in a field) folds into it, so one gesture is one undo step.
+   * (a slider drag, typing in a field) folds into it, so one gesture is one undo step. Keys starting
+   * with "gesture:" name one pointer gesture (a scrub) and fold however long it takes; others fold
+   * within 2.5 s.
    */
   apply(label: string, ops: Op[], merge?: string): void {
     if (!ops.length) return;
     for (const op of ops) this.exec(op, false);
     const last = this.undoStack[this.undoStack.length - 1];
-    const now = Date.now();
-    if (merge && last?.merge === merge && !this.redoStack.length && now - last.at < 2500 && ops.every((o) => o.k === 'set')) {
+    const now = Date.now(), recent = merge?.startsWith('gesture:') || now - (last?.at ?? 0) < 2500;
+    if (merge && last?.merge === merge && !this.redoStack.length && recent && ops.every((o) => o.k === 'set')) {
       // keep the first old value of each path; later values replace
       for (const op of ops as Extract<Op, { k: 'set' }>[]) {
         const prev = last.ops.find((o) => o.k === 'set' && samePath(o.path, op.path)) as Extract<Op, { k: 'set' }> | undefined;
@@ -118,6 +126,18 @@ export class EditorDoc {
     return c.label;
   }
 
+  /** Every command, oldest first (done ones, then the undone ones that redo would bring back), and how many are done. */
+  history(): { entries: { label: string; at: number }[]; done: number } {
+    const entries = [...this.undoStack, ...[...this.redoStack].reverse()].map((c) => ({ label: c.label, at: c.at }));
+    return { entries, done: this.undoStack.length };
+  }
+
+  /** Undo or redo until the first n commands of history() are done. */
+  jumpTo(n: number) {
+    while (this.undoStack.length > n && this.undo() !== null);
+    while (this.undoStack.length < n && this.redo() !== null);
+  }
+
   // ---- convenience commands ----
   set(path: Path, v: unknown, label = 'Edit', merge?: string) { this.apply(label, [{ k: 'set', path, v: clone(v) }], merge); }
   /** Append (or insert at i) into the array at path, creating it. Returns the new element's index. */
@@ -139,7 +159,8 @@ export class EditorDoc {
 
   private emit(ops: Op[], label: string) {
     this.rev++;
-    const c: Change = { doc: ops.some((o) => o.k === 'set' || o.k === 'ins' || o.k === 'del'), assets: ops.some((o) => o.k === 'asset'), grid: ops.some((o) => o.k === 'grid' || o.k === 'rect'), label };
+    const c: Change = { doc: ops.some((o) => o.k === 'set' || o.k === 'ins' || o.k === 'del'), assets: ops.some((o) => o.k === 'asset'), grid: ops.some((o) => o.k === 'grid' || o.k === 'rect'), label, shifts: this.shifts };
+    this.shifts = [];
     for (const f of this.listeners) f(c);
   }
 
@@ -167,6 +188,7 @@ export class EditorDoc {
         const arr = (p[k] ??= []) as unknown[];
         const i = op.i ?? arr.length;
         if (undo) arr.splice(i, 1); else { op.i = i; arr.splice(i, 0, clone(op.v)); }
+        this.shifts.push({ path: op.path, i, d: undo ? -1 : 1 });
         if (undo && !arr.length && op.path.length === 1) delete p[k]; // a top-level list the insert created goes again
         break;
       }
@@ -174,6 +196,7 @@ export class EditorDoc {
         const p = this.parent(op.path, true)!, k = op.path[op.path.length - 1];
         const arr = (p[k] ??= []) as unknown[];
         if (undo) arr.splice(op.i, 0, clone(op.old)); else { op.old = clone(arr[op.i]); arr.splice(op.i, 1); if (!arr.length && op.path.length === 1) delete p[k]; }
+        this.shifts.push({ path: op.path, i: op.i, d: undo ? 1 : -1 });
         break;
       }
       case 'asset': {
@@ -222,6 +245,27 @@ export function gridFromHf(hf: { w: number; h: number; data: Float32Array }): Gr
   return { w: hf.w, h: hf.h, data };
 }
 
+/**
+ * A path after an array shift: the same object's new path, or null when it was the element removed.
+ * Paths outside the shifted array are returned unchanged.
+ */
+export function shiftPath(p: Path, s: Shift): Path | null {
+  const n = s.path.length;
+  if (p.length <= n || typeof p[n] !== 'number' || !s.path.every((k, j) => p[j] === k)) return p;
+  const i = p[n] as number;
+  if (s.d < 0 && i === s.i) return null;
+  if (i < s.i) return p;
+  const q = [...p]; q[n] = i + s.d;
+  return q;
+}
+
+/** Paths carried through a change's shifts, in order; the paths of removed objects drop out. */
+export function followShifts(paths: Path[], shifts: Shift[]): Path[] {
+  let out = paths;
+  for (const s of shifts) out = out.map((p) => shiftPath(p, s)).filter((p): p is Path => p !== null);
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------------
 // What a selection path points at
 
@@ -236,6 +280,20 @@ export function refKind(p: Path): RefKind | null {
   if (p.length === 4 && a === 'courses' && p[2] === 'gates') return 'gate';
   if (p.length === 4 && a === 'paths' && p[2] === 'points') return 'pathPoint';
   return null;
+}
+
+/** Every object in the document that can be selected, in map.json order. */
+export function allRefs(doc: MapDocV1): Path[] {
+  const out: Path[] = [];
+  if (doc.spawn) out.push(['spawn']);
+  if (doc.pilot) out.push(['pilot']);
+  for (const k of ['gates', 'primitives', 'trees', 'spawns', 'lights', 'indoor', 'wakeZones', 'actors', 'geometry'] as const) {
+    const l = doc[k] as unknown[] | undefined;
+    l?.forEach((_, i) => out.push([k, i]));
+  }
+  doc.courses?.forEach((c, ci) => c.gates.forEach((_, i) => out.push(['courses', ci, 'gates', i])));
+  doc.paths?.forEach((p, pi) => p.points.forEach((_, i) => out.push(['paths', pi, 'points', i])));
+  return out;
 }
 
 export const KIND_NAMES: Record<RefKind, string> = { prim: 'Primitive', gate: 'Gate', tree: 'Tree', spawn: 'Spawn', mainSpawn: 'Main spawn', pilot: 'Pilot position', light: 'Light', indoor: 'Indoor zone', wake: 'Wake zone', actor: 'Actor', pathPoint: 'Path point', mesh: 'glTF mesh' };

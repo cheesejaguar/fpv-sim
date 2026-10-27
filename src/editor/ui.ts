@@ -1,12 +1,17 @@
-// The map builder's panels: toolbar (top), palette (left: Race / Freestyle / Environment /
-// Simulation), inspector (right: every property of the selection, several objects at once, or the
-// map's meta when nothing is selected) and the problems list with the budget meters (bottom).
-// Plain DOM through el(); every field commits one undoable command.
+// The map builder's panels: the top bar, the Place panel (left: search, then Race / Freestyle /
+// Environment / Simulation, with rendered thumbnails that click to place or drag onto the view),
+// the Details panel (right, under the outliner: every property of the selection, several objects
+// at once, or the map's settings when nothing is selected; number labels scrub like Unity's) and
+// the bottom dock (Problems with the budget meters, History). Plain DOM through el(); every field
+// commits one undoable command.
 import { ALLOWED_LICENSES, BUDGETS, GATE_KINDS, GATE_SIZE, MATERIAL_NAMES, NEEDS_TEXT, TARGET_SHAPES, VISUALS, type ActorDoc, type GroundDoc, type NoiseLayer, type PrimDoc } from '../maps/mapDoc';
 import { el } from '../ui/dom';
 import { icon, type IconName } from '../ui/menu/icons';
-import type { Editor, Place } from './editor';
-import { KIND_NAMES, refKind, type Op, type Path } from './editorDoc';
+import { PLACE_MIME, type Editor, type Place } from './editor';
+import { KIND_NAMES, refKind, type Op, type Path, type RefKind } from './editorDoc';
+import { actorIcon, primLabel } from './outliner';
+import type { ThumbSpec } from './thumbs';
+import { showHelp } from './viewport';
 import { lapLength, courseGates, coursePath } from './racing';
 import { placePrefab, prefabById, prefabDefaults, PREFABS } from './prefabs';
 import { renderScenarioForm, newScenario } from './scenarioForm';
@@ -20,7 +25,8 @@ const fmt = (v: number, d = 2) => (Number.isInteger(v) ? String(v) : v.toFixed(d
 /** bare: icon only (the label is its accessible name and part of its tooltip) */
 const btn = (label: string, onclick: () => void, o: { icon?: IconName; title?: string; on?: boolean; cls?: string; disabled?: boolean; bare?: boolean } = {}) =>
   el('button', { type: 'button', class: `ed-btn${o.cls ? ' ' + o.cls : ''}${o.bare ? ' ed-ico' : ''}`, title: o.title ?? (o.bare ? label : undefined), 'aria-label': o.bare ? label : undefined, 'aria-pressed': o.on === undefined ? undefined : String(o.on), disabled: o.disabled, onclick }, o.icon ? icon(o.icon) : null, o.bare ? null : label);
-const sec = (title: string, ...kids: (Node | string | null | undefined)[]) => el('section', { class: 'ed-sec' }, el('h3', {}, title), ...kids);
+/** A panel section: folds by its title (the editor keeps which are folded, see Editor.renderBox). */
+const sec = (title: string, ...kids: (Node | string | null | undefined)[]) => el('details', { class: 'ed-sec', open: true, 'data-sec': title.replace(/\s*\(.*\)$/, '') }, el('summary', {}, icon('chevronDown', 'ed-fold'), title), ...kids);
 const row = (...kids: (Node | string | null | undefined)[]) => el('div', { class: 'ed-row' }, ...kids);
 const note = (t: string) => el('p', { class: 'ed-note' }, t);
 
@@ -35,6 +41,40 @@ function common(e: Editor, paths: Path[]): { v: unknown; mixed: boolean } {
 function labelled(label: string, input: HTMLElement, unit?: string) {
   return el('label', { class: 'ed-field' }, el('span', { class: 'lbl' }, label), input, unit ? el('span', { class: 'unit' }, unit) : null);
 }
+
+/**
+ * Drag a number's label sideways to change it, as in Unity and Unreal: a step per 4 px (Shift ×10,
+ * Alt ÷10), clamped, one undo step per drag. The details panel holds still meanwhile.
+ */
+function scrub(e: Editor, handle: HTMLElement, input: HTMLInputElement, o: NumOpts, start: () => number | undefined, set: (v: number, merge: string) => void) {
+  handle.classList.add('scrub');
+  handle.title = 'Drag sideways to change (Shift: faster, Alt: finer)';
+  handle.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    const v0 = start() ?? (Number(o.placeholder) || 0), x0 = ev.clientX, merge = `gesture:scrub:${performance.now()}`, step = typeof o.step === 'number' ? o.step : 0.1;
+    let moved = false;
+    handle.setPointerCapture(ev.pointerId);
+    e.scrubbing = true;
+    const move = (m: PointerEvent) => {
+      const dx = m.clientX - x0;
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      const st = step * (m.shiftKey ? 10 : m.altKey ? 0.1 : 1), dec = Math.max(0, Math.min(6, -Math.floor(Math.log10(st) + 1e-9)));
+      let v = Number((v0 + Math.round(dx / 4) * st).toFixed(dec));
+      if (o.min !== undefined) v = Math.max(o.min, v);
+      if (o.max !== undefined) v = Math.min(o.max, v);
+      input.value = fmt(v, 4);
+      set(v, merge);
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+      e.scrubbing = false;
+      e.renderBox('details', true);
+    };
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+  });
+}
 function numIn(value: number | undefined, mixed: boolean, o: NumOpts, commit: (v: number | undefined) => void): HTMLInputElement {
   const i = el('input', { type: 'number', step: o.step ?? 'any', min: o.min, max: o.max, value: value === undefined || mixed ? '' : fmt(value, 4), placeholder: mixed ? '—' : o.placeholder ?? (o.opt ? 'default' : ''), title: mixed ? 'Mixed values: a new value sets them all' : undefined }) as HTMLInputElement;
   i.addEventListener('change', () => {
@@ -48,21 +88,27 @@ function numIn(value: number | undefined, mixed: boolean, o: NumOpts, commit: (v
   return i;
 }
 export function num(e: Editor, label: string, paths: Path[], o: NumOpts = {}): HTMLElement {
-  const c = common(e, paths);
-  return labelled(label, numIn(c.v as number | undefined, c.mixed, o, (v) => e.setProps(paths, v, `Set ${label.toLowerCase()}`)), o.unit);
+  const c = common(e, paths), name = `Set ${label.toLowerCase()}`;
+  const input = numIn(c.v as number | undefined, c.mixed, o, (v) => e.setProps(paths, v, name)), f = labelled(label, input, o.unit);
+  scrub(e, f.querySelector('.lbl')!, input, o, () => e.ed.get(paths[0]) as number | undefined, (v, merge) => e.setProps(paths, v, name, merge));
+  return f;
 }
 /** n numbers in one array property ([x, y, z] …); optional: blank all to remove it. */
 export function vec(e: Editor, label: string, paths: Path[], n: number, o: NumOpts & { names?: string[]; def?: number[] } = {}): HTMLElement {
-  const vals = paths.map((p) => e.ed.get(p) as number[] | undefined), names = o.names ?? ['x', 'y', 'z', 'w'];
-  const box = el('span', { class: 'ed-vec' });
+  const vals = paths.map((p) => e.ed.get(p) as number[] | undefined), xyz = !o.names, names = o.names ?? ['x', 'y', 'z', 'w'];
+  const box = el('span', { class: `ed-vec${xyz ? ' xyz' : ''}` }), name = `Set ${label.toLowerCase()}`;
+  // every selected object's array with component k set to v (objects without one start from the default)
+  const opsFor = (k: number, v: number): Op[] => paths.map((p, i) => { const base = [...((e.ed.get(p) as number[] | undefined) ?? vals[i] ?? o.def ?? new Array(n).fill(0))]; base[k] = v; return { k: 'set', path: p, v: base }; });
   for (let k = 0; k < n; k++) {
     const mixed = vals.some((v) => v?.[k] !== vals[0]?.[k]);
-    const inp = numIn(vals[0]?.[k], mixed, { ...o, opt: false, placeholder: names[k] }, (v) => {
-      const ops: Op[] = paths.map((p, i) => { const base = [...(vals[i] ?? o.def ?? new Array(n).fill(0))]; base[k] = v; return { k: 'set', path: p, v: base }; });
-      e.ed.apply(`Set ${label.toLowerCase()}`, ops);
-    });
+    const inp = numIn(vals[0]?.[k], mixed, { ...o, opt: false, placeholder: names[k] }, (v) => { if (v !== undefined) e.ed.apply(name, opsFor(k, v)); });
     inp.setAttribute('aria-label', `${label} ${names[k]}`);
-    box.append(inp);
+    if (xyz) {
+      // the axis tag (X red, Y green, Z blue, as in Unity / Unreal) scrubs that component
+      const tag = el('i', { class: `ax ax-${names[k]}`, 'aria-hidden': 'true' }, names[k].toUpperCase());
+      scrub(e, tag, inp, o, () => ((e.ed.get(paths[0]) as number[] | undefined) ?? o.def)?.[k], (v, merge) => e.ed.apply(name, opsFor(k, v), merge));
+      box.append(el('span', { class: 'ed-axf' }, tag, inp));
+    } else box.append(inp);
   }
   return el('div', { class: 'ed-field' }, el('span', { class: 'lbl' }, label), box, o.unit ? el('span', { class: 'unit' }, o.unit) : null,
     o.opt && vals.some((v) => v !== undefined) ? el('button', { type: 'button', class: 'ed-x', title: `Remove ${label.toLowerCase()}`, 'aria-label': `Remove ${label.toLowerCase()}`, onclick: () => e.setProps(paths, undefined, `Remove ${label.toLowerCase()}`) }, '×') : null);
@@ -105,67 +151,123 @@ function texture(e: Editor, label: string, paths: Path[]): HTMLElement {
 const plainBtn = (label: string, onclick: () => void, title?: string) => btn(label, onclick, { title, cls: 'ed-small' });
 
 // ---------------------------------------------------------------------------------------------
-// Toolbar
+// Top bar
 
 export function renderToolbar(e: Editor): HTMLElement {
-  const m = e.mode, tool = e.tool.t;
-  const mode = (id: typeof m, label: string, ic: IconName, k: string) => btn(label, () => { if (tool !== 'select') e.setTool({ t: 'select' }); e.setMode(id); }, { icon: ic, on: tool === 'select' && m === id, title: `${label} (${k})` });
-  const snapSel = (label: string, cur: number, vals: number[], unit: string, set: (v: number) => void) => {
-    const s = el('select', { 'aria-label': label, title: label, onchange: () => set(Number(s.value)) }, ...vals.map((v) => el('option', { value: v, selected: v === cur }, v ? `${v} ${unit}` : 'off'))) as HTMLSelectElement;
-    return el('label', { class: 'ed-snap' }, el('span', {}, label), s);
-  };
-  const f = e.s.fly, doc = e.ed.doc;
-  const fly = el('details', { class: 'ed-pop' }, el('summary', { class: 'ed-btn primary' }, icon('play'), 'Fly'),
+  const f = e.s.fly, doc = e.ed.doc, P = e.prefs;
+  const fly = el('details', { class: 'ed-pop ed-play' },
+    el('summary', { class: 'ed-btn primary', title: 'Fly the map (Alt+P), with the real physics and Betaflight' }, icon('play'), 'Fly', icon('chevronDown', 'ed-caret')),
     el('div', { class: 'ed-pop-card' },
       labelled('Course', el('select', { onchange: (ev: Event) => { f.course = (ev.target as HTMLSelectElement).value; } }, el('option', { value: '' }, 'Main course'), ...(doc.courses ?? []).map((c) => el('option', { value: c.id, selected: c.id === f.course }, c.name)))),
       labelled('Spawn', el('select', { onchange: (ev: Event) => { f.spawn = (ev.target as HTMLSelectElement).value; } }, el('option', { value: '' }, 'Main spawn (or the course\'s)'), ...(doc.spawns ?? []).map((s) => el('option', { value: s.id, selected: s.id === f.spawn }, s.name ?? s.id)))),
       el('label', { class: 'ed-check' }, el('input', { type: 'checkbox', checked: f.race, onchange: (ev: Event) => { f.race = (ev.target as HTMLInputElement).checked; } }), el('span', {}, 'Race (lap timing)')),
-      note('Registers the draft as a local map and flies it with the real physics and Betaflight. Esc → Back to editor returns here.'),
+      note('Registers the draft as a local map and flies it. Esc → Back to editor returns here, looking at where the quad is.'),
       btn('Fly now', () => void e.fly(), { cls: 'primary', icon: 'play' })));
+  const dock = (d: 'left' | 'bottom' | 'right', ic: IconName, label: string) => btn(label, () => e.toggleDock(d), { icon: ic, bare: true, on: P[`${d}Open`], title: `${label} panel` });
   return el('div', { class: 'ed-bar-in' },
-    el('div', { class: 'ed-title' }, el('b', {}, doc.meta.name || 'Untitled map'), el('small', {}, e.saved)),
-    el('div', { class: 'ed-group', role: 'group', 'aria-label': 'Transform' },
-      mode('select', 'Select', 'target', '1'), mode('move', 'Move', 'layers', '2'), mode('rotate', 'Turn', 'rotate', '3'), mode('scale', 'Scale', 'sliders', '4')),
-    el('div', { class: 'ed-group' },
-      snapSel('Grid', e.snap.grid, [0, 0.1, 0.25, 0.5, 1, 2, 5], 'm', (v) => { e.snap.grid = v; e.setMode(e.mode); }),
-      snapSel('Angle', e.snap.angle, [0, 5, 15, 45, 90], '°', (v) => { e.snap.angle = v; e.setMode(e.mode); })),
-    el('div', { class: 'ed-group' },
-      btn('Duplicate', () => e.duplicate(), { icon: 'copy', title: 'Duplicate (Ctrl+D)', disabled: !e.sel.length, bare: true }),
-      btn('Align to ground', () => e.toGround(), { icon: 'download', title: 'Align to ground', disabled: !e.sel.length, bare: true }),
-      btn('Delete', () => e.del(), { icon: 'logout', title: 'Delete (Del)', disabled: !e.sel.length, bare: true })),
-    el('div', { class: 'ed-group' },
-      btn('Undo', () => e.undo(), { icon: 'back', title: e.ed.canUndo ? `Undo ${e.ed.undoLabel.toLowerCase()} (Ctrl+Z)` : 'Nothing to undo', disabled: !e.ed.canUndo, bare: true }),
-      btn('Redo', () => e.redo(), { icon: 'repeat', title: e.ed.canRedo ? `Redo ${e.ed.redoLabel.toLowerCase()} (Ctrl+Shift+Z)` : 'Nothing to redo', disabled: !e.ed.canRedo, bare: true })),
-    el('div', { class: 'ed-group' },
-      btn(e.cam.mode === 'orbit' ? 'Orbit' : 'Fly cam', () => { e.cam.mode = e.cam.mode === 'orbit' ? 'fly' : 'orbit'; e.renderBox('toolbar'); }, { icon: 'globe', title: 'Camera (T): orbit round the view centre, or fly (WASD, Q / E, drag to look)' })),
+    el('button', { type: 'button', class: 'ed-title', title: 'Map settings (nothing selected)', onclick: () => { e.pal.scenario = null; e.select([]); } },
+      el('span', { class: 'ed-mark' }, icon('map')), el('span', { class: 'ed-title-t' }, el('b', {}, doc.meta.name || 'Untitled map'), el('small', {}, e.saved))),
+    el('div', { class: 'ed-group', role: 'group', 'aria-label': 'History' },
+      btn('Undo', () => e.undo(), { icon: 'undo', title: e.ed.canUndo ? `Undo ${e.ed.undoLabel.toLowerCase()} (Ctrl+Z)` : 'Nothing to undo', disabled: !e.ed.canUndo, bare: true }),
+      btn('Redo', () => e.redo(), { icon: 'redo', title: e.ed.canRedo ? `Redo ${e.ed.redoLabel.toLowerCase()} (Ctrl+Y)` : 'Nothing to redo', disabled: !e.ed.canRedo, bare: true }),
+      btn('History', () => e.openBottom('history'), { icon: 'history', bare: true, title: 'Undo history' })),
+    el('span', { class: 'ed-spacer' }),
+    el('div', { class: 'ed-group ed-center' }, fly,
+      btn('Validate', () => void e.validate(), { icon: 'check', title: 'Check the whole package as the map validator does' })),
     el('span', { class: 'ed-spacer' }),
     el('div', { class: 'ed-group' },
-      btn('Validate', () => void e.validate(), { icon: 'check', title: 'Validate: check the whole package as the map validator does', bare: true }),
-      fly,
       btn('Export', () => void e.exportZip(), { icon: 'download', title: 'Export a .zip package (ATTRIBUTION.md and LICENSE.txt included)' }),
-      e.canPublish ? btn('Publish', () => void e.publish(), { icon: 'upload', title: 'Publish as a user map' }) : null,
-      btn('Exit', () => void e.exit(), { icon: 'home', title: 'Exit to the menu (the draft is saved)', bare: true })));
+      e.canPublish ? btn('Publish', () => void e.publish(), { icon: 'upload', title: 'Publish as a user map' }) : null),
+    el('div', { class: 'ed-group', role: 'group', 'aria-label': 'Panels' }, dock('left', 'panelLeft', 'Place'), dock('bottom', 'panelBottom', 'Problems and history'), dock('right', 'panelRight', 'Outliner and details')),
+    el('div', { class: 'ed-group' },
+      btn('Keyboard and mouse', () => showHelp(e.root), { icon: 'keyboard', bare: true, title: 'Keyboard and mouse (?)' }),
+      btn('Exit', () => void e.exit(), { icon: 'logout', title: 'Exit to the menu (the draft is saved)', bare: true })));
 }
 
 // ---------------------------------------------------------------------------------------------
 // Palette
 
 const TABS: { id: Editor['pal']['tab']; label: string; icon: IconName }[] = [
-  { id: 'race', label: 'Race', icon: 'flag' }, { id: 'freestyle', label: 'Freestyle', icon: 'drone' }, { id: 'environment', label: 'Environment', icon: 'wind' }, { id: 'simulation', label: 'Simulation', icon: 'activity' },
+  { id: 'race', label: 'Race', icon: 'flag' }, { id: 'freestyle', label: 'Freestyle', icon: 'drone' }, { id: 'environment', label: 'World', icon: 'sun' }, { id: 'simulation', label: 'Simulation', icon: 'activity' },
 ];
 const placing = (e: Editor, p: Partial<Place> & { kind: Place['kind'] }) => e.tool.t === 'place' && e.tool.p.kind === p.kind && Object.entries(p).every(([k, v]) => k === 'actor' ? (e.tool as { p: { actor?: ActorDoc } }).p.actor?.id === (v as ActorDoc).id : (e.tool as { p: Obj }).p[k] === v);
-const toolBtn = (e: Editor, label: string, p: Place, o: { icon?: IconName; title?: string } = {}) =>
-  btn(label, () => e.setTool(placing(e, p) ? { t: 'select' } : { t: 'place', p }), { ...o, on: placing(e, p), cls: 'ed-tool' });
+
+/** Something the Place panel places: its tile (a rendered thumbnail or an icon), where it lives, how it searches. */
+interface Placeable { id: string; label: string; group: string; tab: Editor['pal']['tab']; place: Place; icon: IconName; title: string; thumb?: () => ThumbSpec }
+let PLACEABLES: Placeable[] | null = null;
+function placeables(): Placeable[] {
+  if (PLACEABLES) return PLACEABLES;
+  const cap = (k: string) => k[0].toUpperCase() + k.slice(1);
+  const out: Placeable[] = [
+    ...GATE_KINDS.map((k): Placeable => ({ id: `gate:${k}`, label: cap(k), group: 'Gates', tab: 'race', place: { kind: 'gate', gate: k }, icon: 'focus', title: `${cap(k)} gate: click the ground (or a gate, to stack on top); it faces the way the camera looks`, thumb: () => ({ gates: [{ kind: k, pos: k === 'dive' ? [0, 0, 2] : [0, 0] }] }) })),
+    { id: 'spawnPad', label: 'Spawn pad', group: 'Start', tab: 'race', place: { kind: 'spawnPad' }, icon: 'flag', title: 'A start pad with a named spawn on it' },
+    { id: 'spawn', label: 'Spawn only', group: 'Start', tab: 'race', place: { kind: 'spawn' }, icon: 'flag', title: 'A named start, without a pad' },
+    { id: 'prim:box', label: 'Box', group: 'Primitives', tab: 'freestyle', place: { kind: 'prim', type: 'box' }, icon: 'box', title: 'A box (walls, floors, ramps with pitch)', thumb: () => ({ primitives: [{ type: 'box', pos: [0, 0, 0.5], size: [2, 2, 1], material: 'concrete', visual: 'concrete' }] }) },
+    { id: 'prim:cylinder', label: 'Cylinder', group: 'Primitives', tab: 'freestyle', place: { kind: 'prim', type: 'cylinder' }, icon: 'cylinder', title: 'A standing cylinder (poles, tanks)', thumb: () => ({ primitives: [{ type: 'cylinder', pos: [0, 0, 0], radius: 0.5, height: 2, material: 'metal' }] }) },
+    { id: 'prim:sphere', label: 'Sphere', group: 'Primitives', tab: 'freestyle', place: { kind: 'prim', type: 'sphere' }, icon: 'globe', title: 'A sphere', thumb: () => ({ primitives: [{ type: 'sphere', pos: [0, 0, 0.5], radius: 0.5, material: 'concrete' }] }) },
+    ...PREFABS.map((pf): Placeable => ({ id: `prefab:${pf.id}`, label: pf.name, group: pf.tab === 'race' ? 'Race furniture' : 'Prefabs', tab: pf.tab, place: { kind: 'prefab', id: pf.id }, icon: 'box', title: pf.blurb, thumb: () => ({ primitives: placePrefab(pf, prefabDefaults(pf), [0, 0, 0], 0, 'g').prims }) })),
+    { id: 'tree', label: 'Tree', group: 'Trees', tab: 'freestyle', place: { kind: 'tree' }, icon: 'treePine', title: 'A single tree (the tree brush paints many)' },
+    { id: 'light', label: 'Light', group: 'Volumes and lights', tab: 'environment', place: { kind: 'light' }, icon: 'lightbulb', title: 'A point light (fixture, floodlight)' },
+    { id: 'indoor', label: 'Indoor zone', group: 'Volumes and lights', tab: 'environment', place: { kind: 'indoor' }, icon: 'home', title: 'A box where the wind is scaled down (halls, tunnels)' },
+    { id: 'wake', label: 'Wake zone', group: 'Volumes and lights', tab: 'environment', place: { kind: 'wake' }, icon: 'wind', title: 'Turbulent air behind buildings and trees' },
+    ...ACTOR_PRESETS.map((a): Placeable => ({ id: `actor:${a.actor.id}`, label: a.label, group: 'Actors', tab: 'simulation', place: { kind: 'actor', actor: a.actor }, icon: actorIcon(a.actor), title: a.title })),
+  ];
+  return (PLACEABLES = out);
+}
+const placeableBy = (id: string) => placeables().find((p) => p.id === id)!;
+
+/** A Place panel tile: click to place (again: stop), or drag it onto the view. */
+function tile(e: Editor, pl: Placeable, label = pl.label): HTMLElement {
+  const on = placing(e, pl.place), src = pl.thumb ? e.thumbs.get(pl.id, pl.thumb) : null;
+  const b = el('button', {
+    type: 'button', class: `ed-tile${on ? ' on' : ''}`, 'aria-pressed': String(on), title: `${pl.title}. Click, then click in the view; or drag it onto the view.`, draggable: 'true',
+    onclick: () => e.setTool(on ? { t: 'select' } : { t: 'place', p: pl.place }),
+  }, el('span', { class: 'ed-tile-img' }, src ? el('img', { src, alt: '', draggable: 'false' }) : icon(pl.icon)), el('span', { class: 'ed-tile-label' }, label));
+  b.addEventListener('dragstart', (ev) => { ev.dataTransfer?.setData(PLACE_MIME, JSON.stringify(pl.place)); if (ev.dataTransfer) ev.dataTransfer.effectAllowed = 'copy'; });
+  return b;
+}
+const tiles = (...kids: (HTMLElement | null)[]) => el('div', { class: 'ed-tiles' }, ...kids);
 
 export function renderPalette(e: Editor): HTMLElement {
+  const body = el('div', { class: 'ed-place-body' });
+  const fill = () => body.replaceChildren(...placeBody(e));
+  const search = el('input', {
+    type: 'search', class: 'ed-search', placeholder: 'Search gates, prefabs, actors…', value: e.pal.query ?? '', spellcheck: false, 'aria-label': 'Search what to place',
+    oninput: (ev: Event) => { e.pal.query = (ev.target as HTMLInputElement).value; fill(); },
+    onkeydown: (ev: KeyboardEvent) => { if (ev.key === 'Escape' && e.pal.query) { ev.stopPropagation(); (ev.target as HTMLInputElement).value = ''; e.pal.query = ''; fill(); } },
+  });
+  fill();
+  return el('div', { class: 'ed-place' }, el('div', { class: 'ed-panel-head-wrap' }, el('div', { class: 'ed-panel-head' }, icon('plus'), el('h2', {}, 'Place')), search), body);
+}
+
+function placeBody(e: Editor): HTMLElement[] {
+  const q = (e.pal.query ?? '').trim().toLowerCase();
+  if (q) {
+    const hits = placeables().filter((p) => `${p.label} ${p.group} ${p.title}`.toLowerCase().includes(q)), groups = [...new Set(hits.map((h) => h.group))];
+    return [
+      ...(hits.length ? groups.map((g) => sec(g, tiles(...hits.filter((h) => h.group === g).map((h) => tile(e, h))))) : [note('Nothing matches. Try "gate", "ramp", "light" or "radar".')]),
+      toolSettings(e),
+    ].filter((x): x is HTMLElement => !!x);
+  }
   const tab = e.pal.tab;
-  const bar = el('div', { class: 'ed-tabs', role: 'tablist', 'aria-label': 'Palette' }, ...TABS.map((t) => el('button', {
+  const bar = el('div', { class: 'ed-tabs', role: 'tablist', 'aria-label': 'Place' }, ...TABS.map((t) => el('button', {
     type: 'button', role: 'tab', class: 'ed-tab', 'aria-selected': String(t.id === tab),
     onclick: () => { e.pal.tab = t.id; e.renderBox('palette', true); },
     onkeydown: (ev: KeyboardEvent) => { if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') { const i = TABS.findIndex((x) => x.id === tab); e.pal.tab = TABS[(i + (ev.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length].id; e.renderBox('palette', true); (document.querySelector('.ed-tab[aria-selected="true"]') as HTMLElement | null)?.focus(); } },
   }, icon(t.icon), t.label)));
-  const body = tab === 'race' ? racePalette(e) : tab === 'freestyle' ? freestylePalette(e) : tab === 'environment' ? environmentPalette(e) : simulationPalette(e);
-  return el('div', {}, bar, el('div', { class: 'ed-tabbody', role: 'tabpanel' }, ...body));
+  const content = tab === 'race' ? racePalette(e) : tab === 'freestyle' ? freestylePalette(e) : tab === 'environment' ? environmentPalette(e) : simulationPalette(e);
+  return [bar, el('div', { class: 'ed-tabbody', role: 'tabpanel' }, ...content)];
+}
+
+/** Settings of the place tool in use (gate size, primitive size and look, prefab parameters, the tree brush). */
+function toolSettings(e: Editor): HTMLElement | null {
+  const t = e.tool;
+  if (t.t === 'trees' || (t.t === 'place' && t.p.kind === 'tree')) return sec('Tree settings', treeSettings(e));
+  if (t.t !== 'place') return null;
+  if (t.p.kind === 'gate') return sec('Gate settings', gateSettings(e, t.p.gate));
+  if (t.p.kind === 'prim') return sec('Primitive settings', primSettings(e, t.p.type));
+  if (t.p.kind === 'prefab') return sec(`${prefabById(t.p.id)?.name ?? 'Prefab'} settings`, prefabParams(e, t.p.id));
+  return null;
 }
 
 /** Number input bound to a plain object (palette settings, not the document). */
@@ -178,22 +280,24 @@ function prefabParams(e: Editor, id: string): HTMLElement {
   return el('div', { class: 'ed-sub' }, note(pf.blurb), ...pf.params.map((p) => palNum(p.label, cur, p.key, { min: p.min, max: p.max, step: p.step, unit: p.unit, placeholder: String(p.def) })));
 }
 function prefabButtons(e: Editor, tab: 'race' | 'freestyle'): HTMLElement[] {
-  const out: HTMLElement[] = [el('div', { class: 'ed-grid' }, ...PREFABS.filter((p) => p.tab === tab).map((p) => toolBtn(e, p.name, { kind: 'prefab', id: p.id }, { title: p.blurb })))];
+  const out: HTMLElement[] = [tiles(...PREFABS.filter((p) => p.tab === tab).map((p) => tile(e, placeableBy(`prefab:${p.id}`))))];
   if (e.tool.t === 'place' && e.tool.p.kind === 'prefab' && prefabById(e.tool.p.id)?.tab === tab) out.push(prefabParams(e, e.tool.p.id));
   return out;
 }
 
+function gateSettings(e: Editor, cur: (typeof GATE_KINDS)[number]): HTMLElement {
+  const G = e.pal.gate, d = GATE_SIZE[cur];
+  return el('div', { class: 'ed-sub' },
+    palNum('Width', G, 'width', { min: 0.3, max: 20, step: 0.1, unit: 'm', opt: true, placeholder: fmt(d[0]) }),
+    palNum('Height', G, 'height', { min: 0.3, max: 20, step: 0.1, unit: 'm', opt: true, placeholder: fmt(d[1]) }),
+    cur === 'ladder' ? palNum('Openings', G, 'stack', { min: 1, max: 6, step: 1, opt: true, placeholder: '3' }) : null,
+    note('New gates go to the end of the course\'s lap order. Click on a gate to stack the new one on top of it.'));
+}
+
 function racePalette(e: Editor): HTMLElement[] {
-  const doc = e.ed.doc, c = e.s.course, G = e.pal.gate;
+  const doc = e.ed.doc, c = e.s.course;
   const cur = e.tool.t === 'place' && e.tool.p.kind === 'gate' ? e.tool.p.gate : null;
-  const def = cur ? GATE_SIZE[cur] : null;
-  const gates = sec('Gates',
-    el('div', { class: 'ed-grid' }, ...GATE_KINDS.map((k) => toolBtn(e, k[0].toUpperCase() + k.slice(1), { kind: 'gate', gate: k }, { title: `Place ${k} gates: click the ground (or a gate, to stack on top). They face the way the camera looks.` }))),
-    cur ? el('div', { class: 'ed-sub' },
-      palNum('Width', G, 'width', { min: 0.3, max: 20, step: 0.1, unit: 'm', opt: true, placeholder: fmt(def![0]) }),
-      palNum('Height', G, 'height', { min: 0.3, max: 20, step: 0.1, unit: 'm', opt: true, placeholder: fmt(def![1]) }),
-      cur === 'ladder' ? palNum('Openings', G, 'stack', { min: 1, max: 6, step: 1, opt: true, placeholder: '3' }) : null,
-      note('New gates go to the end of the course\'s lap order. Click on a gate to stack the new one on top of it.')) : null);
+  const gates = sec('Gates', tiles(...GATE_KINDS.map((k) => tile(e, placeableBy(`gate:${k}`)))), cur ? gateSettings(e, cur) : null);
 
   // ---- courses and lap order ----
   const courses = doc.courses ?? [];
@@ -237,35 +341,43 @@ function racePalette(e: Editor): HTMLElement[] {
       plainBtn('Delete course', () => { e.setCourse(-1); e.ed.apply('Delete course', [{ k: 'del', path: ['courses'], i: c }]); })) : null,
     list.length ? order : note('No gates yet: pick a gate kind above and click the ground.'),
     list.length ? note('Drag to change the lap order (or use ↑ ↓).') : null,
-    el('label', { class: 'ed-check' }, el('input', { type: 'checkbox', checked: e.pal.line, onchange: (ev: Event) => { e.pal.line = (ev.target as HTMLInputElement).checked; e.refreshOverlay(); e.renderBox('palette'); } }), el('span', {}, 'Show the racing line')),
-    list.length > 1 ? el('p', { class: 'ed-stat' }, `Lap ${fmt(L, 1)} m (gate to gate)`, e.pal.line && e.racingLineLength ? ` · racing line ${fmt(e.racingLineLength, 1)} m from the pad` : '') : null);
+    el('label', { class: 'ed-check' }, el('input', { type: 'checkbox', checked: e.prefs.show.racingLine, onchange: (ev: Event) => { e.prefs.show.racingLine = (ev.target as HTMLInputElement).checked; e.prefsChanged(true); } }), el('span', {}, 'Show the racing line')),
+    list.length > 1 ? el('p', { class: 'ed-stat' }, `Lap ${fmt(L, 1)} m (gate to gate)`, e.prefs.show.racingLine && e.racingLineLength ? ` · racing line ${fmt(e.racingLineLength, 1)} m from the pad` : '') : null);
   return [gates, course,
-    sec('Start', el('div', { class: 'ed-grid' }, toolBtn(e, 'Spawn pad', { kind: 'spawnPad' }, { title: 'A start pad with a named spawn on it' }), toolBtn(e, 'Spawn only', { kind: 'spawn' }))),
+    sec('Start', tiles(tile(e, placeableBy('spawnPad')), tile(e, placeableBy('spawn')))),
     sec('Race furniture', ...prefabButtons(e, 'race'))];
 }
 
-function freestylePalette(e: Editor): HTMLElement[] {
-  const P = e.pal.prim, doc = e.ed.doc, cur = e.tool.t === 'place' && e.tool.p.kind === 'prim' ? e.tool.p.type : null;
+function primSettings(e: Editor, cur: PrimDoc['type']): HTMLElement {
+  const P = e.pal.prim;
   const vs = (label: string, k: 'material' | 'visual', vals: readonly string[]) => labelled(label, el('select', { onchange: (ev: Event) => { (P as Obj)[k] = (ev.target as HTMLSelectElement).value; } }, ...vals.map((v) => el('option', { value: v, selected: P[k] === v }, v))));
-  const prims = sec('Primitives',
-    el('div', { class: 'ed-grid' }, toolBtn(e, 'Box', { kind: 'prim', type: 'box' }), toolBtn(e, 'Cylinder', { kind: 'prim', type: 'cylinder' }), toolBtn(e, 'Sphere', { kind: 'prim', type: 'sphere' })),
-    cur ? el('div', { class: 'ed-sub' },
-      cur === 'box' ? labelled('Size', el('span', { class: 'ed-vec' }, ...[0, 1, 2].map((k) => numIn(P.size[k], false, { min: 0.01, step: 0.1, placeholder: 'xyz'[k] }, (v) => { if (v) P.size[k] = v; }))), 'm')
-        : palNum('Radius', P, 'radius', { min: 0.01, step: 0.05, unit: 'm' }),
-      cur === 'cylinder' ? palNum('Height', P, 'height', { min: 0.01, step: 0.1, unit: 'm' }) : null,
-      vs('Material', 'material', MATERIAL_NAMES), cur === 'box' ? vs('Look', 'visual', VISUALS) : null,
-      labelled('Colour', el('input', { type: 'color', value: P.color ?? '#888888', oninput: (ev: Event) => { P.color = (ev.target as HTMLInputElement).value; } })),
-      cur === 'box' ? labelled('Texture', el('select', { onchange: (ev: Event) => { P.texture = (ev.target as HTMLSelectElement).value || undefined; } }, el('option', { value: '' }, 'none'), ...[...e.ed.assets.keys()].filter((p) => /^textures\//.test(p)).map((p) => el('option', { value: p, selected: P.texture === p }, p)))) : null,
-      note('Material sets the collision sound and friction; look and colour how it is drawn. Place on the ground or on top of another object.')) : null);
-  // ---- trees ----
+  return el('div', { class: 'ed-sub' },
+    cur === 'box' ? labelled('Size', el('span', { class: 'ed-vec' }, ...[0, 1, 2].map((k) => numIn(P.size[k], false, { min: 0.01, step: 0.1, placeholder: 'xyz'[k] }, (v) => { if (v) P.size[k] = v; }))), 'm')
+      : palNum('Radius', P, 'radius', { min: 0.01, step: 0.05, unit: 'm' }),
+    cur === 'cylinder' ? palNum('Height', P, 'height', { min: 0.01, step: 0.1, unit: 'm' }) : null,
+    vs('Material', 'material', MATERIAL_NAMES), cur === 'box' ? vs('Look', 'visual', VISUALS) : null,
+    labelled('Colour', el('input', { type: 'color', value: P.color ?? '#888888', oninput: (ev: Event) => { P.color = (ev.target as HTMLInputElement).value; } })),
+    cur === 'box' ? labelled('Texture', el('select', { onchange: (ev: Event) => { P.texture = (ev.target as HTMLSelectElement).value || undefined; } }, el('option', { value: '' }, 'none'), ...[...e.ed.assets.keys()].filter((p) => /^textures\//.test(p)).map((p) => el('option', { value: p, selected: P.texture === p }, p)))) : null,
+    note('Material sets the collision sound and friction; look and colour how it is drawn. Place on the ground or on top of another object.'));
+}
+
+function treeSettings(e: Editor): HTMLElement {
   const T = e.pal.trees;
+  return el('div', { class: 'ed-sub' },
+    palNum('Density', T, 'density', { min: 0.1, max: 30, step: 0.1, unit: '/100 m²' }), palNum('Brush radius', T, 'radius', { min: 1, max: 60, step: 0.5, unit: 'm' }),
+    labelled('Type', el('select', { onchange: (ev: Event) => { T.type = (ev.target as HTMLSelectElement).value as typeof T.type; } }, ...['mixed', 'pine', 'oak'].map((v) => el('option', { value: v, selected: T.type === v }, v)))),
+    palNum('Height from', T, 'hMin', { min: 1, max: 60, step: 0.5, unit: 'm' }), palNum('to', T, 'hMax', { min: 1, max: 60, step: 0.5, unit: 'm' }),
+    el('label', { class: 'ed-check' }, el('input', { type: 'checkbox', checked: T.erase, onchange: (ev: Event) => { T.erase = (ev.target as HTMLInputElement).checked; } }), el('span', {}, 'Erase instead')));
+}
+
+function freestylePalette(e: Editor): HTMLElement[] {
+  const doc = e.ed.doc, cur = e.tool.t === 'place' && e.tool.p.kind === 'prim' ? e.tool.p.type : null;
+  const prims = sec('Primitives', tiles(...['box', 'cylinder', 'sphere'].map((t) => tile(e, placeableBy(`prim:${t}`)))), cur ? primSettings(e, cur) : null);
+  // ---- trees ----
+  const brushOn = e.tool.t === 'trees';
   const trees = sec(`Trees (${doc.trees?.length ?? 0} / ${BUDGETS.trees})`,
-    el('div', { class: 'ed-grid' }, btn('Tree brush', () => e.setTool(e.tool.t === 'trees' ? { t: 'select' } : { t: 'trees' }), { on: e.tool.t === 'trees', cls: 'ed-tool' }), toolBtn(e, 'Single tree', { kind: 'tree' })),
-    e.tool.t === 'trees' || (e.tool.t === 'place' && e.tool.p.kind === 'tree') ? el('div', { class: 'ed-sub' },
-      palNum('Density', T, 'density', { min: 0.1, max: 30, step: 0.1, unit: '/100 m²' }), palNum('Brush radius', T, 'radius', { min: 1, max: 60, step: 0.5, unit: 'm' }),
-      labelled('Type', el('select', { onchange: (ev: Event) => { T.type = (ev.target as HTMLSelectElement).value as typeof T.type; } }, ...['mixed', 'pine', 'oak'].map((v) => el('option', { value: v, selected: T.type === v }, v)))),
-      palNum('Height from', T, 'hMin', { min: 1, max: 60, step: 0.5, unit: 'm' }), palNum('to', T, 'hMax', { min: 1, max: 60, step: 0.5, unit: 'm' }),
-      el('label', { class: 'ed-check' }, el('input', { type: 'checkbox', checked: T.erase, onchange: (ev: Event) => { T.erase = (ev.target as HTMLInputElement).checked; } }), el('span', {}, 'Erase instead'))) : null);
+    tiles(el('button', { type: 'button', class: `ed-tile${brushOn ? ' on' : ''}`, 'aria-pressed': String(brushOn), title: 'Paint trees: drag on the ground (Erase instead: removes them)', onclick: () => e.setTool(brushOn ? { t: 'select' } : { t: 'trees' }) }, el('span', { class: 'ed-tile-img' }, icon('treePine')), el('span', { class: 'ed-tile-label' }, 'Tree brush')), tile(e, placeableBy('tree'), 'Single tree')),
+    brushOn || (e.tool.t === 'place' && e.tool.p.kind === 'tree') ? treeSettings(e) : null);
   // ---- glTF ----
   let coll: 'box' | 'mesh' | 'none' = 'box';
   const f = el('input', { type: 'file', accept: '.glb,model/gltf-binary', class: 'ed-file', 'aria-label': 'Import a .glb mesh' }) as HTMLInputElement;
@@ -311,10 +423,7 @@ function environmentPalette(e: Editor): HTMLElement[] {
       note('Applied when the map loads, unless the pilot or a scenario sets another.')) : null,
     num(e, 'Wind scale', [['environment', 'windScale']], { min: 0, max: 2, step: 0.05, opt: true, placeholder: '1' }));
   const volumes = sec('Volumes and lights',
-    el('div', { class: 'ed-grid' },
-      toolBtn(e, `Indoor zone (${doc.indoor?.length ?? 0})`, { kind: 'indoor' }, { title: 'A box where the wind is scaled down (halls, tunnels)' }),
-      toolBtn(e, `Wake zone (${doc.wakeZones?.length ?? 0})`, { kind: 'wake' }, { title: 'Turbulent air behind buildings and trees' }),
-      toolBtn(e, `Light (${doc.lights?.length ?? 0} / ${BUDGETS.lights})`, { kind: 'light' }, { title: 'A point light (fixture, floodlight)' })));
+    tiles(tile(e, placeableBy('indoor'), `Indoor zone (${doc.indoor?.length ?? 0})`), tile(e, placeableBy('wake'), `Wake zone (${doc.wakeZones?.length ?? 0})`), tile(e, placeableBy('light'), `Light (${doc.lights?.length ?? 0} / ${BUDGETS.lights})`)));
   const spawn = sec('Spawn and pilot',
     row(plainBtn('Select the main spawn', () => { e.select([['spawn']]); e.frameSelection(); }),
       doc.pilot ? plainBtn('Select the pilot', () => { e.select([['pilot']]); e.frameSelection(); }) : plainBtn('Add a pilot position', () => { const s = doc.spawn?.pos ?? [0, 0, 0]; e.setProps([['pilot']], [s[0] - 2, s[1] - 2, Math.round((e.terrainAt(s[0] - 2, s[1] - 2) + 1.6) * 100) / 100], 'Add pilot'); e.select([['pilot']]); })),
@@ -386,14 +495,14 @@ function simulationPalette(e: Editor): HTMLElement[] {
     ? el('ul', { class: 'ed-list' }, ...items.map((x, i) => el('li', { class: e.sel.some((r) => key(r).startsWith(key(path(i)).slice(0, -1))) ? 'on' : '' }, el('button', { type: 'button', class: 'ed-li-main', onclick: () => { e.select([path(i)]); e.frameSelection(); } }, labelOf(x, i)))))
     : note(empty);
   const spawns = sec(`Spawns (${doc.spawns?.length ?? 0} / ${BUDGETS.spawns})`,
-    el('div', { class: 'ed-grid' }, toolBtn(e, 'Spawn pad', { kind: 'spawnPad' }), toolBtn(e, 'Spawn only', { kind: 'spawn' })),
+    tiles(tile(e, placeableBy('spawnPad')), tile(e, placeableBy('spawn'))),
     listOf(doc.spawns, (i) => ['spawns', i], (s) => `${s.name ?? s.id} · ${s.id}`, 'Named start variants (pick one in New game, Fly, or a scenario\'s start.spawn).'));
   const pathTool = e.tool.t === 'path';
   const paths = sec(`Paths (${doc.paths?.length ?? 0} / ${BUDGETS.paths})`,
     btn(pathTool ? 'Finish path' : 'Draw a path', () => e.setTool(pathTool ? { t: 'select' } : { t: 'path', index: null }), { on: pathTool, cls: 'ed-tool', title: 'Click points on the ground; Enter or Esc to finish' }),
     listOf(doc.paths, (i) => ['paths', i, 'points', 0], (p) => `${p.id} · ${p.points.length} points · ${p.speedMs} m/s ${p.mode ?? 'loop'}`, 'Polylines that actors move along (sim time).'));
   const actors = sec(`Actors (${doc.actors?.length ?? 0} / ${BUDGETS.actors})`,
-    el('div', { class: 'ed-grid' }, ...ACTOR_PRESETS.map((a) => toolBtn(e, a.label, { kind: 'actor', actor: a.actor }, { title: a.title }))),
+    tiles(...ACTOR_PRESETS.map((a) => tile(e, placeableBy(`actor:${a.actor.id}`)))),
     listOf(doc.actors, (i) => ['actors', i], (a) => `${a.name ?? a.id} · ${a.type}${a.path ? ` on ${a.path}` : ''}`, 'RF emitters, ground stations, detectors and targets for research scenarios.'));
   const scs = doc.scenarios ?? [];
   const scen = sec(`Scenarios (${scs.length} / ${BUDGETS.scenarios})`,
@@ -403,36 +512,77 @@ function simulationPalette(e: Editor): HTMLElement[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Inspector
+// Details
 
-export function renderInspector(e: Editor): HTMLElement {
+/** The icon of an object kind (the outliner uses the same ones). */
+function kindIcon(k: RefKind, o: Obj | undefined): IconName {
+  switch (k) {
+    case 'prim': return o ? primLabel(o as PrimDoc).icon : 'box';
+    case 'gate': return 'focus';
+    case 'tree': return 'treePine';
+    case 'spawn': case 'mainSpawn': return 'flag';
+    case 'pilot': return 'personStanding';
+    case 'light': return 'lightbulb';
+    case 'indoor': return 'home';
+    case 'wake': return 'wind';
+    case 'actor': return o ? actorIcon(o as ActorDoc) : 'radar';
+    case 'pathPoint': return 'route';
+    case 'mesh': return 'layers';
+  }
+}
+
+/** A selected object's name in the details head. */
+function objTitle(e: Editor, r: Path): string {
+  const k = refKind(r)!, o = e.ed.get(r) as Obj;
+  if (k === 'prim') return primLabel(o as PrimDoc).label;
+  if (k === 'gate') return `Gate ${(r[r.length - 1] as number) + 1}`;
+  if (k === 'spawn' || k === 'actor') return o.name ?? o.id;
+  if (k === 'pathPoint') return `${e.ed.doc.paths![r[1] as number].id} · point ${(r[3] as number) + 1}`;
+  if (k === 'light') return `Light ${(r[1] as number) + 1}`;
+  return KIND_NAMES[k];
+}
+
+/** Fields that place and turn an object: they go to the Transform section, the rest to Properties. */
+const TRANSFORM = new Set(['Position', 'Yaw', 'Pitch', 'Heading', 'Point', 'Min corner', 'Max corner', 'Floor height', 'Scale']);
+const ibtn = (label: string, ic: IconName, f: () => void) => btn(label, f, { icon: ic, bare: true });
+
+export function renderDetails(e: Editor): HTMLElement {
   const refs = e.sel;
   if (!refs.length) return e.pal.scenario && e.ed.doc.scenarios?.includes(e.pal.scenario) ? renderScenarioForm(e, e.pal.scenario) : metaPanel(e);
-  const kinds = new Set(refs.map(refKind));
-  const head = el('div', { class: 'ed-insp-head' }, el('h2', {}, refs.length === 1 ? KIND_NAMES[refKind(refs[0])!] ?? 'Object' : `${refs.length} objects`),
-    el('div', { class: 'ed-row' }, plainBtn('Frame (F)', () => e.frameSelection()), plainBtn('Deselect (Esc)', () => e.select([]))));
+  const kinds = new Set(refs.map(refKind)), k0 = refKind(refs[0])!, o0 = e.ed.get(refs[0]) as Obj | undefined;
+  const sub = refs.length === 1 ? KIND_NAMES[k0] : kinds.size === 1 ? `${refs.length} × ${KIND_NAMES[k0].toLowerCase()}` : 'Several kinds';
+  const head = el('div', { class: 'ed-det-head' },
+    el('span', { class: 'ed-det-ico' }, icon(kinds.size === 1 ? kindIcon(k0, o0) : 'layers')),
+    el('div', { class: 'ed-det-t' }, el('h2', {}, refs.length === 1 ? objTitle(e, refs[0]) : `${refs.length} objects`), el('small', {}, sub)),
+    el('div', { class: 'ed-det-acts' }, ibtn('Frame (F)', 'focus', () => e.frameSelection()), ibtn('Hide (H)', 'eyeOff', () => e.hideSelection()), ibtn('Duplicate (Ctrl+D)', 'copy', () => e.duplicate()), ibtn('Delete (Del)', 'trash', () => e.del())));
   const kids: (HTMLElement | null)[] = [head];
   const group = prefabGroup(e);
   if (group) kids.push(group);
+  const fields: (HTMLElement | null)[] = [];
   if (kinds.size === 1) {
     const k = [...kinds][0]!, P = (f: string | (string | number)[]) => refs.map((r) => [...r, ...(Array.isArray(f) ? f : [f])]);
     const objs = refs.map((r) => e.ed.get(r) as Obj);
     switch (k) {
-      case 'prim': kids.push(...primFields(e, refs, objs, P)); break;
-      case 'gate': kids.push(...gateFields(e, refs, objs, P)); break;
-      case 'tree': kids.push(vec(e, 'Position', P('pos'), 2, { step: 0.1, unit: 'm' }), num(e, 'Height', P('height'), { min: 0.5, max: 60, step: 0.5, unit: 'm' }), num(e, 'Crown radius', P('radius'), { min: 0.1, max: 20, step: 0.1, unit: 'm' }), sel(e, 'Type', P('type'), ['pine', 'oak'])); break;
-      case 'spawn': case 'mainSpawn': kids.push(...spawnFields(e, refs, objs, P, k === 'mainSpawn')); break;
-      case 'pilot': kids.push(vec(e, 'Position', refs, 3, { step: 0.1, unit: 'm' }), note('Eye height: about 1.6 m above the ground.')); break;
-      case 'light': kids.push(vec(e, 'Position', P('pos'), 3, { step: 0.1, unit: 'm' }), color(e, 'Colour', P('color'), { opt: true, def: '#ffffff' }), num(e, 'Intensity', P('intensity'), { min: 0.01, max: 10000, step: 10 }), num(e, 'Range', P('range'), { min: 0.1, max: 1000, step: 1, unit: 'm' }), note(`Illuminance ~ intensity / distance² (the sun is ~4.5). ${e.ed.doc.lights?.length ?? 0} of ${BUDGETS.lights} lights.`)); break;
-      case 'indoor': kids.push(vec(e, 'Min corner', P('min'), 3, { step: 0.1, unit: 'm' }), vec(e, 'Max corner', P('max'), 3, { step: 0.1, unit: 'm' }), num(e, 'Wind scale', P('windScale'), { min: 0, max: 1, step: 0.01, opt: true, placeholder: '0.1' }), note('Wind inside this box is multiplied by the wind scale.')); break;
-      case 'wake': kids.push(vec(e, 'Position', P('pos'), 2, { step: 0.1, unit: 'm' }), num(e, 'Radius', P('radius'), { min: 0.1, step: 0.5, unit: 'm' }), num(e, 'Height', P('height'), { min: 0.1, step: 0.5, unit: 'm' }), num(e, 'Intensity', P('intensity'), { min: 0, max: 5, step: 0.1 })); break;
-      case 'actor': kids.push(...actorFields(e, refs, objs, P)); break;
-      case 'pathPoint': kids.push(...pathFields(e, refs)); break;
-      case 'mesh': kids.push(el('p', { class: 'ed-stat' }, objs.map((o) => o.src).join(', ')), vec(e, 'Position', P('pos'), 3, { step: 0.1, unit: 'm', def: [0, 0, 0] }), num(e, 'Yaw', P('yawDeg'), { step: 1, unit: '°', opt: true }), num(e, 'Scale', P('scale'), { min: 0.001, max: 1000, step: 0.1, opt: true, placeholder: '1' }), sel(e, 'Collision', P('collision'), ['mesh', 'box', 'none'], { opt: 'mesh (default)' }), sel(e, 'Material', P('material'), MATERIAL_NAMES, { opt: 'concrete (default)' })); break;
+      case 'prim': fields.push(...primFields(e, refs, objs, P)); break;
+      case 'gate': fields.push(...gateFields(e, refs, objs, P)); break;
+      case 'tree': fields.push(vec(e, 'Position', P('pos'), 2, { step: 0.1, unit: 'm' }), num(e, 'Height', P('height'), { min: 0.5, max: 60, step: 0.5, unit: 'm' }), num(e, 'Crown radius', P('radius'), { min: 0.1, max: 20, step: 0.1, unit: 'm' }), sel(e, 'Type', P('type'), ['pine', 'oak'])); break;
+      case 'spawn': case 'mainSpawn': fields.push(...spawnFields(e, refs, objs, P, k === 'mainSpawn')); break;
+      case 'pilot': fields.push(vec(e, 'Position', refs, 3, { step: 0.1, unit: 'm' }), note('Eye height: about 1.6 m above the ground.')); break;
+      case 'light': fields.push(vec(e, 'Position', P('pos'), 3, { step: 0.1, unit: 'm' }), color(e, 'Colour', P('color'), { opt: true, def: '#ffffff' }), num(e, 'Intensity', P('intensity'), { min: 0.01, max: 10000, step: 10 }), num(e, 'Range', P('range'), { min: 0.1, max: 1000, step: 1, unit: 'm' }), note(`Illuminance ~ intensity / distance² (the sun is ~4.5). ${e.ed.doc.lights?.length ?? 0} of ${BUDGETS.lights} lights.`)); break;
+      case 'indoor': fields.push(vec(e, 'Min corner', P('min'), 3, { step: 0.1, unit: 'm' }), vec(e, 'Max corner', P('max'), 3, { step: 0.1, unit: 'm' }), num(e, 'Wind scale', P('windScale'), { min: 0, max: 1, step: 0.01, opt: true, placeholder: '0.1' }), note('Wind inside this box is multiplied by the wind scale.')); break;
+      case 'wake': fields.push(vec(e, 'Position', P('pos'), 2, { step: 0.1, unit: 'm' }), num(e, 'Radius', P('radius'), { min: 0.1, step: 0.5, unit: 'm' }), num(e, 'Height', P('height'), { min: 0.1, step: 0.5, unit: 'm' }), num(e, 'Intensity', P('intensity'), { min: 0, max: 5, step: 0.1 })); break;
+      case 'actor': fields.push(...actorFields(e, refs, objs, P)); break;
+      case 'pathPoint': fields.push(...pathFields(e, refs)); break;
+      case 'mesh': fields.push(el('p', { class: 'ed-stat' }, objs.map((o) => o.src).join(', ')), vec(e, 'Position', P('pos'), 3, { step: 0.1, unit: 'm', def: [0, 0, 0] }), num(e, 'Yaw', P('yawDeg'), { step: 1, unit: '°', opt: true }), num(e, 'Scale', P('scale'), { min: 0.001, max: 1000, step: 0.1, opt: true, placeholder: '1' }), sel(e, 'Collision', P('collision'), ['mesh', 'box', 'none'], { opt: 'mesh (default)' }), sel(e, 'Material', P('material'), MATERIAL_NAMES, { opt: 'concrete (default)' })); break;
     }
-  } else kids.push(note('Several kinds of object: move, turn, copy or delete them together.'));
+  } else fields.push(note('Several kinds of object: move, turn, copy or delete them together.'));
+  // Unreal-style: where it is first, then what it is
+  const isT = (f: HTMLElement | null) => !!f && TRANSFORM.has(f.querySelector(':scope > .lbl')?.textContent ?? '');
+  const tf = fields.filter(isT), props = fields.filter((f) => f && !isT(f));
+  if (tf.length) kids.push(sec('Transform', ...tf));
+  if (props.length) kids.push(sec('Properties', ...props));
   kids.push(arrayTool(e));
-  return el('div', {}, ...kids);
+  return el('div', { class: 'ed-details' }, ...kids);
 }
 
 function primFields(e: Editor, refs: Path[], objs: Obj[], P: (f: string) => Path[]): (HTMLElement | null)[] {
@@ -579,7 +729,7 @@ function prefabGroup(e: Editor): HTMLElement | null {
 
 function arrayTool(e: Editor): HTMLElement {
   const st = { n: 4, dx: 5, dy: 0, dz: 0, yaw: 0 };
-  return el('details', { class: 'ed-sec ed-array' }, el('summary', {}, 'Array (several copies)'),
+  return el('details', { class: 'ed-sec ed-array' }, el('summary', {}, icon('chevronDown', 'ed-fold'), 'Array (several copies)'),
     palNum('Copies', st, 'n', { min: 1, max: 100, step: 1 }), palNum('Step east', st, 'dx', { step: 0.5, unit: 'm' }), palNum('Step north', st, 'dy', { step: 0.5, unit: 'm' }), palNum('Step up', st, 'dz', { step: 0.1, unit: 'm' }), palNum('Turn each', st, 'yaw', { step: 5, unit: '°' }),
     plainBtn('Make copies', () => e.copies(Math.round(st.n), [st.dx, st.dy, st.dz], st.yaw)),
     note('Turning copies round the selection\'s centre with no step makes a ring.'));
@@ -594,8 +744,8 @@ function metaPanel(e: Editor): HTMLElement {
   const credits = e.ed.meta.credits ?? [];
   const C = (i: number, k: string): Path[] => [['x-builder', 'credits', i, k]];
   const files = [...e.ed.assets].sort(([a], [b]) => (a < b ? -1 : 1));
-  return el('div', {},
-    el('div', { class: 'ed-insp-head' }, el('h2', {}, 'Map'), note('Nothing selected: click an object in the view, or pick a tool in the palette.')),
+  return el('div', { class: 'ed-details' },
+    el('div', { class: 'ed-det-head' }, el('span', { class: 'ed-det-ico' }, icon('map')), el('div', { class: 'ed-det-t' }, el('h2', {}, 'Map settings'), el('small', {}, 'Nothing selected: click an object, or place one from the left'))),
     sec('About',
       text(e, 'Name', M('name'), { max: 64 }), text(e, 'Author', M('author'), { max: 96 }),
       sel(e, 'Licence', M('license'), licOpts),
@@ -628,7 +778,28 @@ function meter(label: string, n: number, max: number, unit = ''): HTMLElement {
     el('span', { class: 'lbl' }, label), el('span', { class: 'bar' }, el('i', { style: { width: `${(f * 100).toFixed(1)}%` } })), el('span', { class: 'n' }, `${show(n)} / ${show(max)}`));
 }
 
-export function renderProblems(e: Editor): HTMLElement {
+/** The bottom dock: Problems (validator messages, race checks, budgets) and History (every undo step). */
+export function renderBottom(e: Editor): HTMLElement {
+  const P = e.prefs, errs = e.problems.filter((p) => p.level === 'error').length, hist = e.ed.history();
+  const tab = (id: typeof P.bottomTab, label: string, ic: IconName, badge?: HTMLElement | null) => el('button', { type: 'button', role: 'tab', class: 'ed-btab', 'aria-selected': String(P.bottomTab === id), onclick: () => e.openBottom(id) }, icon(ic), label, badge ?? null);
+  const head = el('div', { class: 'ed-bottom-head', role: 'tablist', 'aria-label': 'Bottom panel' },
+    tab('problems', 'Problems', 'alert', e.problems.length ? el('span', { class: `ed-badge${errs ? ' err' : ' warn'}` }, String(e.problems.length)) : null),
+    tab('history', 'History', 'history', hist.entries.length ? el('span', { class: 'ed-badge' }, String(hist.entries.length)) : null),
+    el('span', { class: 'ed-spacer' }),
+    btn('Close the panel', () => e.toggleDock('bottom'), { icon: 'x', bare: true }));
+  return el('div', { class: 'ed-bottom-in' }, head, P.bottomTab === 'history' ? historyBody(e, hist) : problemsBody(e));
+}
+
+function historyBody(e: Editor, h: ReturnType<Editor['ed']['history']>): HTMLElement {
+  const ago = (t: number) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : new Date(t).toLocaleTimeString(); };
+  const item = (label: string, n: number, at?: number) => el('li', { class: n === h.done ? 'cur' : n > h.done ? 'undone' : '' },
+    el('button', { type: 'button', class: 'ed-li-main', title: n === h.done ? 'The map as it is now' : n < h.done ? 'Undo back to here' : 'Redo up to here', onclick: () => e.jumpTo(n) }, label, at ? el('small', {}, ` · ${ago(at)}`) : null));
+  const list = el('ol', { class: 'ed-history' }, item('Opened the draft', 0), ...h.entries.map((x, i) => item(x.label, i + 1, x.at)));
+  queueMicrotask(() => list.querySelector('.cur')?.scrollIntoView({ block: 'nearest' }));
+  return el('div', { class: 'ed-bottom-body' }, h.entries.length ? list : note('Nothing done yet. Every change is one step here; click a step to go back to it.'));
+}
+
+function problemsBody(e: Editor): HTMLElement {
   const ps = [...e.problems].sort((a, b) => ['error', 'warning', 'info'].indexOf(a.level) - ['error', 'warning', 'info'].indexOf(b.level));
   const item = (p: { level: string; text: string; ref?: Path; fix?: { label: string; ops: Op[] } }) => el('li', { class: `ed-p ${p.level}` },
     el('span', { class: 'ed-p-ico', 'aria-label': p.level }, p.level === 'error' ? '✕' : p.level === 'warning' ? '!' : 'i'),
@@ -636,7 +807,7 @@ export function renderProblems(e: Editor): HTMLElement {
     p.fix ? plainBtn(p.fix.label, () => e.ed.apply(p.fix!.label, structuredClone(p.fix!.ops))) : null);
   const ck = e.check;
   const errs = ps.filter((p) => p.level === 'error').length;
-  return el('div', { class: 'ed-foot-in' },
+  return el('div', { class: 'ed-bottom-body ed-foot-in' },
     el('div', { class: 'ed-problems' },
       el('h3', {}, errs ? `${errs} problem${errs === 1 ? '' : 's'}` : 'No problems', ps.length - errs ? el('small', {}, ` · ${ps.length - errs} note${ps.length - errs === 1 ? '' : 's'}`) : null),
       el('ul', {}, ...ps.map(item)),

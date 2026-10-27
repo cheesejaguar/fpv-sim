@@ -56,13 +56,13 @@ const TASK_DEFAULTS: Record<string, Obj> = {
 
 export function renderScenarioForm(e: Editor, path: string): HTMLElement {
   const blob = e.ed.assets.get(path), doc = e.ed.doc;
-  const close = el('button', { type: 'button', class: 'ed-btn ed-small', onclick: () => { e.pal.scenario = null; e.renderBox('inspector', true); e.renderBox('palette'); } }, 'Close');
+  const close = el('button', { type: 'button', class: 'ed-btn ed-small', onclick: () => { e.pal.scenario = null; e.renderBox('details', true); e.renderBox('palette'); } }, 'Close');
   const head = (t: string) => el('div', { class: 'ed-insp-head' }, el('h2', {}, t), el('div', { class: 'ed-row' }, close));
   const removeOps = (): Op[] => [{ k: 'set', path: ['scenarios'], v: (doc.scenarios ?? []).filter((p) => p !== path) }, { k: 'asset', path, v: null }];
   if (!blob) return el('div', {}, head('Scenario'), el('p', { class: 'ed-note' }, `${path} is listed but not in the package.`), el('button', { type: 'button', class: 'ed-btn ed-small', onclick: () => e.ed.apply('Remove scenario', removeOps()) }, 'Remove it from the list'));
   const got = parsed.get(blob);
   if (!got) {
-    void blob.text().then((t) => { try { parsed.set(blob, JSON.parse(t)); } catch (x) { parsed.set(blob, x as Error); } e.renderBox('inspector', true); });
+    void blob.text().then((t) => { try { parsed.set(blob, JSON.parse(t)); } catch (x) { parsed.set(blob, x as Error); } e.renderBox('details', true); });
     return el('div', {}, head('Scenario'), el('p', { class: 'ed-note' }, 'Loading…'));
   }
   if (got instanceof Error) return el('div', {}, head('Scenario'), el('p', { class: 'ed-note' }, `${path} is not valid JSON: ${got.message}`));
