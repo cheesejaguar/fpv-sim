@@ -161,6 +161,8 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
 
   const animate = (now: number) => {
     requestAnimationFrame(animate);
+    // map builder: it draws its own scene with its own camera while the flight is paused
+    if (ctx.editor) { ctx.editor.frame(now); lastMode = 'build'; lastNow = now; return; }
     ctx.replay?.frame(now);
     const rp = ctx.replay;
     const { view, build, link, fpv, osd, mp } = ctx, sceneB = ctx.scene, drone = ctx.drone;

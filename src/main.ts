@@ -17,6 +17,7 @@ import { KEYS, load, save, validSim, validSpec, validView } from './app/persist'
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
 import { buildDrone, DroneBuild, DroneSpec, hasPropTable, preloadPropTable } from './builder/derive';
+import type { EditorHost } from './editor/host';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
@@ -265,7 +266,7 @@ function applyView(v: ViewSettings) {
 // Input: poll fast (250 Hz) for low latency, independent of the render rate
 const input = ctx.input;
 input.onReset = () => { onRespawn(ctx); apiHost.onRespawn(); ctx.send({ type: 'reset', repair: true }); };
-input.onMenu = () => gameMenu.toggle();
+input.onMenu = () => (ctx.editor ? ctx.editor.onMenu() : gameMenu.toggle());
 input.onAction = (a) => simAction(a);
 /** Shared by keyboard keys and controller buttons (B, D-pad). */
 function simAction(a: SimAction) {
@@ -389,6 +390,36 @@ const researchLazy = lazyTab(() => import('./ui/researchPanel'), (m) => m.resear
 const trainingLazy = lazyTab(() => import('./ui/trainingPanel'), (m) => m.trainingPanel({ ctx, api: apiHost, fly: () => { toggleDrill(ctx, false); gameMenu.resume(); } }));
 const controllerTab = controllerLazy.render, bfTab = bfLazy.render, builderTab = builderLazy.render;
 
+// Map builder (src/editor/, its own chunk with the Build screen): it takes the screen with the
+// simulation held paused, and hands it back to fly the draft as a local map.
+/** the menu or the editor has the screen: the sim is paused and the controls belong to it */
+const holdSim = (on: boolean) => { ctx.menuOpen = on; input.suspended = on; ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: on } }); };
+let editorFlew = false; // flying a map from the builder: the pause menu offers "Back to editor"
+const editorHost: EditorHost = {
+  ctx,
+  enter: (v) => { ctx.replay?.close(); ctx.editor = v; editorFlew = false; gameMenu.close(); holdSim(true); },
+  leave: () => { ctx.editor = null; gameMenu.open('build'); },
+  fly: (o) => {
+    ctx.editor = null; editorFlew = true;
+    applySim({ ...ctx.sim, mapId: o.mapId, courseId: o.courseId, spawnId: o.spawnId });
+    const mode: GameMode = o.race ? 'race' : 'free';
+    gameMenu.activeMode = mode; gameMenu.inFlight = true;
+    startFlight(mode);
+    holdSim(false);
+  },
+  runScenario: async (doc) => {
+    ctx.editor = null; editorFlew = true; gameMenu.inFlight = true; holdSim(false);
+    try {
+      const b = await apiHost.backend();
+      const off = b.listen('episode', (e) => { ctx.log(`Scenario ended (${(e as { reason: string }).reason})`); off(); });
+      await b.call('reset', { scenario: doc, pilot: true });
+    } catch (e) { ctx.log(`This scenario can't run: ${(e as Error)?.message ?? e}`); gameMenu.open('pause'); }
+  },
+  // onPublish: the user-maps service plugs in here (the editor shows Publish only when it is set)
+};
+const loadEditor = () => import('./editor/session');
+const buildLazy = lazyTab(loadEditor, (m) => m.buildScreen(editorHost));
+
 const gameMenu = new GameMenu({
   input, mp: ctx.mp,
   spec: () => ctx.spec, applySpec,
@@ -409,17 +440,16 @@ const gameMenu = new GameMenu({
     { id: 'research', label: 'Research', icon: 'activity', render: researchLazy.render },
   ],
   startFlight, joinRoom,
-  onOpenChange: (open) => {
-    ctx.menuOpen = open;
-    input.suspended = open; // menu buttons must not arm / switch modes / respawn
-    ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: open } });
-  },
+  // menu buttons must not arm / switch modes / respawn; the editor keeps the sim paused when the menu closes into it
+  onOpenChange: (open) => holdSim(open || !!ctx.editor),
   board: ctx.lb,
   track: () => ({ map: ctx.map.id, course: courseOf(ctx.map), cls: droneClass(ctx.spec) }),
   lastLap: () => { const l = ctx.replays.last; return l ? { lapMs: l.lap.meta.lapMs, replay: l.replay } : null; },
   // the replay player (and its scene swap) load the first time a replay is opened
   watch: async (bytes, label, ui) => (await import('./ui/replay/player')).openPlayer(ctx, bytes, label, ui),
   shots,
+  buildScreen: buildLazy.render,
+  editorBack: () => (editorFlew && !ctx.editor ? () => void loadEditor().then((m) => m.resumeEditor(editorHost), (e) => ctx.log(`The map builder failed to load: ${e}`)) : null),
 });
 appEl.append(gameMenu.root);
 
