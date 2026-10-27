@@ -6,7 +6,7 @@
 // commits one undoable command.
 import { ALLOWED_LICENSES, BUDGETS, GATE_KINDS, GATE_SIZE, MATERIAL_NAMES, NEEDS_TEXT, TARGET_SHAPES, VISUALS, type ActorDoc, type GroundDoc, type NoiseLayer, type PrimDoc } from '../maps/mapDoc';
 import { el } from '../ui/dom';
-import { icon, type IconName } from '../ui/menu/icons';
+import { icon, type IconName } from './icons';
 import { PLACE_MIME, type Editor, type Place } from './editor';
 import { KIND_NAMES, refKind, type Op, type Path, type RefKind } from './editorDoc';
 import { actorIcon, primLabel } from './outliner';

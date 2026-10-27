@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import type { Vec3 } from '../maps/mapDoc';
 import { el } from '../ui/dom';
-import { icon, type IconName } from '../ui/menu/icons';
+import { icon, type IconName } from './icons';
 import type { View } from './camera';
 import type { Editor, Mode } from './editor';
 import type { Path } from './editorDoc';

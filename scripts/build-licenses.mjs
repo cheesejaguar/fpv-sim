@@ -83,7 +83,7 @@ const COMPONENTS = [
     text: 'Chakra Petch',
   },
   {
-    name: 'Lucide icons (icon paths copied verbatim into the menu, src/ui/menu/icons.ts)',
+    name: 'Lucide icons (icon paths copied verbatim into the menu and the map builder, src/ui/menu/icons.ts, src/editor/icons.ts)',
     files: 'the application bundle',
     copyright: 'Copyright (c) 2026 Lucide Icons and Contributors; icons derived from Feather: Copyright (c) 2013-present Cole Bemis',
     license: 'ISC; the Feather-derived icons also MIT',

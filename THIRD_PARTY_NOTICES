@@ -73,7 +73,7 @@ Components
    License:   OFL-1.1
    Source:    https://fontsource.org/fonts/chakra-petch
 
-8. Lucide icons (icon paths copied verbatim into the menu, src/ui/menu/icons.ts)
+8. Lucide icons (icon paths copied verbatim into the menu and the map builder, src/ui/menu/icons.ts, src/editor/icons.ts)
    Files:     the application bundle
    Copyright: Copyright (c) 2026 Lucide Icons and Contributors; icons derived from Feather: Copyright (c) 2013-present Cole Bemis
    License:   ISC; the Feather-derived icons also MIT

@@ -4,7 +4,7 @@
 // model (no DOM: tested in node); renderOutliner() draws it.
 import type { ActorDoc, MapDocV1, PrimDoc } from '../maps/mapDoc';
 import { el } from '../ui/dom';
-import { icon, type IconName } from '../ui/menu/icons';
+import { icon, type IconName } from './icons';
 import type { BuilderMeta, Path } from './editorDoc';
 import { prefabById } from './prefabs';
 import type { Editor } from './editor';
