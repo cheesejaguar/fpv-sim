@@ -491,11 +491,12 @@ export function urlTableSource(urls: Record<string, string>): PackageSource {
 }
 
 /** A map-registry entry for a package. */
-export function packageEntry(id: string, info: { name: string; author: string; license: string; local?: boolean }, src: () => PackageSource): MapEntry {
+export function packageEntry(id: string, info: { name: string; author: string; license: string; local?: boolean; user?: boolean }, src: () => PackageSource): MapEntry {
   return {
     name: info.name,
-    credit: `${info.local ? 'Loaded from disk' : 'Community map'} by ${info.author} (${info.license})`,
-    community: { author: info.author, license: info.license, local: !!info.local },
+    // user maps: published by players, not reviewed (see server/src/mapStore.ts)
+    credit: info.user ? `User map by ${info.author} · not reviewed (${info.license})` : `${info.local ? 'Loaded from disk' : 'Community map'} by ${info.author} (${info.license})`,
+    community: { author: info.author, license: info.license, local: !!info.local, ...(info.user ? { user: true } : {}) },
     build: () => { throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`); },
     prepare: async () => { const m = await loadMapPackage(src()); return () => m.build(id); },
   };

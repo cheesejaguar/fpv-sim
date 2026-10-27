@@ -38,6 +38,31 @@ new_sqlite_classes = ["Lobby"]
 tag = "v3"
 new_sqlite_classes = ["Leaderboard"]
 
+# ---- User maps (mapStore.ts): packages players publish, shown as "User map · not reviewed" ----
+# MAP_INDEX: one SQLite Durable Object with the metadata, reports and upload quotas (migration v4).
+# USER_MAPS: an R2 bucket with the packages (pkg/<id>.zip) and previews (prev/<id>.<ext>). Create it
+# once before deploying:
+#   npx wrangler r2 bucket create fpv-sim-user-maps
+# Without these two bindings the relay still runs and /maps answers 503 (sharing disabled).
+# Moderation (ADMIN_TOKEN, below):
+#   curl -X DELETE -H "Authorization: Bearer <token>" https://<relay>/maps/u-<id>        remove for good
+#   curl -X POST -H "Authorization: Bearer <token>" -d '{"status":"ok"}' https://<relay>/maps/u-<id>/status
+#        (restore a map hidden after REPORT_HIDE reports; "hidden" hides one)
+# A DENYLIST key "map:u-<id>" refuses a map like a removal. Uploads use the RATE_LIMITER key
+# "up:<ip>" and reports "rp:<ip>"; each network may publish DAILY_UPLOADS new maps per day.
+[[durable_objects.bindings]]
+name = "MAP_INDEX"
+class_name = "MapIndex"
+
+[[r2_buckets]]
+binding = "USER_MAPS"
+bucket_name = "fpv-sim-user-maps"
+
+# v4: user map index (SQLite tables)
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["MapIndex"]
+
 # ---- Optional abuse limits: each one is used only if its binding exists (none is required) ----
 #
 # RATE_LIMITER: Workers Rate Limiting, room connections per client IP (CF-Connecting-IP); over the
@@ -59,7 +84,8 @@ new_sqlite_classes = ["Leaderboard"]
 # browser (3), and for the hashed IPs and browser tokens stored with leaderboard entries. Optional;
 # set it with  npx wrangler secret put IP_SALT
 #
-# ADMIN_TOKEN (secret): enables DELETE /leaderboard/<entry id> (removal requests, moderation):
+# ADMIN_TOKEN (secret): enables DELETE /leaderboard/<entry id> and DELETE /maps/<map id> (removal
+# requests, moderation):
 #   npx wrangler secret put ADMIN_TOKEN
 #   curl -X DELETE -H "Authorization: Bearer <token>" https://<relay>/leaderboard/123
 # Entry ids are in GET /leaderboard?map=<map>&class=<class> (or class=all).
@@ -81,3 +107,12 @@ class_name = "Lobby"
 [[env.dev.durable_objects.bindings]]
 name = "LEADERBOARD"
 class_name = "Leaderboard"
+
+[[env.dev.durable_objects.bindings]]
+name = "MAP_INDEX"
+class_name = "MapIndex"
+
+# (wrangler dev keeps R2 objects in a local simulation: no bucket needs to exist for development)
+[[env.dev.r2_buckets]]
+binding = "USER_MAPS"
+bucket_name = "fpv-sim-user-maps-dev"

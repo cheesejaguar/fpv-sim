@@ -39,8 +39,9 @@ export function courseOf(map: Pick<MapDef, 'gates' | 'courses'>): string {
   return map.courses?.find((c) => c.gates === map.gates)?.id ?? '';
 }
 
-/** Built-in tracks only: maps loaded from disk ("local-…") and maps without a board keep local bests. */
-export const onBoard = (map: string, course: string) => !map.startsWith('local-') && hasTrack(map, course);
+/** Built-in tracks only: maps loaded from disk ("local-…"), published user maps ("u-…", separate from
+ *  official play) and maps without a board keep local bests. */
+export const onBoard = (map: string, course: string) => !map.startsWith('local-') && !map.startsWith('u-') && hasTrack(map, course);
 
 function randomClient(): string {
   const b = new Uint8Array(16);

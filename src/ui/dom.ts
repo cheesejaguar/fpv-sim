@@ -116,6 +116,40 @@ export function confirmDialog(o: ConfirmOpts): Promise<boolean> {
   });
 }
 
+/**
+ * A menu-styled dialog with any content (forms, progress): the caller closes it. Esc / B / the
+ * backdrop call onCancel (the dialog stays open unless that closes it). Shares the confirm dialogs'
+ * stack, so the game menu routes Esc / B and controller navigation to it.
+ */
+export function openModal(o: { label: string; card: HTMLElement; onCancel(): void; className?: string }): { root: HTMLElement; close(): void } {
+  const prevFocus = document.activeElement as HTMLElement | null;
+  const root = el('div', { class: `gm-modal ${o.className ?? ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': o.label }, o.card);
+  const focusable = () => [...o.card.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select, textarea, a[href]')].filter((e) => e.offsetParent !== null || e === document.activeElement);
+  const onKey = (e: KeyboardEvent) => {
+    if (openModals[openModals.length - 1]?.el !== root) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); o.onCancel(); }
+    else if (e.key === 'Tab') { // keep focus inside the dialog
+      const f = focusable(), i = f.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus();
+    }
+  };
+  const close = () => {
+    const i = openModals.findIndex((m) => m.el === root);
+    if (i < 0) return;
+    openModals.splice(i, 1);
+    root.remove();
+    document.removeEventListener('keydown', onKey, true);
+    if (prevFocus?.isConnected) prevFocus.focus({ preventScroll: true });
+  };
+  root.addEventListener('pointerdown', (e) => { if (e.target === root) o.onCancel(); });
+  (document.querySelector<HTMLElement>('.gm:not(.hidden)') ?? document.body).append(root);
+  openModals.push({ el: root, done: () => o.onCancel() });
+  document.addEventListener('keydown', onKey, true);
+  requestAnimationFrame(() => (o.card.querySelector<HTMLElement>('[data-autofocus]') ?? focusable()[0])?.focus({ preventScroll: true }));
+  return { root, close };
+}
+
 /** The open dialog, if any (the menu scopes controller navigation to it). */
 export const topModal = (): HTMLElement | null => openModals[openModals.length - 1]?.el ?? null;
 /** Cancel the open dialog (Esc / B). Returns false when none was open. */

@@ -11,6 +11,7 @@ import { parseReplayLink, replayUrl, withoutReplayLink } from '../../app/replayL
 import { fetchEntry, fetchReplay, formatLap } from '../../net/leaderboard';
 import { fetchRooms, RoomListing } from '../../net/lobby';
 import { MultiplayerClient, randomRoomCode } from '../../net/multiplayer';
+import { isLocalMapId, isUserMapId } from '../../net/protocol';
 import type { PbShots } from '../../share/capture';
 import type { ShareTarget } from '../../share/sheet';
 import type { SimSettings } from '../../worker/shared';
@@ -18,6 +19,7 @@ import { cancelTopModal, confirmDialog, dirtyGuard, el, runUnmounts, topModal, t
 import { loadPilot, savePilot } from '../multiplayerPanel';
 import { APP_COMMIT, APP_VERSION, bugReportUrl, commitUrl, gpuRenderer, REPO_URL, versionLabel } from './about';
 import { cachedStats, DroneStats, droneStats } from './droneStats';
+import { USER_BADGE, userMapsBlock } from '../userMaps/entry';
 import { CHAPTERS, GuideAction, guideDone, markDone } from './guide';
 import { icon, IconName, logo } from './icons';
 import type { InitialsScreen } from './leaderboard';
@@ -449,7 +451,9 @@ export class GameMenu {
   /** Map picker (a radio group). In race mode, maps without gates can't be picked. */
   private mapTiles(onPick: () => void): HTMLElement {
     const race = this.ngTab === 'local' && this.ng.mode === 'race';
-    return el('div', { class: 'gm-grid gm-stagger', role: 'radiogroup', 'aria-label': 'Map' }, ...Object.entries(MAP_LIST).map(([id, m]) => {
+    // user maps (published by players, not reviewed) never sit among the official tiles: their own block below
+    const user = userMapsBlock({ selected: this.ng.map, onPick: (id) => { this.ng.map = id; onPick(); } });
+    return el('div', {}, el('div', { class: 'gm-grid gm-stagger', role: 'radiogroup', 'aria-label': 'Map' }, ...Object.entries(MAP_LIST).filter(([id]) => !isUserMapId(id)).map(([id, m]) => {
       const gates = mapHasGates(id);
       const blocked = race && gates !== true;
       if (race && gates === undefined) void probeGates(id).then(() => { if (this.stack[this.stack.length - 1] === 'new') this.render(true); });
@@ -458,8 +462,11 @@ export class GameMenu {
         el('span', { class: 'tt' }, m.name.split(' — ')[0]),
         el('span', { class: 'ts' }, m.name.split(' — ')[1] ?? (m.community ? `by ${m.community.author}` : '')),
         el('span', { class: 'stats' }, ...(blocked ? [el('span', { class: 'gm-badge' }, gates === undefined ? 'Checking for gates…' : 'No race gates')] : mapBadges(id))));
-    }));
+    })), user);
   }
+
+  /** Preselect a map in New game (a user map opened from a link). */
+  pickMap(id: string) { this.ng.map = id; if (this.stack[this.stack.length - 1] === 'new') this.render(true); }
 
   private droneTiles(onPick: () => void): HTMLElement {
     const cur = this.host.spec(), mine = loadMine();
@@ -669,7 +676,10 @@ export class GameMenu {
       el('div', {}, this.summary(el('div', {}, host, hostStatus), el('div', {},
         el('label', { class: 'gm-field' }, el('span', {}, 'Room name'), roomIn),
         el('label', { class: 'gm-switch', style: { marginBottom: '14px' } }, pub, el('span', {}, 'List publicly (shows your callsign)')),
-        mp.connected ? el('p', { class: 'gm-room-sub' }, `You are in room ${mp.room}. Hosting a new room leaves it.`) : null)),
+        mp.connected ? el('p', { class: 'gm-room-sub' }, `You are in room ${mp.room}. Hosting a new room leaves it.`) : null,
+        // a map from disk (or an editor draft) stays on this computer; a published user map can be shared
+        isLocalMapId(this.ng.map) ? el('p', { class: 'gm-room-sub' }, 'This map is loaded from your disk, so the room can’t get it: pilots stay on their own maps. Publish it (unlisted is fine) to share it in a room.')
+          : isUserMapId(this.ng.map) ? el('p', { class: 'gm-room-sub' }, 'A user map: each pilot is asked before it loads.') : null)),
       el('button', { class: 'gm-btn ghost', style: { width: '100%', marginTop: '12px' }, onclick: () => this.go('browser') }, icon('server'), 'Browse public rooms')));
   }
 
@@ -721,7 +731,7 @@ export class GameMenu {
     };
     const search = el('input', { class: 'gm-input', placeholder: 'Search rooms, hosts or codes', value: this.filters.q, 'aria-label': 'Search rooms', oninput: () => { this.filters.q = search.value; draw(); } }) as HTMLInputElement;
     const mapSel = el('select', { class: 'gm-input', style: { maxWidth: '260px' }, 'aria-label': 'Filter by map', onchange: () => { this.filters.map = mapSel.value; draw(); } },
-      el('option', { value: '' }, 'All maps'), ...Object.entries(MAP_LIST).map(([id, m]) => el('option', { value: id, selected: this.filters.map === id }, m.name.split(' — ')[0]))) as HTMLSelectElement;
+      el('option', { value: '' }, 'All maps'), ...Object.entries(MAP_LIST).filter(([id]) => !isUserMapId(id)).map(([id, m]) => el('option', { value: id, selected: this.filters.map === id }, m.name.split(' — ')[0]))) as HTMLSelectElement;
     const hideFull = el('input', { type: 'checkbox', checked: this.filters.hideFull, role: 'switch', onchange: () => { this.filters.hideFull = hideFull.checked; draw(); } }) as HTMLInputElement;
     draw();
     void load();
@@ -1009,6 +1019,7 @@ function mapBadges(id: string): HTMLElement[] {
   if (id === 'bando') return [b('Freestyle'), b('Indoor + outdoor')];
   if (id.startsWith('quake')) return [b('Indoor'), b('Classic', 'green')];
   if (id.startsWith('freedoom')) return [b('Indoor'), b('Classic', 'green')];
+  if (m?.community?.user) return [el('span', { class: 'gm-badge', style: { background: 'rgba(251, 191, 36, 0.16)', color: '#fde68a' } }, USER_BADGE)];
   return [b(m?.community?.local ? 'From disk' : 'Community', 'green'), ...(mapHasGates(id) ? [b('Race gates', 'rose')] : [])];
 }
 

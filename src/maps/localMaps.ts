@@ -1,11 +1,15 @@
 // Map packages loaded from the user's disk (zip, folder or loose files), for trying a map before
 // contributing it. Files become blob: URLs that both the renderer and the physics worker can read;
 // the map is registered as "local-<id>" (never sent to multiplayer rooms) until the page reloads.
+// Downloaded user maps (src/net/userMaps.ts) are registered the same way, as "u-<content hash>".
 import { MapFormatError } from './mapError';
+import type { MapDocV1 } from './mapDoc';
 import type { MapStats, PackageSource } from './mapFormat';
 import { registerMap } from './maps';
 
 export interface LocalMapInfo { name: string; author: string; license: string }
+/** Every map registered here (from disk, or a downloaded user map), with what the menus show of it. */
+export interface PackageInfo extends LocalMapInfo { user?: boolean }
 type Listener = (id: string, info: LocalMapInfo, urls: Record<string, string>) => void;
 const listeners: Listener[] = [];
 const loaded = new Map<string, string[]>(); // id -> blob URLs (revoked when the map is reloaded)
@@ -63,20 +67,29 @@ export async function filesFromDrop(dt: DataTransfer): Promise<Map<string, Blob>
 
 /** Validate a package from disk and register it. Throws MapFormatError with every problem found. */
 export async function loadLocalMap(files: Map<string, Blob>): Promise<{ id: string; name: string; warnings: string[]; stats: MapStats }> {
+  const r = await registerPackage(files, (doc) => ({ id: `local-${doc.meta.id}`, info: { name: doc.meta.name, author: doc.meta.author, license: doc.meta.license } }));
+  return { id: r.id, name: r.info.name, warnings: r.warnings, stats: r.stats };
+}
+
+/**
+ * Validate a package (blob: URLs for the renderer and the worker) and register it under the id
+ * `name` picks (a user map: its "u-…" id, info.user set). Listeners (main.ts) forward it to the
+ * worker. Throws MapFormatError with every problem found.
+ */
+export async function registerPackage(files: Map<string, Blob>, name: (doc: MapDocV1) => { id: string; info: PackageInfo }): Promise<{ id: string; info: PackageInfo; warnings: string[]; stats: MapStats }> {
   const { loadMapPackage, packageEntry, urlTableSource } = await import('./mapFormat'); // loaded on first use
   const urls: Record<string, string> = {};
   for (const [p, b] of files) urls[p] = URL.createObjectURL(b);
   const src: PackageSource = { ...urlTableSource(urls), list: async () => [...files].map(([path, b]) => ({ path, size: b.size })) };
-  let m;
-  try { m = await loadMapPackage(src, { checkAssets: true }); }
+  let m, id: string, info: PackageInfo;
+  try { m = await loadMapPackage(src, { checkAssets: true }); ({ id, info } = name(m.doc)); }
   catch (e) { for (const u of Object.values(urls)) URL.revokeObjectURL(u); throw e; }
-  const id = `local-${m.doc.meta.id}`;
   const old = loaded.get(id);
   // the previous version may still be on screen (its textures are already decoded): revoke a bit later
   if (old) setTimeout(() => old.forEach((u) => URL.revokeObjectURL(u)), 30000);
   loaded.set(id, Object.values(urls));
-  const info = { name: m.doc.meta.name, author: m.doc.meta.author, license: m.doc.meta.license };
-  registerMap(id, packageEntry(id, { ...info, local: true }, () => urlTableSource(urls)));
-  for (const f of listeners) f(id, info, urls);
-  return { id, name: info.name, warnings: m.warnings, stats: m.stats };
+  registerMap(id, packageEntry(id, { ...info, local: !info.user }, () => urlTableSource(urls)));
+  const plain = { name: info.name, author: info.author, license: info.license };
+  for (const f of listeners) f(id, plain, urls);
+  return { id, info, warnings: m.warnings, stats: m.stats };
 }

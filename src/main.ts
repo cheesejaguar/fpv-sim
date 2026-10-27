@@ -23,6 +23,8 @@ import { isLocalMap, onLocalMap } from './maps/localMaps';
 import { hasMap, MAP_LIST, MAPS, preloadMap } from './maps/maps';
 import { PrimitiveWorld, withCourse, withSpawn } from './maps/world';
 import { MultiplayerClient } from './net/multiplayer';
+import { isUserMapId } from './net/protocol';
+import { installUserMaps } from './app/userMapsHost';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
 import { buildDroneMesh } from './render/droneMesh';
@@ -95,6 +97,8 @@ renderer.domElement.addEventListener('webglcontextlost', () => {
   try { if (!ctx.menuOpen) gameMenu.open(); } catch { /* still starting up */ } // pause: a flying quad would crash meanwhile
 });
 
+// a user map flown last session is restored from this device's cache once the app is up (userMaps.boot)
+const savedUserMap = isUserMapId(sim0.mapId) ? sim0.mapId : null;
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 // the map's data and the prop's precomputed BEMT table (else buildDrone spends ~1.2 s building it)
 await Promise.all([
@@ -303,12 +307,17 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------------------------------------------------------------------------------------------
 // Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
-ctx.mp.onMap = (m) => {
-  if (!hasMap(m) || m === ctx.sim.mapId) return;
+function applyRoomMap(m: string) {
   applyingRoomMap = true;
   applySim({ ...ctx.sim, mapId: m, courseId: '', spawnId: '' }); // the room shares the map; everyone flies its default course
   applyingRoomMap = false;
   ctx.log(`Room switched the map to ${MAP_LIST[m]?.name ?? m}`);
+}
+ctx.mp.onMap = (m) => {
+  if (m === ctx.sim.mapId) return;
+  // a user map this pilot doesn't have: a consent card, then download + verify (userMapsHost.ts)
+  if (!hasMap(m)) { if (isUserMapId(m)) void userMaps.offerRoomMap(m); return; }
+  applyRoomMap(m);
 };
 /** room: name / visibility, used if we are the first pilot in (the host) */
 function joinRoom(code: string, room?: { name: string; public: boolean }) {
@@ -422,6 +431,7 @@ const gameMenu = new GameMenu({
   shots,
 });
 appEl.append(gameMenu.root);
+const userMaps = installUserMaps({ ctx, applySim: (s) => applySim(s), applyRoomMap, selected: (id) => gameMenu.pickMap(id) });
 
 // ---------------------------------------------------------------------------------------------
 startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, dimmed: () => gameMenu.dimmed, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
@@ -434,6 +444,7 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+void userMaps.boot(savedUserMap); // ?map=u-… links, or the user map flown last session
 apiHost.installWindowApi();
 void apiHost.connectFromUrl().catch((e) => ctx.log(`Control API: ${(e as Error)?.message ?? e}`));
 // The title backdrop's shaders, compiled in the background while the menu is up, so its first frame

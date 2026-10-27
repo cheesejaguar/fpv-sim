@@ -5,6 +5,8 @@ import { MAP_LIST, MapEntry, MAPS } from '../maps/maps';
 import type { TimeOfDay } from '../render/sky';
 import { SimSettings } from '../worker/shared';
 import { checkbox, el, onUnmount, section, select, slider } from './dom';
+import { isUserMapId } from '../net/protocol';
+import { userMapsRow } from './userMaps/entry';
 
 export interface ViewSettings {
   osdFont: string;
@@ -89,18 +91,24 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
     const c = courseSelect(); courseRow.replaceWith(c); courseRow = c;
     const sp = spawnSelect(); spawnRow.replaceWith(sp); spawnRow = sp;
   };
-  const mapSelect = () => select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: mapLabel(m) })), s.mapId, (x) => { mapChanged(x); pushS(); });
+  // official maps (and maps from disk); user maps have their own row below
+  const mapSelect = () => select('Map', [
+    ...(isUserMapId(s.mapId) ? [{ value: s.mapId, label: '(a user map, below)' }] : []),
+    ...Object.entries(MAP_LIST).filter(([id]) => !isUserMapId(id)).map(([id, m]) => ({ value: id, label: mapLabel(m) }))], s.mapId, (x) => setMap(x));
   let mapRow = mapSelect();
-  const setMap = (id: string) => { mapChanged(id); const r = mapSelect(); mapRow.replaceWith(r); mapRow = r; pushS(); };
+  let userRow: HTMLElement;
+  const setMap = (id: string) => { mapChanged(id); const r = mapSelect(); mapRow.replaceWith(r); mapRow = r; const u = userMapsRow(id, setMap); userRow.replaceWith(u); userRow = u; pushS(); };
+  userRow = userMapsRow(s.mapId, setMap);
   return el('div', { class: 'panel settings' },
     el('div', { class: 'cols' },
       el('div', { class: 'col' },
         section('World',
           mapRow,
+          userRow,
           courseRow, spawnRow,
           credit,
           el('details', { class: 'note' }, el('summary', {}, 'Credits & licenses'),
-            ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),
+            ...Object.values(MAP_LIST).filter((m) => !m.community?.user).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),
             el('p', {}, 'Full license texts and attribution: public/maps/quake/ATTRIBUTION.md, public/maps/freedoom/ATTRIBUTION.md and public/maps/community/<map>/ATTRIBUTION.md in the source repository.')),
           localMapLoader(setMap),
           select('Time of day', TIMES_OF_DAY, v.timeOfDay, (x) => { v.timeOfDay = x; pushV(); }),
