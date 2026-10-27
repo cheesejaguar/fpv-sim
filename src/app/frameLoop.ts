@@ -117,8 +117,11 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     if (!stateAt(t, rec)) return false;
     enuToThree(rec[R.px], rec[R.py], rec[R.pz], ctx.drone.root.position);
     quatEnuToThree(rec[R.qw], rec[R.qx], rec[R.qy], rec[R.qz], ctx.drone.root.quaternion);
+    ctx.scene.actors?.update(actorTime(t)); // the map's moving actors, at the same time as the quad
     return true;
   };
+  /** Actor time (src/sim/actors.ts) of sim time t: the worker says when their clock started (a replay: its own time). */
+  const actorTime = (t: number) => (ctx.replay ? t : t - (ctx.tel?.actorT0 ?? 0));
   /** Lens orientation at sim time t (three world): ring pose (extrapolated with the body rates past the newest sample) × camera mount. */
   const lensAt = (t: number, head: number, q: THREE.Quaternion) => {
     if (!stateAt(Math.min(t, head), motionRec)) { q.copy(lensQ); return; }
@@ -255,7 +258,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         }
         // link budget at capture time
         const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
-        if (rp ? rp.link : view.linkEffects) link.update(v, ctx.world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]));
+        if (rp ? rp.link : view.linkEffects) link.update(v, ctx.world, pilot, { x: rec[R.px], y: rec[R.py], z: rec[R.pz] }, { x: up.x, y: -up.z, z: up.y }, dtw, now / 1000, Math.hypot(rec[R.vx], rec[R.vy], rec[R.vz]), rp ? undefined : actorTime(tCap));
         else link.clean(v);
       }
       // 1S brownout: on a punch a whoop's pack sags below what the camera / VTX regulators need

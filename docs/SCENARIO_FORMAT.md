@@ -58,14 +58,14 @@ back to a default.
 | `format`, `version` | `"fpvsim-scenario"`, `1` |
 | `meta` | `id`, `name`, `description`, `author`, `license` (all text) |
 | `seed` | master seed, 0 … 2³²−1 (default 0). Episode *k* of a run without explicit seeds is seeded with `subSeed(seed, k)`. |
-| `map` | `{ "id": "<map id>", "course": "<course id>" }`: built-in maps, `bando`, `quake-e1m1` … and community maps. `course` picks a drill course (the Practice Field's `slalom`, `figure8`, `powerloop`). Default: `field`. |
+| `map` | `{ "id": "<map id>", "course": "<course id>" }`: built-in maps, `bando`, `quake-e1m1` …, community maps, and headless, packages from disk (`npm run api -- --map <folder\|zip>`). `course` picks a drill course (the Practice Field's `slalom`, `figure8`, `powerloop`). Default: `field`. |
 | `drone` | `preset` (a preset's name, as in New game → Drone) and / or `spec`: fields of a drone build over it (components by catalogue id, `cameraUptiltDeg`, `batterySoc`, `overrides` …, see `DroneSpec` in [`src/builder/derive.ts`](../src/builder/derive.ts)). `spec.unitSeed` picks another unit of the same build: its own sensor offsets, cell spread and arm detuning. Default: the 5" freestyle quad. |
-| `sim` | simulation settings: `physicsHz` (2000, 4000, 8000), `wind` (`speed` m/s at 6 m, `direction` FROM in degrees, `turbulence`, `gusts` per minute), `damage`, `propwash`, `rcLinkHz`, `rcTxPowerMw`, `ambientC`. The physics rate never changes during a scenario. |
+| `sim` | simulation settings: `physicsHz` (2000, 4000, 8000), `wind` (`speed` m/s at 6 m, `direction` FROM in degrees, `turbulence`, `gusts` per minute), `damage`, `propwash`, `rcLinkHz`, `rcTxPowerMw`, `ambientC`. The physics rate never changes during a scenario. Without `wind`, a map that suggests one (its `environment.wind`) is flown in that wind, else the default. |
 | `firmware.cli` | Betaflight CLI lines run after the simulator's defaults and saved, such as a `diff all` from a real quad. Lines that describe the board's hardware are dropped, as Settings → Betaflight → *Bring your real quad* does. Rejected lines are reported (`info.cliErrors`). |
-| `start` | `pos` [x, y, z] (default: the map's or course's spawn pad), `yawDeg` (counter-clockwise from east), `armed` (arm once Betaflight's boot grace is over), `mode` (`acro`, `horizon`, `angle`: AUX2). |
+| `start` | `pos` [x, y, z] (default: the map's or course's spawn pad), `yawDeg` (counter-clockwise from east), `armed` (arm once Betaflight's boot grace is over), `mode` (`acro`, `horizon`, `angle`: AUX2), `spawn` (one of the map's named `spawns`: its pose and pilot position; an error when the map is loaded and has no such spawn). |
 | `task` | what the episode asks (below). Default: `{ "type": "free" }`. |
 | `episode` | `maxSeconds` (default 30), `controlHz` (actions per second, default 100), `endOnCrash` (default true) at `crashSpeedMs` (default 4 m/s), `endOutOfBounds` (default true). |
-| `observations` | `probes`: proximity rays (0–256, default 0); `probeRangeM` (default 20). |
+| `observations` | `probes`: proximity rays (0–256, default 0); `probeRangeM` (default 20); `actors`: `true` adds `actors` to the observation (every target's position and velocity, the detectors holding a detection, the RC link margin) and its numbers at the end of the vector ([API.md](API.md#observations)). |
 | `randomize` | domain randomization (below). |
 
 ## Tasks
@@ -76,6 +76,13 @@ back to a default.
 | `hover` | `target` [x, y, z] or `heightM` above the pad (default 3), `radiusM` (default 1.5), `holdS` | inside the box for `holdS` seconds in a row (without `holdS`: none, scored by time inside) |
 | `gates` | `laps` (default 1) | every gate of the course in order, then through gate 0 again: a lap as the lap timer counts it |
 | `waypoints` | `points` [[x, y, z], …], `radiusM` (default 1) | every point visited in order |
+| `reach-target` | `target` (a target actor's id), `radiusM` (default: the target's own `radiusM`), `holdS` (default 0) | within `radiusM` of the target's centre for `holdS` in a row; it may be moving |
+| `track-target` | `target`, `rangeM` (default 15), `fovDeg` (default 60), `holdS` (default 5) | the target within `rangeM` and within `fovDeg` (full angle) of the camera axis (the drone's camera uptilt) for `holdS` in a row |
+| `detect-avoid` | `points` [[x, y, z], …] and / or `target` (the route ends there), `radiusM` (default 1), `maxDetectedS` (default 0) | the route flown with the quad detected (by the map's detectors) for at most `maxDetectedS` in all. More than that ends the episode, failed (`reason: "detected"`) |
+
+The actor tasks need a map with actors ([MAP_FORMAT.md](MAP_FORMAT.md#paths-and-actors)). Target
+ids are checked when the map is loaded. On a map with detectors every task's metrics include
+`detectedS` and `firstDetectT`.
 
 Rewards and metrics are in [API.md](API.md#rewards-and-metrics).
 
@@ -96,6 +103,8 @@ Every randomized value is a **distribution**:
 | `randomize.drone` | `preset` (names), `parts.{frame, motor, prop, battery, esc, fc, video}` (catalogue ids), `overrides.<name>` (any builder override: `massScale`, `inertiaScale`, `propThrustScale`, `kv`, `cdAScale`, `irPerCellMohm` …), `cameraUptiltDeg`, `batterySoc`, `batteryAge`, `extraMassG`, `extraMassZmm`, `motorTiltDeg`, `unit` (a new unit per episode, default true) |
 | `randomize.sim` | `windSpeed`, `windDirection`, `windTurbulence`, `windGusts`, `ambientC`, `propwash`, `rcLinkHz`, `rcTxPowerMw` |
 | `randomize.start` | `dx`, `dy`, `dz` (offsets from the start, m), `yawDeg` (added to the start yaw) |
+| `randomize.spawn` | `"any"` (the map's default spawn or any of its named spawns, equally likely) or a list of spawn ids: the spawn the episode starts from (over `start.spawn`) |
+| `randomize.actors` | `jitterM`: fixed actors (except solid targets) and whole paths move by up to this much in x and y; `speedScale`: each path's speed is scaled by a draw of this distribution. Headless only: the live game flies the map as it is |
 
 A randomized drone is **built**, not jittered. The sampled parts and overrides go through the
 drone builder, which derives the mass budget, CG, inertia tensor, prop tables, motor and battery
@@ -103,8 +112,10 @@ models from them. A heavier draw moves the CG and the inertia with it, and anoth
 the sag and the weight together. RAPTOR-style policies need exactly these correlations.
 
 **Seeds.** An episode's seed decides everything random in it. Each randomized group draws from its
-own stream (`subSeed(seed, 1)` for the drone, 2 for the conditions, 3 for the start), so adding a
-drone range doesn't change the wind a seed draws. The episode seed also seeds every random process
+own stream (`subSeed(seed, 1)` for the drone, 2 for the conditions, 3 for the start, 4 for the
+spawn, 5 for the actors), so adding a drone range doesn't change the wind a seed draws. The map's
+actors have their own stream in the simulation too (each detector's looks): a map without actors
+runs exactly as before. The episode seed also seeds every random process
 in the simulation: wind turbulence, sensor noise, the radio link, rotor-wash noise. Headless,
 `reset({ seed })` therefore repeats an episode bit for bit, given the same actions and firmware build.
 

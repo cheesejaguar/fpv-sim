@@ -269,7 +269,9 @@ optional `name`, and either a fixed `pos` or a `path` it moves along.
 
 - **paths**: 2 to 256 points, travelled at `speedMs` in simulation time after `delayS`: `loop`
   (back to the first point), `pingpong` (back and forth) or `once` (stops at the end). Positions
-  are a pure function of time, so a seeded run puts every actor in the same place.
+  are a pure function of time, so a seeded run puts every actor in the same place. The actors'
+  clock starts with the flight: when the map loads, the quad respawns or a scenario's episode
+  begins. Actors face the way they travel.
 - **rf-emitter**: a transmitter at `freqMHz` (`bwMHz` wide, on air `duty` of the time, `eirpDbm`
   EIRP, optional directional `antenna` `{ yawDeg, pitchDeg, beamDeg }`). Links whose band it
   overlaps (2.4 GHz RC, 5.8 GHz video) see its power as noise: the RC link margin and the video
@@ -281,7 +283,9 @@ optional `name`, and either a fixed `pos` or a `path` it moves along.
   `fovDeg` of [horizontal, vertical] out to `rangeM`. It looks `rateHz` times a second; each look
   detects the quad with a probability that falls with range (50 % at `r50M` for a 5-inch quad;
   `rf` compares the quad's video transmitter power against `sensitivityDbm`) and is blocked by
-  terrain and walls (foliage only weakens it). The quad counts as detected when `confirm` [m, n]: m
+  terrain and walls (foliage only weakens it). A camera sees a bigger quad farther and a quad at
+  dusk or night closer; a radar's signal falls with the fourth power of range. Each look draws
+  from the detector's own seeded stream. The quad counts as detected when `confirm` [m, n]: m
   of the last n looks saw it. Detections reach the HUD, the control API's observations and metrics,
   and scenario tasks.
 - **target**: something to reach, inspect, track or follow: `shape` (`box sphere cylinder quad

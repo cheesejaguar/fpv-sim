@@ -9,7 +9,8 @@ import { DEFAULT_SPEC, DroneSpec, PRESETS } from '../builder/derive';
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO } from '../data/catalog';
 import { Rng, subSeed } from '../sim/math';
 import { DEFAULT_SETTINGS, SimSettings } from '../worker/shared';
-import { checkDist, Randomization, sampleBuild, sampleSim, sampleStart } from './randomize';
+import type { MapDef } from '../maps/world';
+import { checkDist, Randomization, sample, sampleBuild, sampleSim, sampleSpawn, sampleStart } from './randomize';
 import type { TaskDef, Vec3 } from './tasks';
 
 export const SCENARIO_FORMAT = 'fpvsim-scenario';
@@ -27,7 +28,7 @@ export interface Scenario {
   /** a preset (by name) and / or fields of a DroneSpec over it (or over the default 5" build) */
   drone?: { preset?: string; spec?: Partial<DroneSpec> };
   /** simulation settings (SimSettings fields; map, pause and time scale come from elsewhere) */
-  sim?: Partial<Omit<SimSettings, 'mapId' | 'courseId' | 'paused' | 'timeScale' | 'wind'>> & { wind?: Partial<SimSettings['wind']> };
+  sim?: Partial<Omit<SimSettings, 'mapId' | 'courseId' | 'spawnId' | 'paused' | 'timeScale' | 'wind'>> & { wind?: Partial<SimSettings['wind']> };
   /** Betaflight CLI lines run after the simulator's defaults, then saved (a `diff all` works) */
   firmware?: { cli?: string[] };
   start?: {
@@ -37,6 +38,8 @@ export interface Scenario {
     /** start with the quad armed (after Betaflight's boot grace) */
     armed?: boolean;
     mode?: FlightMode;
+    /** a named spawn of the map (its spawns) to start from, instead of the default spawn */
+    spawn?: string;
   };
   task?: TaskDef;
   episode?: {
@@ -54,8 +57,24 @@ export interface Scenario {
     /** proximity probes: rays from the quad on a Fibonacci sphere (0 = none) */
     probes?: number;
     probeRangeM?: number;
+    /** add Observation.actors (targets, detections, RC link margin) and its numbers at the end of the vector */
+    actors?: boolean;
   };
   randomize?: Randomization;
+}
+
+/**
+ * What the scenario checks and the episode resolution need to know about its map (the map has to be
+ * loaded to know them): spawn ids, actors, the map's suggested wind. mapFacts(MapDef) makes one.
+ */
+export interface MapFacts {
+  spawns: string[];
+  actors: { id: string; type: string }[];
+  wind?: SimSettings['wind'];
+}
+
+export function mapFacts(m: MapDef): MapFacts {
+  return { spawns: (m.spawns ?? []).map((s) => s.id), actors: (m.actors ?? []).map((a) => ({ id: a.id, type: a.type })), ...(m.wind && { wind: { ...m.wind } }) };
 }
 
 /** Everything one episode needs, with every random choice made. */
@@ -75,6 +94,10 @@ export interface Episode {
   endOutOfBounds: boolean;
   probes: number;
   probeRangeM: number;
+  /** observations.actors: the target ids observed (map order), null when not observed */
+  observeActors: string[] | null;
+  /** randomize.actors drawn for this episode: apply with randomizeActors(map, ...), null when none */
+  actors: { jitterM: number; speedScale: number[]; seed: number } | null;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -88,7 +111,7 @@ const SIM_KEYS = ['physicsHz', 'damage', 'wind', 'propwash', 'rcLinkHz', 'rcTxPo
  * included: a typo must not silently fall back to a default). `hasMap` checks map ids (the app's
  * registry); leave it out to accept any id.
  */
-export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean): { scenario: Scenario | null; errors: string[] } {
+export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean, facts?: (id: string) => MapFacts | null): { scenario: Scenario | null; errors: string[] } {
   const errors: string[] = [];
   const err = (e: string) => errors.push(e);
   if (!isObj(raw)) return { scenario: null, errors: ['a scenario is a JSON object'] };
@@ -150,7 +173,8 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean): {
     const s = raw.start;
     if (!isObj(s)) err('start: expected an object');
     else {
-      allow(s, 'start.', ['pos', 'yawDeg', 'armed', 'mode']);
+      allow(s, 'start.', ['pos', 'yawDeg', 'armed', 'mode', 'spawn']);
+      if (s.spawn !== undefined && !(typeof s.spawn === 'string' && s.spawn.length > 0)) err('start.spawn: expected a spawn id');
       if (s.pos !== undefined && !vec3(s.pos)) err('start.pos: expected [x, y, z]');
       if (s.yawDeg !== undefined && !num(s.yawDeg)) err('start.yawDeg: expected a number');
       if (s.armed !== undefined && typeof s.armed !== 'boolean') err('start.armed: expected true or false');
@@ -173,24 +197,48 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean): {
     const o = raw.observations;
     if (!isObj(o)) err('observations: expected an object');
     else {
-      allow(o, 'observations.', ['probes', 'probeRangeM']);
+      allow(o, 'observations.', ['probes', 'probeRangeM', 'actors']);
+      if (o.actors !== undefined && typeof o.actors !== 'boolean') err('observations.actors: expected true or false');
       if (o.probes !== undefined && !(Number.isInteger(o.probes) && (o.probes as number) >= 0 && (o.probes as number) <= 256)) err('observations.probes: 0 .. 256');
       if (o.probeRangeM !== undefined && !(num(o.probeRangeM) && o.probeRangeM > 0 && o.probeRangeM <= 500)) err('observations.probeRangeM: 0 .. 500');
     }
   }
   if (raw.randomize !== undefined) errors.push(...checkRandomize(raw.randomize));
+  // ids that name things on the map: checked when the map is known (loaded)
+  const mapId = isObj(raw.map) && typeof raw.map.id === 'string' ? raw.map.id : DEFAULT_SETTINGS.mapId;
+  const f = facts && (!hasMap || hasMap(mapId)) ? facts(mapId) : null;
+  if (f) {
+    const spawn = isObj(raw.start) ? raw.start.spawn : undefined;
+    if (typeof spawn === 'string' && !f.spawns.includes(spawn)) err(`start.spawn: map "${mapId}" has no spawn "${spawn}"${f.spawns.length ? ` (${f.spawns.join(', ')})` : ''}`);
+    const rs = isObj(raw.randomize) ? raw.randomize.spawn : undefined;
+    if (Array.isArray(rs)) for (const id of rs) if (typeof id === 'string' && !f.spawns.includes(id)) err(`randomize.spawn: map "${mapId}" has no spawn "${id}"`);
+    const tgt = isObj(raw.task) ? raw.task.target : undefined;
+    if (typeof tgt === 'string' && !f.actors.some((a) => a.id === tgt && a.type === 'target')) err(`task.target: map "${mapId}" has no target actor "${tgt}"`);
+  }
   return { scenario: errors.length ? null : (raw as unknown as Scenario), errors };
 }
 
 function checkTask(t: unknown): string[] {
   const out: string[] = [];
   if (!isObj(t)) return ['task: expected an object with a "type"'];
-  const keys: Record<string, string[]> = { free: [], hover: ['target', 'heightM', 'radiusM', 'holdS'], gates: ['laps'], waypoints: ['points', 'radiusM'] };
+  const keys: Record<string, string[]> = {
+    free: [], hover: ['target', 'heightM', 'radiusM', 'holdS'], gates: ['laps'], waypoints: ['points', 'radiusM'],
+    'reach-target': ['target', 'radiusM', 'holdS'], 'track-target': ['target', 'rangeM', 'fovDeg', 'holdS'], 'detect-avoid': ['points', 'target', 'radiusM', 'maxDetectedS'],
+  };
   const type = t.type as string;
-  if (!(type in keys)) return [`task.type: free, hover, gates or waypoints`];
+  if (!Object.hasOwn(keys, type)) return [`task.type: ${Object.keys(keys).join(', ')}`];
   for (const k of Object.keys(t)) if (k !== 'type' && !keys[type].includes(k)) out.push(`task.${k}: unknown key for a ${type} task`);
-  if (t.target !== undefined && !vec3(t.target)) out.push('task.target: expected [x, y, z]');
-  for (const k of ['heightM', 'radiusM', 'holdS'] as const) if (t[k] !== undefined && !(num(t[k]) && (t[k] as number) > 0)) out.push(`task.${k}: a positive number`);
+  // hover: a point; the actor tasks: a target actor's id
+  if (type === 'hover' && t.target !== undefined && !vec3(t.target)) out.push('task.target: expected [x, y, z]');
+  if ((type === 'reach-target' || type === 'track-target') && !(typeof t.target === 'string' && t.target)) out.push('task.target: the id of a target actor of the map');
+  if (type === 'detect-avoid' && t.target !== undefined && !(typeof t.target === 'string' && t.target)) out.push('task.target: the id of a target actor of the map');
+  for (const k of ['heightM', 'radiusM', 'holdS', 'rangeM'] as const) if (t[k] !== undefined && !(num(t[k]) && (t[k] as number) > 0)) out.push(`task.${k}: a positive number`);
+  if (t.fovDeg !== undefined && !(num(t.fovDeg) && t.fovDeg > 0 && t.fovDeg <= 360)) out.push('task.fovDeg: 0 .. 360');
+  if (t.maxDetectedS !== undefined && !(num(t.maxDetectedS) && t.maxDetectedS >= 0)) out.push('task.maxDetectedS: a number >= 0');
+  if (type === 'detect-avoid') {
+    if (t.points !== undefined && !(Array.isArray(t.points) && t.points.length > 0 && t.points.every(vec3))) out.push('task.points: a list of [x, y, z]');
+    if (t.points === undefined && t.target === undefined) out.push('task: a detect-avoid task needs points, a target or both');
+  }
   if (t.laps !== undefined && !(Number.isInteger(t.laps) && (t.laps as number) >= 1 && (t.laps as number) <= 100)) out.push('task.laps: 1 .. 100');
   if (type === 'waypoints' && !(Array.isArray(t.points) && t.points.length > 0 && t.points.every(vec3))) out.push('task.points: a list of [x, y, z]');
   return out;
@@ -199,7 +247,17 @@ function checkTask(t: unknown): string[] {
 function checkRandomize(r: unknown): string[] {
   const out: string[] = [];
   if (!isObj(r)) return ['randomize: expected an object'];
-  for (const k of Object.keys(r)) if (!['drone', 'sim', 'start'].includes(k)) out.push(`randomize.${k}: unknown key`);
+  for (const k of Object.keys(r)) if (!['drone', 'sim', 'start', 'spawn', 'actors'].includes(k)) out.push(`randomize.${k}: unknown key`);
+  if (r.spawn !== undefined && r.spawn !== 'any' && !(Array.isArray(r.spawn) && r.spawn.length > 0 && r.spawn.every((x) => typeof x === 'string' && x.length > 0))) out.push('randomize.spawn: "any" or a list of spawn ids');
+  if (r.actors !== undefined) {
+    const a = r.actors;
+    if (!isObj(a)) out.push('randomize.actors: expected an object');
+    else {
+      for (const k of Object.keys(a)) if (k !== 'jitterM' && k !== 'speedScale') out.push(`randomize.actors.${k}: unknown key`);
+      if (a.jitterM !== undefined && !(num(a.jitterM) && a.jitterM >= 0 && a.jitterM <= 1000)) out.push('randomize.actors.jitterM: 0 .. 1000');
+      if (a.speedScale !== undefined) out.push(...checkDist(a.speedScale, 'randomize.actors.speedScale'));
+    }
+  }
   const group = (g: unknown, path: string, keys: readonly string[], numeric = true) => {
     if (g === undefined) return;
     if (!isObj(g)) { out.push(`${path}: expected an object`); return; }
@@ -257,11 +315,12 @@ export function scenarioSpec(sc: Scenario): DroneSpec {
 }
 
 /** The scenario's own settings (before randomization). */
-export function scenarioSettings(sc: Scenario): SimSettings {
+export function scenarioSettings(sc: Scenario, mapWind?: SimSettings['wind']): SimSettings {
   const s = sc.sim ?? {};
   return validSim({
     ...DEFAULT_SETTINGS, ...s,
-    wind: { ...DEFAULT_SETTINGS.wind, ...(s.wind ?? {}) },
+    // no wind of its own: the map's suggested wind (MapDef.wind), if it has one
+    wind: s.wind || !mapWind ? { ...DEFAULT_SETTINGS.wind, ...(s.wind ?? {}) } : { ...mapWind },
     mapId: sc.map?.id ?? DEFAULT_SETTINGS.mapId, courseId: sc.map?.course ?? '',
     timeScale: 1, paused: false,
     // a scenario never lets the physics rate change under it
@@ -271,15 +330,29 @@ export function scenarioSettings(sc: Scenario): SimSettings {
 
 /**
  * One episode of the scenario. `seed`: the episode's own seed (reproduces exactly that episode);
- * default: the scenario's seed (episode 0). Every random choice comes from this seed.
+ * default: the scenario's seed (episode 0). Every random choice comes from this seed. `map`: what
+ * the scenario's map has (mapFacts), when it is loaded: its wind, its spawns for randomize.spawn,
+ * its targets for observations.actors.
  */
-export function resolveEpisode(sc: Scenario, seed?: number): Episode {
+export function resolveEpisode(sc: Scenario, seed?: number, map?: MapFacts | null): Episode {
   const s = (seed ?? sc.seed ?? 0) >>> 0;
   const rnd = sc.randomize;
   // each group draws from its own stream: adding a drone range doesn't change the sampled wind
   const spec = sampleBuild(scenarioSpec(sc), rnd?.drone, new Rng(subSeed(s, 1)));
-  const settings = sampleSim(scenarioSettings(sc), rnd?.sim, new Rng(subSeed(s, 2)));
+  const settings = sampleSim(scenarioSettings(sc, map?.wind), rnd?.sim, new Rng(subSeed(s, 2)));
   const off = sampleStart(rnd?.start, new Rng(subSeed(s, 3)));
+  // the spawn variant (stream 4), the actors (stream 5): new streams, the others draw as before
+  const spawn = rnd?.spawn !== undefined ? sampleSpawn(rnd.spawn, map?.spawns ?? null, new Rng(subSeed(s, 4))) ?? sc.start?.spawn : sc.start?.spawn;
+  if (spawn) settings.spawnId = spawn;
+  const ra = rnd?.actors;
+  let actors: Episode['actors'] = null;
+  if (ra) {
+    const r = new Rng(subSeed(s, 5));
+    actors = { jitterM: ra.jitterM ?? 0, speedScale: [], seed: Math.floor(r.next() * 4294967296) };
+    // one speed scale per path of the map (in map order), drawn up front
+    const nPaths = 32;
+    for (let k = 0; k < nPaths; k++) actors.speedScale.push(ra.speedScale === undefined ? 1 : Math.max(0, sample(ra.speedScale, r)));
+  }
   const e = sc.episode ?? {};
   return {
     seed: s,
@@ -299,6 +372,8 @@ export function resolveEpisode(sc: Scenario, seed?: number): Episode {
     endOutOfBounds: e.endOutOfBounds ?? true,
     probes: sc.observations?.probes ?? 0,
     probeRangeM: sc.observations?.probeRangeM ?? 20,
+    observeActors: sc.observations?.actors ? (map?.actors ?? []).filter((a) => a.type === 'target').map((a) => a.id) : null,
+    actors,
   };
 }
 

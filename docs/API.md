@@ -32,6 +32,7 @@ its own headless simulation. Options:
 | `--realtime` | the simulation runs on the wall clock (no `step`) |
 | `--stdio` | one simulation over stdin / stdout instead of TCP (logs on stderr) |
 | `--scenario FILE` | the default scenario of each connection's first `reset` |
+| `--map FOLDER\|ZIP` | register a map package from disk (a folder or a `.zip`, such as a map builder export) under its `meta.id`, so scenarios can use it as `map.id`; repeatable. Validated at start: a broken package stops the server |
 | `--live` | relay to the browser game (below) |
 | `--ws-port N` | `--live`: the WebSocket port the page connects to (default 8765) |
 | `--origin URL` | `--live`: another page origin allowed to connect |
@@ -175,13 +176,20 @@ radio's would.
   "goal": [x, y, z], "goalBody": [x, y, z], // where the task wants the quad next: world, and in the body frame
   "probes": [d0, d1, ...],                // proximity probes (m), see below
   "gate": { "next": 2, "total": 8 },
-  "impact": 0, "damage": 0                // peak impact speed this step (m/s), prop damage
+  "impact": 0, "damage": 0,               // peak impact speed this step (m/s), prop damage
+  "actors": {                            // only with the scenario's observations.actors (maps with actors)
+    "targets": [{ "id": "truck", "pos": [x, y, z], "vel": [vx, vy, vz] }], // every target actor, map order (pos: its base)
+    "detected": ["radar-1"],              // detectors holding a detection of the quad now
+    "rcMarginDb": 12.5                    // RC uplink margin (dB), jammers included
+  }
 }
 ```
 
 **Vector.** `vec` (with `vector: true`) is `obsVector()` ([`src/api/types.ts`](../src/api/types.ts)):
 pos, vel, quat, rates, gyro, acc (zeros when null), rpm / 10000 ×4, cellV, armed, agl, goalBody,
-probes. `vectorLabels` names each entry. The Gymnasium environment uses this layout.
+probes, and with `observations.actors` at the end: each target's pos and vel, the number of
+detectors holding a detection (`detectedCount`), `rcMarginDb`. `vectorLabels` names each entry.
+The Gymnasium environment uses this layout.
 
 **Probes.** `observations.probes` in the scenario adds proximity rays on a Fibonacci sphere around
 the quad (body frame), like HyperDrone's collision probes. Each value is the distance to the first
@@ -195,13 +203,14 @@ or other cylinders.
 | `state` | `obs` | at the subscribed rate (real time) |
 | `gate` | `gate`, `t` | the next gate of the course was passed |
 | `impact` | `speed`, `t` | a collision |
-| `episode` | `reason`, `metrics` | the task ended: `success`, `crash`, `out_of_bounds`, `timeout` (live game: also `respawn`) |
+| `episode` | `reason`, `metrics` | the task ended: `success`, `crash`, `out_of_bounds`, `timeout`, `detected` (a `detect-avoid` task detected for longer than it allows) (live game: also `respawn`) |
+| `detect` | `detector`, `on`, `t` | headless (`info.events`): a detector of the map's actors began (`on: true`) or stopped holding a detection of the quad |
 | `log` | `text` | simulator and Betaflight messages |
 | `control` | `by`: `api` / `pilot` | live game: who flies |
 | `frame` | `labels`, PNGs | live game: a recorded dataset frame (`record`) |
 | `bye` | `reason` | live game: the page went away |
 
-Lock-step episodes report gates, impacts and logs in `step`'s `info.events` instead.
+Lock-step episodes report gates, impacts, detections and logs in `step`'s `info.events` instead.
 
 ## Rewards and metrics
 
@@ -213,9 +222,18 @@ in-app training drills.
 | `hover` | per second `exp(-(e/r)²)`: e is the distance to the target, r the box radius | inside for `holdS` in a row | inside time and fraction, RMS / max error, `normalizedError` = RMS / r |
 | `gates` | metres closed toward the next gate's opening, +10 per gate | the last lap's finish through gate 0 | passed / total, splits, lap times |
 | `waypoints` | metres closed toward the next point, +10 per point | every point visited | passed / total, splits |
+| `reach-target` | metres closed toward the target, +10 when reached | within `radiusM` of the target for `holdS` | `targetDistM`, `minTargetDistM`, `reachedS` |
+| `track-target` | 1 per second tracked: within `rangeM` and `fovDeg` of the camera axis | tracked `holdS` in a row | `trackedS`, `trackedFraction`, `targetDistM`, `minTargetDistM` |
+| `detect-avoid` | metres closed toward the next point, +10 per point, −5 per second detected | the route flown, detected at most `maxDetectedS` in all (more: the episode ends, `detected`) | passed / total, splits, `failed` |
 | `free` | 0 | never | distance, top speed |
 
-Every task also reports elapsed time, distance flown, top speed and the return.
+Every task also reports elapsed time, distance flown, top speed and the return. On a map with
+detectors, every task also reports `detectedS` (seconds detected) and `firstDetectT` (s since the
+start, `null`: never).
+
+**Map packages from disk.** Headless, `--map` (above) or `createNodeEnv({ maps: [folder, zip] })`
+([`src/headless/node.ts`](../src/headless/node.ts)) registers packages before the first reset;
+they keep their `meta.id`, which may not be the id of one of the simulator's own maps.
 
 ## Python
 

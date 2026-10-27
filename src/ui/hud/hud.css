@@ -79,6 +79,7 @@
 
 /* crash banner + notices */
 .ghud .crash { font-family: var(--h-display); font-size: 1.35em; letter-spacing: 0.06em; color: #fff; background: linear-gradient(90deg, rgba(244, 63, 94, 0.92), rgba(190, 18, 60, 0.92)); border: 0; padding: 0.4em 1em; border-radius: 999px; box-shadow: 0 10px 30px rgba(244, 63, 94, 0.45); }
+.ghud .detect-alert { font-family: var(--h-display); font-size: 1.1em; letter-spacing: 0.08em; color: #1a1300; background: rgba(255, 196, 0, 0.92); padding: 0.3em 0.9em; border-radius: 6px; box-shadow: 0 6px 20px rgba(255, 196, 0, 0.35); }
 .ghud .notices { display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .ghud .notice { max-width: 26em; font-size: max(13px, 0.9em); pointer-events: auto; }
 .ghud .notice b { display: block; font-family: var(--h-display); font-weight: 400; letter-spacing: 0.05em; color: var(--h-violet); margin-bottom: 0.2em; }

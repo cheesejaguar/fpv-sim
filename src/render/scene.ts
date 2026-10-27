@@ -40,6 +40,8 @@ export interface SceneBundle {
    * blows FROM (deg, 0 = north, as SimSettings.wind), time (s). Call every frame; smoothed here.
    */
   setWind(speedMs: number, dirDeg: number, t: number): void;
+  /** the map's actors (src/render/actors.ts), once loaded; null for a map without any */
+  actors: { update(actorT: number): void; setFovCones(on: boolean): void } | null;
   dispose(): void;
 }
 
@@ -292,7 +294,7 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
     }
     matFor(key, make, shadow).geos.push(place(geo, pr));
   };
-  for (const pr of map.prims) addPrim(pr, false);
+  for (const pr of map.prims) if (!pr.tag?.startsWith('target-')) addPrim(pr, false); // (solid targets: drawn with the actors)
   for (const pr of map.decor ?? []) addPrim(pr, true);
   for (const [, g] of groups) {
     const merged = track(mergeGeometries(g.geos, false)!);
@@ -440,12 +442,19 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
     sock?.update(flow.x / n, flow.y / n, speed, t);
   };
 
-  return {
+  const bundle: SceneBundle = {
     hemi, hemiBase: hemi.intensity, env,
-    scene, sun, sunDir, gateMeshes, setGateHighlight, setWind,
+    scene, sun, sunDir, gateMeshes, setGateHighlight, setWind, actors: null,
     dispose() {
       disposed = true;
       for (const d of disposables) d.dispose(); // incl. every InstancedMesh (frees its instance buffers)
     },
   };
+  // the map's actors: their renderer is only fetched for maps that have some
+  if (map.actors?.length) void import('./actors').then(({ ActorsView }) => {
+    if (disposed) return;
+    const v = new ActorsView(map);
+    scene.add(v.group); track(v); bundle.actors = v;
+  }, (e) => console.warn('actor renderer failed to load', e));
+  return bundle;
 }

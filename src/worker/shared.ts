@@ -3,6 +3,8 @@
 //   ctrl  Int32[16]   : [0] rcSeq  [1] ringHead  [2] osdSeq  [3] osdCols  [4] osdRows  [5] armed
 //                       [6] simRunning  [7] fwState (0 none, 1 loading, 2 ok, 3 missing, 4 error)
 //                       [8] stickHead (samples written to `sticks`)  [9] live FC sound: bit0 beeper, bit1 DShot beacon
+//                       [10] map actors: detectors holding a detection (bit k = detector k in map order)
+//                       [11] map actors: targets the quad is at (bit k = target k within its radius)
 //   rc    Float32[16] : RC channels in µs (1000..2000), written by main (newest poll)
 //   ring  Float64[N*REC]: sim-state history, one record per RING_DT of sim time
 //   osd   Uint8[2*64*32]: chars then attributes
@@ -312,6 +314,10 @@ export interface Telemetry {
   gps: { fix: boolean; sats: number; homeDistM: number; homeDirDeg: number } | null;
   /** peak approach speed of the newest impact (m/s) and its sim time (s); t < 0: none yet */
   impact?: { speed: number; t: number };
+  /** map actors: sim time their clock started (actor time = ring t - actorT0) */
+  actorT0?: number;
+  /** RC uplink margin (dB) and the interference in it (mW), for the API's observations */
+  rc?: { marginDb: number; interfMw: number; lq: number };
 }
 
 export type FromWorker =
@@ -323,6 +329,8 @@ export type FromWorker =
   | { type: 'built'; info: unknown }
   | { type: 'log'; text: string }
   | { type: 'gate'; gate: number; t: number }
+  /** a detector of the map's actors began (on) / stopped holding a detection (t: actor time) */
+  | { type: 'detect'; id: string; name: string; index: number; on: boolean; t: number }
   | { type: 'spectrum'; spec: GyroSpectrum }
   /** the simulator can't go on (uncaught error); the page has to be reloaded */
   | { type: 'fatal'; reason: string }
