@@ -275,6 +275,10 @@ Maps are open data packages: a folder with a `map.json` (the versioned **fpvsim-
 plus PNG heightfields, textures, `.glb` meshes, or Quake `.map` / Doom-lump geometry.
 - The format and its budgets: [docs/MAP_FORMAT.md](docs/MAP_FORMAT.md). JSON Schema:
   [schemas/map.v1.schema.json](schemas/map.v1.schema.json).
+- Build one in the app: **Build** in the menu opens the map builder, an editor laid out like
+  Unity's and Unreal's. It has an outliner, a details panel, rendered thumbnails to drag into the
+  view, box selection, copy / paste, groups, hide / lock, top and side views, and undo history.
+  **Fly** tests the map at once. See [docs/MAP_BUILDER.md](docs/MAP_BUILDER.md).
 - Try a map without a pull request: **Simulation → World → Load map (.zip / files)… / Load map
   folder…**, or drop it on the box. It loads in your browser only.
 - Check a package with `npm run map:validate -- <folder or .zip>`.

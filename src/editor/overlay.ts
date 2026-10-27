@@ -3,6 +3,8 @@
 // gizmos for everything that has no look of its own in flight: spawns and the pilot, lights, indoor
 // and wake zones, actors (masts, sensor heads with their field of view, targets), actor paths, gate
 // numbers with fly-through arrows, and the racing line. Picked objects carry their map.json path.
+// Hidden objects are left out, locked ones can't be picked; the viewport's Show menu turns labels,
+// gizmos, the racing line and collision wireframes on and off. A hover outline follows the cursor.
 import * as THREE from 'three';
 import { GATE_T, HURDLE_BANNER, openingCentre } from '../maps/gates';
 import type { ActorDoc, MapDocV1 } from '../maps/mapDoc';
@@ -10,6 +12,7 @@ import type { GateDef, MapDef, Prim } from '../maps/world';
 import { primMatrix } from '../render/scene';
 import type { Path } from './editorDoc';
 import { boxEdges, circle, cylEdges, ribbon, sphereEdges } from './geom';
+import type { ShowFlags } from './prefs';
 import { courseGates, coursePath, racingLine } from './racing';
 
 /** Layer of the pick proxies: never rendered, only ray cast. */
@@ -27,7 +30,10 @@ export interface OverlayInput {
   selected: Set<string>;
   /** the course shown (numbers, arrows, racing line): -1 = the main course */
   course: number;
-  racingLine: boolean;
+  /** objects not drawn (and not picked) / not picked, JSON-encoded paths */
+  hidden: Set<string>;
+  locked: Set<string>;
+  show: ShowFlags;
   /** glTF bounds (ENU, local, unscaled) by geometry index */
   meshBounds: Map<number, { lo: number[]; hi: number[] }>;
 }
@@ -37,10 +43,12 @@ type Picked = { ref: Path; obj: THREE.Object3D; instance?: number };
 const UNIT = { box: new THREE.BoxGeometry(1, 1, 1), cyl: new THREE.CylinderGeometry(0.5, 0.5, 1, 12), sph: new THREE.SphereGeometry(0.5, 12, 8) };
 const EDGES = { box: boxEdges(), cyl: cylEdges(), sph: sphereEdges() };
 const pickMat = new THREE.MeshBasicMaterial({ visible: false });
-const selMat = new THREE.LineBasicMaterial({ color: 0xfbbf24, depthTest: false, transparent: true });
+const selMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, depthTest: false, transparent: true });
+const hoverMat = new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.55 });
+const wireMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.55 });
 const labelCache = new Map<string, THREE.SpriteMaterial>();
 
-function label(text: string, color = '#ffffff', bg = 'rgba(15,15,35,0.78)'): THREE.Sprite {
+function makeLabel(text: string, color = '#ffffff', bg = 'rgba(15,15,35,0.78)'): THREE.Sprite {
   const key = `${text}|${color}|${bg}`;
   let m = labelCache.get(key);
   if (!m) {
@@ -70,6 +78,9 @@ export class Overlay {
   private proxies = new Map<string, { geo: keyof typeof UNIT; m: THREE.Matrix4 }>();
   /** racing line length of the course shown (m), 0 without gates */
   lineLength = 0;
+  private hoverObj: THREE.Object3D | null = null;
+  private hoverKey = '';
+  private locked = new Set<string>();
 
   constructor() { this.group.name = 'editor-overlay'; this.pick.name = 'editor-pick'; }
 
@@ -78,8 +89,9 @@ export class Overlay {
     return this.own(new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1, side: opacity < 1 ? THREE.DoubleSide : THREE.FrontSide, ...extra }));
   }
   private pickable(o: THREE.Object3D, ref: Path) {
-    o.traverse((c) => { c.layers.enable(PICK_LAYER); c.userData.ref = ref; });
-    this.gizmos.set(JSON.stringify(ref), o);
+    const k = JSON.stringify(ref), pick = !this.locked.has(k);
+    o.traverse((c) => { if (pick) c.layers.enable(PICK_LAYER); c.userData.ref = ref; });
+    this.gizmos.set(k, o);
     this.group.add(o);
     return o;
   }
@@ -89,16 +101,26 @@ export class Overlay {
     this.trash = [];
     this.gizmos.clear(); this.proxies.clear();
     this.group.clear(); this.pick.clear();
+    this.hoverObj = null; this.hoverKey = '';
   }
 
   /** Rebuild everything from the document and its MapDef. */
   build(o: OverlayInput) {
+    const hover = this.hoverKey;
     this.clear();
-    const { doc, def } = o, terrain = def.terrain;
+    const { doc, def, hidden, show } = o, terrain = def.terrain, H = (p: Path) => hidden.has(JSON.stringify(p));
+    this.locked = o.locked;
+    const label = (text: string, color?: string, bg?: string) => { const l = makeLabel(text, color, bg); l.visible = show.labels; return l; };
     // ---- pick layer: primitives, gates, trees, meshes ----
     const inst: Record<keyof typeof UNIT, { m: THREE.Matrix4; ref: Path }[]> = { box: [], cyl: [], sph: [] };
     const m4 = new THREE.Matrix4(), s3 = new THREE.Vector3();
-    const addProxy = (geo: keyof typeof UNIT, m: THREE.Matrix4, ref: Path) => { inst[geo].push({ m, ref }); this.proxies.set(JSON.stringify(ref), { geo, m }); };
+    const addProxy = (geo: keyof typeof UNIT, m: THREE.Matrix4, ref: Path) => {
+      const k = JSON.stringify(ref);
+      if (hidden.has(k)) return;
+      this.proxies.set(k, { geo, m });
+      if (!o.locked.has(k)) inst[geo].push({ m, ref });
+      if (show.collision) { const e = new THREE.LineSegments(EDGES[geo], wireMat); e.matrixAutoUpdate = false; e.matrix.copy(m); this.group.add(e); }
+    };
     (doc.primitives ?? []).forEach((_, i) => {
       const pr = def.prims[o.primOffset + i] as Prim | undefined;
       if (!pr || pr.kind === 'brush') return;
@@ -154,14 +176,17 @@ export class Overlay {
       return g;
     };
     const person = (color: number) => { const m = new THREE.Mesh(this.own(new THREE.CylinderGeometry(0.22, 0.22, 1.7, 10)), this.mat(color, 0.85)); m.position.y = -0.85; return m; };
-    if (doc.spawn) {
+    // ---- gizmos (the Show menu's "Gizmos"): spawns, pilot, lights, zones, paths, actors ----
+    const G = show.gizmos;
+    if (G && doc.spawn && !H(['spawn'])) {
       const g = arrow(0xf472b6, doc.spawn.yawDeg ?? 0, 1.3);
       T3(doc.spawn.pos[0], doc.spawn.pos[1], doc.spawn.groundZ ?? Math.max(doc.spawn.pos[2], terrain(doc.spawn.pos[0], doc.spawn.pos[1])), g.position);
       const l = label('Spawn', '#f9a8d4'); l.position.y = 1.6; g.add(l);
       this.pickable(g, ['spawn']);
     }
-    if (doc.pilot) { const p = person(0xfacc15); const g = new THREE.Group().add(p); T3(doc.pilot[0], doc.pilot[1], doc.pilot[2], g.position); this.pickable(g, ['pilot']); }
+    if (G && doc.pilot && !H(['pilot'])) { const p = person(0xfacc15); const g = new THREE.Group().add(p); T3(doc.pilot[0], doc.pilot[1], doc.pilot[2], g.position); this.pickable(g, ['pilot']); }
     (doc.spawns ?? []).forEach((s, i) => {
+      if (!G || H(['spawns', i])) return;
       const g = arrow(0x22d3ee, s.yawDeg ?? 0);
       T3(s.pos[0], s.pos[1], s.groundZ ?? Math.max(s.pos[2], terrain(s.pos[0], s.pos[1])), g.position);
       const l = label(s.name ?? s.id, '#a5f3fc'); l.position.y = 1.3; g.add(l);
@@ -171,6 +196,7 @@ export class Overlay {
 
     // ---- lights, zones ----
     (doc.lights ?? []).forEach((l, i) => {
+      if (!G || H(['lights', i])) return;
       const col = l.color ? parseInt(l.color.slice(1), 16) : 0xffffff;
       const g = new THREE.Group().add(new THREE.Mesh(this.own(new THREE.SphereGeometry(0.25, 12, 8)), this.mat(col)));
       if (o.selected.has(JSON.stringify(['lights', i]))) g.add(new THREE.Mesh(this.own(new THREE.SphereGeometry(Math.min(l.range, 300), 24, 12)), this.mat(col, 0.05, { wireframe: true })));
@@ -178,6 +204,7 @@ export class Overlay {
       this.pickable(g, ['lights', i]);
     });
     (doc.indoor ?? []).forEach((v, i) => {
+      if (!G || H(['indoor', i])) return;
       const sx = v.max[0] - v.min[0], sy = v.max[1] - v.min[1], sz = v.max[2] - v.min[2];
       const m = new THREE.Mesh(this.own(new THREE.BoxGeometry(sx, sz, sy)), this.mat(0x60a5fa, 0.1));
       m.add(new THREE.LineSegments(this.own(boxEdges([-sx / 2, -sz / 2, -sy / 2], [sx / 2, sz / 2, sy / 2])), this.own(new THREE.LineBasicMaterial({ color: 0x60a5fa }))));
@@ -185,6 +212,7 @@ export class Overlay {
       this.pickable(m, ['indoor', i]);
     });
     (doc.wakeZones ?? []).forEach((w, i) => {
+      if (!G || H(['wakeZones', i])) return;
       const m = new THREE.Mesh(this.own(new THREE.CylinderGeometry(w.radius, w.radius, w.height, 32, 1, true)), this.mat(0xfb923c, 0.14));
       T3(w.pos[0], w.pos[1], terrain(w.pos[0], w.pos[1]) + w.height / 2, m.position);
       this.pickable(m, ['wakeZones', i]);
@@ -193,10 +221,12 @@ export class Overlay {
     // ---- paths and actors ----
     const pathById = new Map((doc.paths ?? []).map((p) => [p.id, p]));
     (doc.paths ?? []).forEach((p, pi) => {
+      if (!G || p.points.every((_, i) => H(['paths', pi, 'points', i]))) return;
       const pts = p.points.map((q) => T3(q[0], q[1], q[2]));
       if (p.mode === undefined || p.mode === 'loop') pts.push(pts[0].clone());
       if (pts.length > 1) this.group.add(new THREE.Line(this.own(new THREE.BufferGeometry().setFromPoints(pts)), this.own(new THREE.LineBasicMaterial({ color: 0xa78bfa }))));
       p.points.forEach((q, i) => {
+        if (H(['paths', pi, 'points', i])) return;
         const m = new THREE.Mesh(this.own(new THREE.SphereGeometry(i === 0 ? 0.45 : 0.32, 12, 8)), this.mat(i === 0 ? 0xc4b5fd : 0xa78bfa));
         T3(q[0], q[1], q[2], m.position);
         if (i === 0) { const l = label(p.id, '#ddd6fe'); l.position.y = 1.1; m.add(l); }
@@ -204,6 +234,7 @@ export class Overlay {
       });
     });
     (doc.actors ?? []).forEach((a, i) => {
+      if (!G || H(['actors', i])) return;
       const at = a.pos ?? pathById.get(a.path ?? '')?.points[0];
       if (!at) return;
       const g = this.actorGizmo(a, at[2] - terrain(at[0], at[1]));
@@ -215,12 +246,16 @@ export class Overlay {
     // ---- the course shown: numbers, arrows, racing line ----
     const gates = courseGates(def, o.course), base = coursePath(o.course);
     gates.forEach((g, i) => {
+      if (H([...base, i])) return;
       const c = openingCentre(g), dive = g.kind === 'dive';
-      const l = label(String(i + 1), '#ffffff', 'rgba(124,58,237,0.9)');
-      T3(c.x, c.y, (dive ? g.c.z : c.z + g.height / 2) + 1.1, l.position);
-      l.scale.multiplyScalar(1.3);
-      l.userData.ref = [...base, i]; l.layers.enable(PICK_LAYER);
-      this.group.add(l);
+      if (show.labels) {
+        const l = label(String(i + 1), '#ffffff', 'rgba(124,58,237,0.9)');
+        T3(c.x, c.y, (dive ? g.c.z : c.z + g.height / 2) + 1.1, l.position);
+        l.scale.multiplyScalar(1.3);
+        l.userData.ref = [...base, i];
+        if (!o.locked.has(JSON.stringify([...base, i]))) l.layers.enable(PICK_LAYER);
+        this.group.add(l);
+      }
       const dir = dive ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(-Math.sin(g.yaw), 0, -Math.cos(g.yaw));
       const cone = new THREE.Mesh(this.own(new THREE.ConeGeometry(0.18, 0.55, 12)), this.mat(0x5dff3a, 0.9));
       cone.quaternion.setFromUnitVectors(Y_UP, dir);
@@ -228,7 +263,7 @@ export class Overlay {
       this.group.add(cone);
     });
     this.lineLength = 0;
-    if (o.racingLine && gates.length) {
+    if (show.racingLine && gates.length) {
       const sp = o.course >= 0 && def.courses?.[o.course]?.spawn ? def.courses[o.course].spawn!.pos : def.spawn.pos;
       const line = racingLine({ ...sp, z: Math.max(sp.z, terrain(sp.x, sp.y)) }, gates, 0.5);
       this.lineLength = line.length;
@@ -249,6 +284,30 @@ export class Overlay {
         h.renderOrder = 15; this.group.add(h);
       }
     }
+    if (hover) this.setHover(JSON.parse(hover) as Path, o.selected.has(hover));
+  }
+
+  /** Outline the object under the cursor (null: none); selected objects keep only their selection outline. */
+  setHover(ref: Path | null, selected = false) {
+    const k = ref ? JSON.stringify(ref) : '';
+    if (k === this.hoverKey && (this.hoverObj !== null) === (!!k && !selected)) return;
+    if (this.hoverObj) { this.hoverObj.removeFromParent(); if (this.hoverObj.userData.own) (this.hoverObj as THREE.LineSegments).geometry.dispose(); this.hoverObj = null; }
+    this.hoverKey = k;
+    if (!k || selected) return;
+    const px = this.proxies.get(k);
+    let h: THREE.LineSegments | null = null;
+    if (px) { h = new THREE.LineSegments(EDGES[px.geo], hoverMat); h.matrixAutoUpdate = false; h.matrix.copy(px.m); }
+    else {
+      const gz = this.gizmos.get(k);
+      if (!gz) return;
+      gz.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(gz, true).expandByScalar(0.08);
+      h = new THREE.LineSegments(boxEdges(b.min.toArray(), b.max.toArray()), hoverMat);
+      h.userData.own = true;
+    }
+    h.renderOrder = 14;
+    this.group.add(h);
+    this.hoverObj = h;
   }
 
   private actorGizmo(a: ActorDoc, aboveGround: number): THREE.Group {
@@ -306,6 +365,18 @@ export class Overlay {
       g.add(m);
     }
     return g;
+  }
+
+  /** The world box round these objects (JSON-encoded paths), from their pick shapes and gizmos; null if none is drawn. */
+  boundsOf(keys: Set<string>): THREE.Box3 | null {
+    const box = new THREE.Box3(), b = new THREE.Box3();
+    for (const k of keys) {
+      const px = this.proxies.get(k);
+      if (px) { if (!UNIT[px.geo].boundingBox) UNIT[px.geo].computeBoundingBox(); box.union(b.copy(UNIT[px.geo].boundingBox!).applyMatrix4(px.m)); continue; }
+      const gz = this.gizmos.get(k);
+      if (gz) { gz.updateMatrixWorld(true); box.union(b.setFromObject(gz, true)); }
+    }
+    return box.isEmpty() ? null : box;
   }
 
   /** Visible stand-ins for the selected objects while the gizmo drags them (pick proxies drawn, gizmos themselves). */

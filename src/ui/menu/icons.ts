@@ -1,6 +1,6 @@
 // Inline SVG icons for the game menu: path data copied from Lucide (ISC license, partly derived from
 // Feather, MIT; see THIRD_PARTY_NOTICES). Inline so they inherit currentColor and need no icon font or network.
-const P: Record<string, string> = {
+const P = {
   play: '<path d="M7 4v16l13-8z"/>',
   pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
   skipBack: '<path d="M19 20 9 12l10-8z"/><path d="M5 19V5"/>',
@@ -48,7 +48,7 @@ const P: Record<string, string> = {
   trophy: '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/>',
   external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   wifiOff: '<path d="M12 20h.01M8.5 16.43a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.17-2.65M10.66 5c4.01-.36 8.14.9 11.34 3.76M16.85 11.25a10 10 0 0 1 2.22 1.68M5 13a10 10 0 0 1 5.24-2.76M2 2l20 20"/>',
-};
+} satisfies Record<string, string>;
 
 export type IconName = keyof typeof P;
 

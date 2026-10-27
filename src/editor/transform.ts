@@ -2,7 +2,7 @@
 // primitives, gates, trees, spawns, lights, zones, actors, path points, meshes. Pure functions: the
 // gizmo's result becomes one undoable command of "set" ops.
 import type { MapDocV1, Vec3 } from '../maps/mapDoc';
-import { EditorDoc, refKind, type Op, type Path, type RefKind } from './editorDoc';
+import { EditorDoc, refKind, type BuilderMeta, type Op, type Path, type RefKind } from './editorDoc';
 
 type Obj = Record<string, any>;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -122,10 +122,13 @@ export function transformOps(ed: EditorDoc, refs: Path[], t: Xform, terrain: Ter
   return ops;
 }
 
-/** Paths of every part of a prefab / spawn-pad group (primitives, lights, spawns). */
+/** The map.json lists whose objects can be grouped ("x-group"): prefabs, spawn pads and the groups made with Ctrl+G. */
+export const GROUPABLE = ['primitives', 'gates', 'trees', 'spawns', 'lights', 'indoor', 'wakeZones', 'actors', 'geometry'] as const;
+
+/** Paths of every member of a group (a prefab, a spawn pad, or a group made with Ctrl+G). */
 export function groupMembers(doc: MapDocV1, g: string): Path[] {
   const out: Path[] = [];
-  for (const key of ['primitives', 'lights', 'spawns'] as const) (doc[key] as Obj[] | undefined)?.forEach((o, i) => { if (o?.['x-group'] === g) out.push([key, i]); });
+  for (const key of GROUPABLE) (doc[key] as Obj[] | undefined)?.forEach((o, i) => { if (o?.['x-group'] === g) out.push([key, i]); });
   return out;
 }
 
@@ -171,22 +174,41 @@ export function freeId(taken: Iterable<string>, base: string): string {
 
 /** Insert ops for copies of the selection, moved by d and turned by yawDeg about the pivot (duplicate, array). */
 export interface CopyState { counts: Map<string, number>; newIds: Map<string, string[]> }
+/** An object to copy: where it was (its list decides where the copy goes), what it is, its value. */
+export interface CopyItem { ref: Path; kind: RefKind; v: Obj }
+type GroupMeta = NonNullable<BuilderMeta['groups']>[string];
+
 /** state: shared by the copies of one command (an array), so their indices and ids follow on. */
 export function copyOps(ed: EditorDoc, refs: Path[], t: Xform, terrain: Terrain, state: CopyState = { counts: new Map(), newIds: new Map() }): { ops: Op[]; added: Path[] } {
+  const items: CopyItem[] = [];
+  for (const r of refs) { const k = refKind(r), v = ed.get(r) as Obj | undefined; if (k && v !== undefined) items.push({ ref: r, kind: k, v }); }
+  return insertCopies(ed, items, t, terrain, state, { groups: ed.meta.groups, names: ed.meta.names });
+}
+
+/**
+ * Insert copies of objects (from the document or a clipboard): each goes to the end of its original
+ * list (path points: right after the original when it is still there and `after` is set). Course gates
+ * whose course is gone go to the main course; path points whose path is gone are skipped. Groups get
+ * fresh ids (a prefab's record and a group's name come along); spawns and actors fresh ids.
+ */
+export function insertCopies(ed: EditorDoc, items: CopyItem[], t: Xform, terrain: Terrain, state: CopyState, meta: { groups?: BuilderMeta['groups']; names?: BuilderMeta['names'] } = {}, after = true): { ops: Op[]; added: Path[] } {
   const ops: Op[] = [], added: Path[] = [], doc = ed.doc as unknown as Obj;
   const { counts, newIds } = state, regroup = new Map<string, string>();
   const ids = (k: string) => ((doc[k] as Obj[] | undefined) ?? []).map((o) => o.id as string);
-  for (const r of refs) {
-    const k = refKind(r);
-    if (!k || k === 'mainSpawn' || k === 'pilot') continue;
-    const o = transformObj(k, ed.get(r) as Obj, t, terrain, ed.doc);
+  for (const { ref: r, kind: k, v } of items) {
+    if (k === 'mainSpawn' || k === 'pilot') continue;
+    const o = transformObj(k, v, t, terrain, ed.doc);
+    let list: Path = r.length === 2 ? [r[0] as string] : r.slice(0, 3);
+    if (k === 'gate' && r.length === 4 && ed.get(r.slice(0, 2)) === undefined) list = ['gates'];
     if (k === 'pathPoint') {
-      const at = (r[3] as number) + 1;
-      ops.push({ k: 'ins', path: r.slice(0, 3), i: at, v: o }); added.push([...r.slice(0, 3), at]);
+      if (ed.get(r.slice(0, 2)) === undefined) continue;
+      const key = JSON.stringify(list), n = (ed.get(list) as unknown[]).length + (counts.get(key) ?? 0);
+      const at = after ? (r[3] as number) + 1 : n;
+      if (!after) counts.set(key, (counts.get(key) ?? 0) + 1);
+      ops.push({ k: 'ins', path: list, i: at, v: o }); added.push([...list, at]);
       continue;
     }
     if (typeof o['x-group'] === 'string') { if (!regroup.has(o['x-group'])) regroup.set(o['x-group'], ed.uid('g')); o['x-group'] = regroup.get(o['x-group']); }
-    const list = r.length === 2 ? [r[0] as string] : r.slice(0, 3);
     const key = JSON.stringify(list);
     if ('id' in o && (k === 'spawn' || k === 'actor')) {
       const taken = [...ids(list[0] as string), ...(newIds.get(key) ?? [])];
@@ -196,6 +218,11 @@ export function copyOps(ed: EditorDoc, refs: Path[], t: Xform, terrain: Terrain,
     counts.set(key, (counts.get(key) ?? 0) + 1);
     ops.push({ k: 'ins', path: list, i: n, v: o }); added.push([...list, n]);
   }
-  for (const [from, to] of regroup) { const m = ed.meta.groups?.[from]; if (m) ops.push({ k: 'set', path: ['x-builder', 'groups', to], v: { ...m, pos: transformObj('pathPoint', m.pos as unknown as Obj, t, terrain), yawDeg: wrap(m.yawDeg + t.yawDeg) } }); }
+  for (const [from, to] of regroup) {
+    const m: GroupMeta | undefined = meta.groups?.[from];
+    if (m) ops.push({ k: 'set', path: ['x-builder', 'groups', to], v: { ...m, pos: transformObj('pathPoint', m.pos as unknown as Obj, t, terrain), yawDeg: wrap(m.yawDeg + t.yawDeg) } });
+    const name = meta.names?.[from];
+    if (name) ops.push({ k: 'set', path: ['x-builder', 'names', to], v: name });
+  }
   return { ops, added };
 }

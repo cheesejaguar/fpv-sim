@@ -6,6 +6,28 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Map builder: an editor like Unity's and Unreal's (docs/MAP_BUILDER.md)
+- Docked, resizable panels:
+  - **Place**: rendered 3D thumbnails of every gate, primitive and prefab; search; drag a tile
+    onto the view.
+  - **Outliner**: a tree of every object; search; hide and lock per row or folder; F2 renames.
+  - **Details**: a Transform section first; number labels scrub; X / Y / Z fields in red, green
+    and blue; sections fold.
+  - **Problems / History**: click any undo step to go back to it.
+  - A status bar with mouse hints, the cursor's ground position and the selection.
+- The viewport:
+  - a toolbar with tools, world / local axes, snapping, and the Camera, View and Show menus;
+  - a clickable axis gizmo and orthographic top / side views;
+  - a reference grid that follows the snap step;
+  - hover outlines, box selection, and a right-click menu with **Paste here** and **Add here**.
+- Unity / Unreal controls:
+  - hold the right button to look and fly with WASD (the wheel sets the speed);
+  - Alt-drag orbits, the middle button pans, the wheel zooms toward the cursor;
+  - Q / W / E / R pick the tool, F / Home frame.
+- Editing: cut / copy / paste (at the cursor, across drafts), Ctrl+G groups of any objects, hide /
+  isolate / show all, arrow-key nudges and [ ] turns, drop to the ground, select all, a shortcut
+  sheet (?). The selection and hidden objects follow inserts, deletes and undo.
+
 ### Development, test and operations (docs/COMPARISON.md)
 - **Operations** (docs/OPERATIONS.md; scenario `ops`, API `ops` / `fault` / `drop` / `linkmap`,
   Settings → Research → Operations):
