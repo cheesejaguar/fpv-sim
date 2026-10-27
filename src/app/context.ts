@@ -112,6 +112,8 @@ export interface AppCtx {
   replay: ReplayView | null;
   logLines: string[];
   log(t: string): void;
+  /** the map builder while it has the screen (src/editor/): it draws its own scene and camera */
+  editor?: { frame(now: number): void; onMenu(): void } | null;
 }
 
 /** Recent sim / firmware messages shown at the end of the telemetry overlay. */

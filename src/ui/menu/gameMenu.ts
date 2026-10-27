@@ -35,7 +35,7 @@ let shareModule: Promise<ShareModule> | undefined;
 const loadShare = () => (shareModule ??= import('../../share/sheet').catch((e) => { shareModule = undefined; throw e; }));
 
 export type GameMode = 'free' | 'race' | 'drill';
-type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about' | 'leaderboard' | 'initials' | 'share';
+type Screen = 'title' | 'pause' | 'new' | 'browser' | 'settings' | 'guide' | 'about' | 'leaderboard' | 'initials' | 'share' | 'build';
 type JoinFrom = 'host' | 'code' | 'browser';
 
 export interface SettingsTab { id: string; label: string; icon: IconName; render: () => HTMLElement }
@@ -64,6 +64,10 @@ export interface MenuHost {
   watch(bytes: Uint8Array, label: ReplayLabel, ui: ReplayUi): Promise<{ close(): void }>;
   /** this session's personal bests: the newest one, and the view when each was set (share cards) */
   shots: PbShots;
+  /** the map builder's Build screen body (its chunk loads the first time it opens); no Build entry without it */
+  buildScreen?(): HTMLElement;
+  /** "Back to editor" while a map from the builder is flown (null: nothing to go back to) */
+  editorBack?(): (() => void) | null;
 }
 
 /** Where a replay came from (its title in the player): a board entry, the pilot's best, the last lap, a file. */
@@ -107,7 +111,7 @@ const isPreset = (s: DroneSpec) => PRESETS.some((p) => sameSpec(p, s) || sameSpe
 function loadMine(): DroneSpec | null { return load(MINE_KEY, parseSpec); }
 function keepMine(s: DroneSpec) { if (!isPreset(s)) save(MINE_KEY, s); }
 
-const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About', leaderboard: 'Leaderboard', initials: 'Post your lap', share: 'Share your lap' };
+const SCREEN_NAMES: Record<Screen, string> = { title: 'Main menu', pause: 'Paused', new: 'New game', browser: 'Server browser', settings: 'Settings', guide: 'Betaflight quick start', about: 'About', leaderboard: 'Leaderboard', initials: 'Post your lap', share: 'Share your lap', build: 'Map builder' };
 
 /**
  * Does a map have race gates? Known for the built-in maps; map packages (community, from disk) are
@@ -258,7 +262,7 @@ export class GameMenu {
     const scrollY = soft ? this.screenEl?.scrollTop ?? 0 : 0;
     const scr = el('section', { class: soft ? 'gm-screen gm-static' : 'gm-screen enter', 'aria-label': SCREEN_NAMES[s] });
     this.ini = null;
-    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about(), leaderboard: () => this.leaderboard(), initials: () => this.initials(), share: () => this.share() }[s];
+    const build = { title: () => this.titleScreen(false), pause: () => this.titleScreen(true), new: () => this.newGame(), browser: () => this.browser(), settings: () => this.settings(), guide: () => this.guide(), about: () => this.about(), leaderboard: () => this.leaderboard(), initials: () => this.initials(), share: () => this.share(), build: () => this.buildScreen() }[s];
     scr.append(build());
     runUnmounts(this.screenEl); // panels on the old screen drop their listeners (CLI output …)
     this.main.replaceChildren(scr);
@@ -367,6 +371,7 @@ export class GameMenu {
     const items: HTMLElement[] = paused
       ? [
         this.item({ icon: 'play', title: 'Resume', sub: 'Back to the quad', primary: true, autofocus: true, onClick: () => this.close() }),
+        ...(this.host.editorBack?.() ? [this.item({ icon: 'wrench', title: 'Back to editor', sub: 'The map builder, where the quad is now', onClick: () => this.host.editorBack?.()?.() })] : []),
         ...(this.host.board.pending ? [this.item({ icon: 'trophy', title: 'Post your lap', sub: `New personal best ${formatLap(this.host.board.pending.lapMs)}: add your initials to the leaderboard`, onClick: () => this.openInitials() })] : []),
         ...(last ? [this.item({ icon: 'video', title: 'Replay last lap', sub: `${formatLap(last.lapMs)}: watch it in FPV, chase, line of sight or orbit`, onClick: () => this.watch(() => last.replay.then((b) => b ?? { error: 'That lap couldn’t be recorded (the simulator was paused or stalled during it).' }), { source: 'last' }) })] : []),
         ...(this.host.shots.last ? [this.item({ icon: 'share', title: 'Share your lap', sub: `Personal best ${formatLap(this.host.shots.last.lapMs)} as a card for your Instagram Story`, onClick: () => this.openShare(this.host.shots.last!) })] : []),
@@ -374,6 +379,7 @@ export class GameMenu {
         this.item({ icon: 'trophy', title: 'Leaderboard', sub: 'Fastest laps worldwide, by track and drone', onClick: () => this.go('leaderboard') }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: 'Arming, modes, rates, PIDs, OSD', onClick: () => this.go('guide') }),
+        ...(this.host.buildScreen && !this.host.editorBack?.() ? [this.item({ icon: 'wrench', title: 'Build', sub: 'Map builder: drafts, templates, your maps', onClick: () => this.go('build') })] : []),
         ...(mp.room && mp.status !== 'idle' ? [this.item({ icon: 'logout', title: 'Leave room', sub: mp.connected ? `Room ${mp.room}, ${mp.peers.size + 1} pilot(s)` : `Room ${mp.room}: ${{ error: 'disconnected', reconnecting: 'reconnecting…', connecting: 'joining…' }[mp.status as string] ?? ''}`, onClick: () => { mp.leave(); history.replaceState(null, '', location.pathname); this.render(); } })] : []),
         this.item({ icon: 'home', title: 'Main menu', sub: 'New game, server browser', onClick: () => { this.stack = ['title']; this.render(); } }),
       ]
@@ -381,6 +387,7 @@ export class GameMenu {
         this.item({ icon: 'play', title: this.inFlight ? 'Continue' : 'Quick fly', sub: this.inFlight ? 'Back to the quad' : `Tiny whoop, the easiest quad to fly · ${MAP_LIST[this.host.sim().mapId]?.name.split(' — ')[0] ?? 'Map'}`, primary: true, autofocus: true, onClick: () => (this.inFlight ? this.close() : this.quickFly()) }),
         this.item({ icon: 'plus', title: 'New game', sub: 'Local flight or multiplayer: map, drone and mode', onClick: () => this.go('new') }),
         this.item({ icon: 'server', title: 'Server browser', sub: 'Join a public room and fly with others', onClick: () => this.go('browser') }),
+        ...(this.host.buildScreen ? [this.item({ icon: 'wrench', title: 'Build', sub: 'Map builder: race courses, freestyle spots, research ranges', onClick: () => this.go('build') })] : []),
         this.item({ icon: 'trophy', title: 'Leaderboard', sub: 'Fastest laps worldwide, by track and drone', onClick: () => this.go('leaderboard') }),
         this.item({ icon: 'settings', title: 'Settings', sub: 'Betaflight, controller, drone, simulation', onClick: () => this.go('settings') }),
         this.item({ icon: 'book', title: 'Betaflight quick start', sub: `${guideDone().size}/${CHAPTERS.length} chapters done`, onClick: () => this.go('guide') }),
@@ -418,6 +425,11 @@ export class GameMenu {
           el('button', { class: 'gm-btn', onclick: () => this.openSettings('controller') }, icon('gamepad'), 'Controller setup')),
         el('div', { class: 'gm-card gm-tip' }, el('h3', {}, 'Tip'), tip)),
     );
+  }
+
+  /** Map builder: its drafts and templates (src/editor/session.ts, loaded with the editor). */
+  private buildScreen(): HTMLElement {
+    return el('div', {}, this.backBar(), el('h1', { class: 'gm-h1' }, 'Map builder'), this.host.buildScreen?.() ?? null);
   }
 
   // -------------------------------------------------------------------------------------------

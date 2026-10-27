@@ -20,6 +20,8 @@ export type { TimeOfDay } from './sky';
 export interface SceneOptions {
   /** 'map' (default) lights the map as authored; the others move the sun / switch to night. */
   timeOfDay?: TimeOfDay;
+  /** primitives left out of the merged meshes (the map builder draws the ones being dragged itself) */
+  exclude?: (p: Prim) => boolean;
 }
 
 export interface SceneBundle {
@@ -294,7 +296,7 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
     }
     matFor(key, make, shadow).geos.push(place(geo, pr));
   };
-  for (const pr of map.prims) if (!pr.tag?.startsWith('target-')) addPrim(pr, false); // (solid targets: drawn with the actors)
+  for (const pr of map.prims) if (!pr.tag?.startsWith('target-') && !opts.exclude?.(pr)) addPrim(pr, false); // (solid targets: drawn with the actors)
   for (const pr of map.decor ?? []) addPrim(pr, true);
   for (const [, g] of groups) {
     const merged = track(mergeGeometries(g.geos, false)!);
