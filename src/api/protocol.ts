@@ -94,6 +94,8 @@ export type ApiEvent =
   | { event: 'impact'; speed: number; t: number }
   | { event: 'log'; text: string; t?: number }
   | { event: 'episode'; reason: string; metrics: TaskMetrics }
+  /** a detector of the map's actors began (on) or stopped holding a detection of the quad */
+  | { event: 'detect'; detector: string; on: boolean; t: number }
   /** live game: who flies the quad now */
   | { event: 'control'; by: 'api' | 'pilot' }
   /** live game, recording: one recorded frame (labels; PNGs as base64) */

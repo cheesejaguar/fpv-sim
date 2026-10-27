@@ -151,6 +151,7 @@ export function validSim(raw: unknown): SimSettings {
   return merge(DEFAULT_SETTINGS, raw, {
     mapId: (x, d) => (hasMap(x) ? x : d), // maps loaded from disk are gone after a reload
     courseId: text(24),                   // an id the map doesn't have flies its default course
+    spawnId: text(32),                    // likewise: an unknown spawn id starts from the map's spawn
     physicsHz: oneOf(2000, 4000, 8000),  // the worker steps whole multiples of 1 kHz
     timeScale: num(0.05, 1),
     damage: bool,

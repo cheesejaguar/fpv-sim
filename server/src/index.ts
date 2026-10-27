@@ -6,6 +6,7 @@
 //   POST /leaderboard                      -> submit a lap with its replay (allowed origins only)
 //   GET /leaderboard/:id/replay            -> an entry's replay (.fpvreplay), CORS, cached
 //   DELETE /leaderboard/:id                -> remove an entry (Authorization: Bearer ADMIN_TOKEN)
+//   /maps, /maps/u-…[/package.zip|/preview|/report|/status] -> published user maps (mapStore.ts)
 //   GET /health                            -> "ok"
 // Each room is one Durable Object instance using the WebSocket Hibernation API, so idle rooms cost
 // nothing: keepalive pings are answered by the runtime without waking the object, and a room's
@@ -18,7 +19,10 @@ import { decide, Entry, entryView, MAX_BODY_BYTES, MAX_POST_BYTES, packLap, pars
 import { HEARTBEAT_MS, LobbyCore, RoomListing } from './lobbyCore';
 import { checkReplay } from './replayCheck';
 import { MAX_REPLAY_BYTES, REPLAY_MIME } from './replayFormat';
+import { isMapsPath, mapsRoute } from './mapStore';
 import { MAP_RE, MAX_MSG_BYTES, originAllowed, PING, PONG, RoomCore, Sock, SockState, validMeta } from './roomCore';
+// the user-map index Durable Object (mapStore.ts), exported here as the runtime requires
+export { MapIndex } from './mapStore';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -32,8 +36,11 @@ export interface Env {
   DENYLIST?: KVNamespace;
   /** optional secret: salt for the hashed client IPs (listed rooms per client, leaderboard entries) */
   IP_SALT?: string;
-  /** optional secret: enables DELETE /leaderboard/:id (removal requests, moderation) */
+  /** optional secret: enables DELETE /leaderboard/:id and DELETE /maps/:id (removal requests, moderation) */
   ADMIN_TOKEN?: string;
+  /** user maps (mapStore.ts): the R2 bucket with packages and previews, and the metadata index; without them /maps answers 503 */
+  USER_MAPS?: R2Bucket;
+  MAP_INDEX?: DurableObjectNamespace;
 }
 
 const CODE_RE = /^[A-Z0-9]{4,8}$/;
@@ -251,11 +258,31 @@ async function leaderboard(req: Request, env: Env, url: URL, ctx?: ExecutionCont
   return reply(text, r.status);
 }
 
+// ---------------------------------------------------------------------------------------------
+// User maps (mapStore.ts): the routes get the bindings and the Worker's CORS, denylist, limiter and hashing
+function userMaps(req: Request, env: Env, url: URL): Promise<Response> {
+  const ip = req.headers.get('CF-Connecting-IP') ?? '';
+  const index = env.MAP_INDEX ? env.MAP_INDEX.get(env.MAP_INDEX.idFromName('global')) : undefined;
+  return mapsRoute(req, url, {
+    bucket: env.USER_MAPS, index: index && { fetch: (u, init) => index.fetch(u, init) },
+    cors: cors(req, env), originOk: originAllowed(req.headers.get('Origin'), allowList(env)), ip,
+    adminOk: () => adminOk(req, env),
+    denied: async (keys) => !!env.DENYLIST && (await denied(env.DENYLIST, keys)),
+    limit: async (key) => {
+      if (!env.RATE_LIMITER || !ip) return true;
+      try { return (await env.RATE_LIMITER.limit({ key })).success; } catch { return true; } // limiter unavailable: allow
+    },
+    hash: (s) => hashIp(s, env.IP_SALT),
+    readBody,
+  });
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
     if (url.pathname === '/leaderboard' || url.pathname.startsWith('/leaderboard/')) return leaderboard(req, env, url, ctx);
+    if (isMapsPath(url.pathname)) return userMaps(req, env, url);
     if (url.pathname === '/rooms') {
       if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors(req, env), 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Max-Age': '86400' } });
       if (req.method !== 'GET') return new Response('method not allowed', { status: 405 });

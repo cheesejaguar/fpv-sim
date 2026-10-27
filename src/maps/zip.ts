@@ -1,14 +1,29 @@
 // Minimal .zip reader for map packages (stored + deflate entries, no zip64, no encryption).
 // Uses DecompressionStream('deflate-raw'), available in browsers, workers and Node >= 21.
 
-export interface ZipEntry { path: string; size: number; read(): Promise<Uint8Array> }
+/** size: the uncompressed size the archive declares. read(max): the bytes; with `max`, reading stops
+ *  (and throws) once the data inflates past it, so a crafted archive can't expand without bound. */
+export interface ZipEntry { path: string; size: number; read(max?: number): Promise<Uint8Array> }
 
 const u16 = (b: Uint8Array, o: number) => b[o] | (b[o + 1] << 8);
 const u32 = (b: Uint8Array, o: number) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
 
-export async function inflate(data: Uint8Array, format: 'deflate' | 'deflate-raw'): Promise<Uint8Array> {
-  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream(format));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+export async function inflate(data: Uint8Array, format: 'deflate' | 'deflate-raw', max = Infinity): Promise<Uint8Array> {
+  const stream = new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream(format));
+  if (max === Infinity) return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader(), parts: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { await reader.cancel().catch(() => {}); throw new Error(`inflates to more than ${max} bytes`); }
+    parts.push(value);
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
 }
 
 /** List the files in a zip archive (directories omitted). Throws on archives it cannot read. */
@@ -35,8 +50,12 @@ export function readZip(buf: Uint8Array): ZipEntry[] {
     if (method !== 0 && method !== 8) throw new Error(`${path}: unsupported zip compression method ${method}`);
     if (u32(buf, local) !== 0x04034b50) throw new Error(`${path}: corrupt zip local header`);
     const start = local + 30 + u16(buf, local + 26) + u16(buf, local + 28);
+    if (start + csize > buf.length) throw new Error(`${path}: zip entry runs past the end of the archive`);
     const raw = buf.subarray(start, start + csize);
-    out.push({ path, size, read: async () => (method === 0 ? raw.slice() : inflate(raw, 'deflate-raw')) });
+    out.push({ path, size, read: async (max?: number) => {
+      if (method === 0) { if (max !== undefined && raw.length > max) throw new Error(`inflates to more than ${max} bytes`); return raw.slice(); }
+      return inflate(raw, 'deflate-raw', max);
+    } });
   }
   return out;
 }

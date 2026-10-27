@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { ROT_N } from './fpvCamera';
 
 /** Semantic classes (index = value in the segmentation image). */
-export const GT_CLASSES = ['sky', 'ground', 'structure', 'vegetation', 'gate', 'person', 'drone_self', 'drone_other', 'object'] as const;
+export const GT_CLASSES = ['sky', 'ground', 'structure', 'vegetation', 'gate', 'person', 'drone_self', 'drone_other', 'object', 'target'] as const; // append only: datasets store the index
 export type GtClass = (typeof GT_CLASSES)[number];
 export const GT = Object.fromEntries(GT_CLASSES.map((c, i) => [c, i])) as Record<GtClass, number>;
 

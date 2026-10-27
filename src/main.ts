@@ -18,12 +18,15 @@ import { KEYS, load, save, validSim, validSpec, validView } from './app/persist'
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
 import { buildDrone, DroneBuild, DroneSpec, hasPropTable, preloadPropTable } from './builder/derive';
+import type { EditorHost } from './editor/host';
 import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
 import { hasMap, MAP_LIST, MAPS, preloadMap } from './maps/maps';
-import { PrimitiveWorld, withCourse } from './maps/world';
+import { PrimitiveWorld, withCourse, withSpawn } from './maps/world';
 import { MultiplayerClient } from './net/multiplayer';
+import { isUserMapId } from './net/protocol';
+import { installUserMaps } from './app/userMapsHost';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
 import { buildDroneMesh } from './render/droneMesh';
@@ -96,13 +99,15 @@ renderer.domElement.addEventListener('webglcontextlost', () => {
   try { if (!ctx.menuOpen) gameMenu.open(); } catch { /* still starting up */ } // pause: a flying quad would crash meanwhile
 });
 
+// a user map flown last session is restored from this device's cache once the app is up (userMaps.boot)
+const savedUserMap = isUserMapId(sim0.mapId) ? sim0.mapId : null;
 if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 // the map's data and the prop's precomputed BEMT table (else buildDrone spends ~1.2 s building it)
 await Promise.all([
   preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; }),
   preloadPropTable(spec0.prop),
 ]);
-const map0 = withCourse(MAPS[sim0.mapId](), sim0.courseId);
+const map0 = withSpawn(withCourse(MAPS[sim0.mapId](), sim0.courseId), sim0.spawnId);
 const build0 = buildDrone(spec0);
 const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })), b.info.cgMm);
 
@@ -144,6 +149,7 @@ bridge.onMessage = (m) => {
     case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
     case 'opsEvent': ctx.log(opsEventText(m.e)); apiHost.onOps(m.e); break;
     case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
+    case 'detect': if (m.on) ctx.log(`Detected by ${m.name}`); break; // (the HUD alert reads the shared flags)
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
     case 'runState': ctx.run = { active: m.active, seed: m.seed ?? ctx.run.seed, reason: m.reason }; if (!m.active && m.reason) ctx.log(`Reproducible run ended: ${m.reason}`); break;
     case 'mapLoaded': onWorkerMap(m.id, m.requested, m.ok, m.error); break;
@@ -209,13 +215,13 @@ function rebuildScene() {
 }
 /** Rebuild the rendered world for a map that is loaded (preloaded or built in). */
 function showMap(id: string) {
-  ctx.map = withCourse(MAPS[id](), ctx.sim.courseId); ctx.world = new PrimitiveWorld(ctx.map);
+  ctx.map = withSpawn(withCourse(MAPS[id](), ctx.sim.courseId), ctx.sim.spawnId); ctx.world = new PrimitiveWorld(ctx.map);
   rebuildScene();
   resetLaps(ctx);
 }
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
-  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '');
+  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '') || (s.spawnId ?? '') !== (ctx.sim.spawnId ?? '');
   // the pilot picked another physics rate: that one is theirs (and the governor's no longer applies)
   if (s.physicsHz !== ctx.sim.physicsHz) { chosenHz = s.physicsHz; governedHz = null; }
   ctx.sim = s; storeSim(s);
@@ -270,7 +276,7 @@ function applyView(v: ViewSettings) {
 // Input: poll fast (250 Hz) for low latency, independent of the render rate
 const input = ctx.input;
 input.onReset = () => { onRespawn(ctx); apiHost.onRespawn(); ctx.send({ type: 'reset', repair: true }); };
-input.onMenu = () => gameMenu.toggle();
+input.onMenu = () => (ctx.editor ? ctx.editor.onMenu() : gameMenu.toggle());
 input.onAction = (a) => simAction(a);
 /** Shared by keyboard keys and controller buttons (B, D-pad). */
 function simAction(a: SimAction) {
@@ -308,12 +314,17 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------------------------------------------------------------------------------------------
 // Live multiplayer: remote pilots' poses arrive through the room relay and are drawn in our scene.
-ctx.mp.onMap = (m) => {
-  if (!hasMap(m) || m === ctx.sim.mapId) return;
+function applyRoomMap(m: string) {
   applyingRoomMap = true;
-  applySim({ ...ctx.sim, mapId: m, courseId: '' }); // the room shares the map; everyone flies its default course
+  applySim({ ...ctx.sim, mapId: m, courseId: '', spawnId: '' }); // the room shares the map; everyone flies its default course
   applyingRoomMap = false;
   ctx.log(`Room switched the map to ${MAP_LIST[m]?.name ?? m}`);
+}
+ctx.mp.onMap = (m) => {
+  if (m === ctx.sim.mapId) return;
+  // a user map this pilot doesn't have: a consent card, then download + verify (userMapsHost.ts)
+  if (!hasMap(m)) { if (isUserMapId(m)) void userMaps.offerRoomMap(m); return; }
+  applyRoomMap(m);
 };
 /** room: name / visibility, used if we are the first pilot in (the host) */
 function joinRoom(code: string, room?: { name: string; public: boolean }) {
@@ -394,6 +405,37 @@ const researchLazy = lazyTab(() => import('./ui/researchPanel'), (m) => m.resear
 const trainingLazy = lazyTab(() => import('./ui/trainingPanel'), (m) => m.trainingPanel({ ctx, api: apiHost, fly: () => { toggleDrill(ctx, false); gameMenu.resume(); } }));
 const controllerTab = controllerLazy.render, bfTab = bfLazy.render, builderTab = builderLazy.render;
 
+// Map builder (src/editor/, its own chunk with the Build screen): it takes the screen with the
+// simulation held paused, and hands it back to fly the draft as a local map.
+/** the menu or the editor has the screen: the sim is paused and the controls belong to it */
+const holdSim = (on: boolean) => { ctx.menuOpen = on; input.suspended = on; ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: on } }); };
+let editorFlew = false; // flying a map from the builder: the pause menu offers "Back to editor"
+const editorHost: EditorHost = {
+  ctx,
+  enter: (v) => { ctx.replay?.close(); ctx.editor = v; editorFlew = false; gameMenu.close(); holdSim(true); },
+  leave: () => { ctx.editor = null; gameMenu.open('build'); },
+  fly: (o) => {
+    ctx.editor = null; editorFlew = true;
+    applySim({ ...ctx.sim, mapId: o.mapId, courseId: o.courseId, spawnId: o.spawnId });
+    const mode: GameMode = o.race ? 'race' : 'free';
+    gameMenu.activeMode = mode; gameMenu.inFlight = true;
+    startFlight(mode);
+    holdSim(false);
+  },
+  runScenario: async (doc) => {
+    ctx.editor = null; editorFlew = true; gameMenu.inFlight = true; holdSim(false);
+    try {
+      const b = await apiHost.backend();
+      const off = b.listen('episode', (e) => { ctx.log(`Scenario ended (${(e as { reason: string }).reason})`); off(); });
+      await b.call('reset', { scenario: doc, pilot: true });
+    } catch (e) { ctx.log(`This scenario can't run: ${(e as Error)?.message ?? e}`); gameMenu.open('pause'); }
+  },
+  // publish to the user-maps service (lazy: the dialog and the uploader load on first use)
+  onPublish: async (files, meta) => { await (await import('./net/userMaps')).publishDialog(files, meta); },
+};
+const loadEditor = () => import('./editor/session');
+const buildLazy = lazyTab(loadEditor, (m) => m.buildScreen(editorHost));
+
 const gameMenu = new GameMenu({
   input, mp: ctx.mp,
   spec: () => ctx.spec, applySpec,
@@ -414,19 +456,19 @@ const gameMenu = new GameMenu({
     { id: 'research', label: 'Research', icon: 'activity', render: researchLazy.render },
   ],
   startFlight, joinRoom,
-  onOpenChange: (open) => {
-    ctx.menuOpen = open;
-    input.suspended = open; // menu buttons must not arm / switch modes / respawn
-    ctx.send({ type: 'settings', settings: { ...ctx.sim, paused: open } });
-  },
+  // menu buttons must not arm / switch modes / respawn; the editor keeps the sim paused when the menu closes into it
+  onOpenChange: (open) => holdSim(open || !!ctx.editor),
   board: ctx.lb,
   track: () => ({ map: ctx.map.id, course: courseOf(ctx.map), cls: droneClass(ctx.spec) }),
   lastLap: () => { const l = ctx.replays.last; return l ? { lapMs: l.lap.meta.lapMs, replay: l.replay } : null; },
   // the replay player (and its scene swap) load the first time a replay is opened
   watch: async (bytes, label, ui) => (await import('./ui/replay/player')).openPlayer(ctx, bytes, label, ui),
   shots,
+  buildScreen: buildLazy.render,
+  editorBack: () => (editorFlew && !ctx.editor ? () => void loadEditor().then((m) => m.resumeEditor(editorHost), (e) => ctx.log(`The map builder failed to load: ${e}`)) : null),
 });
 appEl.append(gameMenu.root);
+const userMaps = installUserMaps({ ctx, applySim: (s) => applySim(s), applyRoomMap, selected: (id) => gameMenu.pickMap(id) });
 
 // ---------------------------------------------------------------------------------------------
 startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, dimmed: () => gameMenu.dimmed, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
@@ -439,6 +481,7 @@ initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
 }
 gameMenu.open('title');
 bootDone();
+void userMaps.boot(savedUserMap); // ?map=u-… links, or the user map flown last session
 apiHost.installWindowApi();
 void apiHost.connectFromUrl().catch((e) => ctx.log(`Control API: ${(e as Error)?.message ?? e}`));
 // The title backdrop's shaders, compiled in the background while the menu is up, so its first frame

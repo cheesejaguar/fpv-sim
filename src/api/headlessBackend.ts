@@ -47,7 +47,7 @@ export class HeadlessBackend implements ApiBackend {
           protocol: API_PROTOCOL, version: API_VERSION, backend: 'headless', clock: this.opts.clock, app: this.opts.app,
           firmware: env.core?.bf?.version ?? 'Betaflight 4.5.5 (WASM)',
           commands: COMMANDS.filter((c) => c !== 'capture' && c !== 'record' && c !== 'release' && (this.realtime ? c !== 'step' : c !== 'pause' && c !== 'resume')),
-          vectorLabels: env.episode ? obsVectorLabels(env.episode.probes) : undefined,
+          vectorLabels: env.episode ? obsVectorLabels(env.episode.probes, env.episode.observeActors) : undefined,
         };
         return { ...h };
       }
@@ -58,7 +58,7 @@ export class HeadlessBackend implements ApiBackend {
           this.action = {};
           this.episodeReported = false;
           if (this.realtime) this.startClock();
-          return { obs: r.obs, info: r.info, vectorLabels: obsVectorLabels(r.info.episode.probes) };
+          return { obs: r.obs, info: r.info, vectorLabels: obsVectorLabels(r.info.episode.probes, r.info.episode.observeActors) };
         } finally { this.resetting = false; }
       }
       case 'step': {
@@ -160,6 +160,7 @@ export class HeadlessBackend implements ApiBackend {
       for (const e of res.info.events) {
         if (e.type === 'gate') this.opts.emit({ event: 'gate', gate: e.gate, t: e.t });
         else if (e.type === 'impact') this.opts.emit({ event: 'impact', speed: e.speed, t: e.t });
+        else if (e.type === 'detect') this.opts.emit({ event: 'detect', detector: e.detector, on: e.on, t: e.t });
         else if (e.type !== 'log') this.opts.emit({ event: 'ops', ...e });
       }
       if ((res.terminated || res.truncated) && !this.episodeReported) {

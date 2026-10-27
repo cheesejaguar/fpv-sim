@@ -230,6 +230,11 @@
             "horizon",
             "angle"
           ]
+        },
+        "spawn": {
+          "type": "string",
+          "minLength": 1,
+          "description": "a named spawn of the map (its spawns)"
         }
       }
     },
@@ -350,6 +355,109 @@
               "exclusiveMinimum": 0
             }
           }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "target"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "reach-target"
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "radiusM": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "holdS": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "target"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "track-target"
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rangeM": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "fovDeg": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 360
+            },
+            "holdS": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "anyOf": [
+            {
+              "required": [
+                "points"
+              ]
+            },
+            {
+              "required": [
+                "target"
+              ]
+            }
+          ],
+          "properties": {
+            "type": {
+              "const": "detect-avoid"
+            },
+            "points": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "minItems": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "radiusM": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "maxDetectedS": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
         }
       ]
     },
@@ -396,6 +504,10 @@
         "nav": {
           "type": "boolean",
           "description": "navigation sensors in the observations: magnetometer, rangefinder, optical flow"
+        },
+        "actors": {
+          "type": "boolean",
+          "description": "add Observation.actors and its numbers at the end of the vector"
         }
       }
     },
@@ -2945,6 +3057,120 @@
               ]
             },
             "payloadMassG": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "uniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "uniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "loguniform": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "loguniform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "normal": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "normal"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 1
+                    },
+                    "weights": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "choice"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "spawn": {
+          "oneOf": [
+            {
+              "const": "any"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "actors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "jitterM": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "speedScale": {
               "oneOf": [
                 {
                   "type": "number"

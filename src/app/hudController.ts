@@ -3,6 +3,7 @@
 import { buttonName, type InputProfile } from '../input/gamepad';
 import { webHidSupported } from '../input/steamHid';
 import { formatLap } from '../net/leaderboard';
+import { detectedFromMask } from '../sim/actors';
 import { el, touchOnly } from '../ui/dom';
 import { armingAdvice, CoachAdvice, CoachGlyphs } from '../ui/hud/coach';
 import { Hud, KeyHint, osdRects } from '../ui/hud/hud';
@@ -60,6 +61,7 @@ export class HudController {
   private armedSince = -1;
   private layoutAt = 0;
   private lastCrash: string | null = null;
+  private detMask = 0; private detMap: unknown = null; private detText: string | null = null;
   private newPilot = !hasFlown();
   // memos: the HUD runs every frame, but hints and advice change only with the pad / profile / telemetry
   private hintsMemo: { p: InputProfile; acts: object; kind: InputProfile['kind']; hints: KeyHint[] } | null = null;
@@ -207,6 +209,13 @@ export class HudController {
       ctx.audio.impact(Math.min(1, v / 12), view.view === 'chase' ? 2 : Math.hypot(rec[R.px] - p.x, rec[R.py] - p.y, rec[R.pz] - p.z));
     }
     this.lastCrash = crash;
+    // the map's detectors holding a detection of the quad (the worker's shared flags)
+    const det = ctx.map.actors && !ctx.replay ? Atomics.load(ctx.sh.ctrl, 10) : 0;
+    if (det !== this.detMask || ctx.map !== this.detMap) {
+      this.detMask = det; this.detMap = ctx.map;
+      this.detText = det ? `DETECTED · ${detectedFromMask(ctx.map, det).map((d) => d.name).join(' · ')}` : null;
+    }
+    hud.alert(this.detText);
     // place everything around the OSD (~8 Hz: cheap, and widgets don't jitter)
     if (now - this.layoutAt > 120) {
       this.layoutAt = now;

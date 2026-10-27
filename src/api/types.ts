@@ -63,6 +63,18 @@ export interface Observation {
   nav?: { mag: [number, number, number]; rangeM: number | null; flow: { x: number; y: number; quality: number } | null };
   /** the operational picture when the scenario has `ops`: links and jamming, GNSS, fibre, payload, faults in force */
   ops?: OpsStatus;
+  /**
+   * The map's actors (scenario observations.actors only): every target's position (its base, m)
+   * and velocity, the detectors holding a detection of the quad (ids), the RC uplink margin (dB,
+   * jammers included).
+   */
+  actors?: ObservedActors;
+}
+
+export interface ObservedActors {
+  targets: { id: string; pos: [number, number, number]; vel: [number, number, number] }[];
+  detected: string[];
+  rcMarginDb: number;
 }
 
 /** Write an action into RC channels (µs): the given sticks and switches change, the rest stay. */
@@ -88,16 +100,28 @@ export function probeDirections(n: number): V3[] {
   return out;
 }
 
-/** Fixed-order numeric vector of an observation (the layout obsVectorLabels names). */
+/**
+ * Fixed-order numeric vector of an observation (the layout obsVectorLabels names). With
+ * observations.actors, at the end: each target's position and velocity, the number of detectors
+ * holding a detection, the RC margin (dB).
+ */
 export function obsVector(o: Observation): number[] {
   const g = o.goalBody ?? [0, 0, 0];
-  return [...o.pos, ...o.vel, ...o.quat, ...o.rates, ...o.gyro, ...(o.acc ?? [0, 0, 0]), ...o.motorRpm.map((r) => r / 10000), o.battery.cellV, o.armed ? 1 : 0, o.agl, ...g, ...o.probes];
+  const v = [...o.pos, ...o.vel, ...o.quat, ...o.rates, ...o.gyro, ...(o.acc ?? [0, 0, 0]), ...o.motorRpm.map((r) => r / 10000), o.battery.cellV, o.armed ? 1 : 0, o.agl, ...g, ...o.probes];
+  if (o.actors) {
+    for (const t of o.actors.targets) v.push(...t.pos, ...t.vel);
+    v.push(o.actors.detected.length, o.actors.rcMarginDb);
+  }
+  return v;
 }
 
-export function obsVectorLabels(probes: number): string[] {
+/** Names of obsVector's numbers; `targets`: the observed targets' ids (observations.actors), null / absent when off. */
+export function obsVectorLabels(probes: number, targets?: readonly string[] | null): string[] {
   const xyz = (p: string) => [`${p}.x`, `${p}.y`, `${p}.z`];
-  return [...xyz('pos'), ...xyz('vel'), 'quat.w', 'quat.x', 'quat.y', 'quat.z', ...xyz('rates'), ...xyz('gyro'), ...xyz('acc'),
+  const out = [...xyz('pos'), ...xyz('vel'), 'quat.w', 'quat.x', 'quat.y', 'quat.z', ...xyz('rates'), ...xyz('gyro'), ...xyz('acc'),
     'rpm0/1e4', 'rpm1/1e4', 'rpm2/1e4', 'rpm3/1e4', 'cellV', 'armed', 'agl', ...xyz('goalBody'), ...Array.from({ length: probes }, (_, i) => `probe${i}`)];
+  if (targets) out.push(...targets.flatMap((id) => [...xyz(`target.${id}.pos`), ...xyz(`target.${id}.vel`)]), 'detectedCount', 'rcMarginDb');
+  return out;
 }
 
 export function rot(q: { w: number; x: number; y: number; z: number }, v: V3): V3 {

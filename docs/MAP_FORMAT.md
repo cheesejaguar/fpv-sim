@@ -81,7 +81,8 @@ public/maps/community/<id>/
     "sky": "clear",                      // clear | overcast | dusk | night
     "sun": { "azimuthDeg": 160, "elevationDeg": 42 },   // azimuth clockwise from north
     "fog": { "color": "#c9d3dc", "density": 0.003 },   // optional, exponential-squared, 1/m
-    "windScale": 1                       // optional: multiplies the configured wind (indoor: 0.1-0.3)
+    "windScale": 1,                      // optional: multiplies the configured wind (indoor: 0.1-0.3)
+    "wind": { "speed": 4, "directionDeg": 250, "turbulence": 1, "gusts": 2 } // optional: the wind this map suggests
   },
   "ground": { … },
   "primitives": [ … ],
@@ -90,12 +91,18 @@ public/maps/community/<id>/
   "wakeZones": [ … ],
   "indoor": [ … ],
   "lights": [ … ],
-  "geometry": [ … ]
+  "geometry": [ … ],
+  "spawns": [ … ],
+  "courses": [ … ],
+  "paths": [ … ],
+  "actors": [ … ],
+  "scenarios": [ … ]
 }
 ```
 
 Unknown properties are errors, so a typo like `"siz"` is caught. The validator suggests the
-right name. Keys that start with `x-` are free for your own notes or tools, and so is `$comment`.
+right name. Keys that start with `x-` are free for your own notes or tools, and so is `$comment`. The map
+builder keeps its own data (object groups, grid) under `x-builder`.
 
 ### ground
 
@@ -225,6 +232,73 @@ hundred. `range` cuts the light off (m). With `"sky": "night"` the sky is dark, 
 is the moon, and the course is lit by these lights and the self-lit `led` / `screen` boxes and
 gate LEDs.
 
+### spawns and courses
+
+```json
+"spawns": [{ "id": "north", "name": "North pad", "pos": [0, 30, 0.25], "yawDeg": 270, "pilot": [2, 32, 1.6] }]
+"courses": [{ "id": "back", "name": "Back loop", "spawn": "north", "gates": [{ "kind": "arch", "pos": [0, 20], "yawDeg": 180 }] }]
+```
+
+`spawns` are named start variants. `spawn` stays the default; pick another in **Simulation → World
+→ Spawn**, or with `start.spawn` in a scenario. `pilot` (optional) moves the pilot / video receiver
+with it. `courses` are alternative gate courses on the same map, each timed on its own and picked
+in **Simulation → World → Course**. `gates` is the default course. A course's gates are drawn and
+collide whichever course is selected; `spawn` names the spawn it starts from.
+
+### environment.wind
+
+`{ "speed": 4, "directionDeg": 250, "turbulence": 1, "gusts": 2 }`: the wind this map is meant to
+be flown in (mean speed at 6 m in m/s, the direction it blows FROM, clockwise from north). Scenarios
+that set no `sim.wind` use it, and the live game offers it when the map is selected. The pilot's
+own wind setting still wins in free flight.
+
+### paths and actors
+
+Actors are things in the world besides the quad, for simulation and research. Each has an `id`, an
+optional `name`, and either a fixed `pos` or a `path` it moves along.
+
+```json
+"paths": [{ "id": "road", "points": [[0, 0, 0], [40, 0, 0], [40, 40, 0]], "speedMs": 5, "mode": "pingpong", "delayS": 2 }]
+"actors": [
+  { "type": "rf-emitter", "id": "jammer", "pos": [30, 10, 3], "freqMHz": 2440, "eirpDbm": 33, "bwMHz": 80, "duty": 1 },
+  { "type": "ground-station", "id": "relay", "pos": [-40, 0, 6], "link": "rc", "txPowerMw": 500, "gainDbi": 6 },
+  { "type": "detector", "id": "radar-1", "sensor": "radar", "pos": [0, -60, 4], "yawDeg": 90, "fovDeg": [90, 30], "rangeM": 600, "r50M": 350, "rateHz": 10, "confirm": [2, 3] },
+  { "type": "target", "id": "truck", "shape": "vehicle", "path": "road", "radiusM": 3 }
+]
+```
+
+- **paths**: 2 to 256 points, travelled at `speedMs` in simulation time after `delayS`: `loop`
+  (back to the first point), `pingpong` (back and forth) or `once` (stops at the end). Positions
+  are a pure function of time, so a seeded run puts every actor in the same place. The actors'
+  clock starts with the flight: when the map loads, the quad respawns or a scenario's episode
+  begins. Actors face the way they travel.
+- **rf-emitter**: a transmitter at `freqMHz` (`bwMHz` wide, on air `duty` of the time, `eirpDbm`
+  EIRP, optional directional `antenna` `{ yawDeg, pitchDeg, beamDeg }`). Links whose band it
+  overlaps (2.4 GHz RC, 5.8 GHz video) see its power as noise: the RC link margin and the video
+  signal-to-noise ratio drop, so a jammer close to the quad causes packet loss, video break-up and
+  in the end failsafe. A scenario's `ops.emitters` ([OPERATIONS.md](OPERATIONS.md)) are the
+  per-experiment counterpart; both apply when both are present.
+- **ground-station**: another site for the `rc` uplink (a relay transmitting with `txPowerMw`)
+  and / or the `video` downlink (a diversity receiver). The best site carries each link.
+- **detector**: a `camera`, `radar` or `rf` sensor looking along `yawDeg` / `pitchDeg` with a
+  `fovDeg` of [horizontal, vertical] out to `rangeM`. It looks `rateHz` times a second; each look
+  detects the quad with a probability that falls with range (50 % at `r50M` for a 5-inch quad;
+  `rf` compares the quad's video transmitter power against `sensitivityDbm`) and is blocked by
+  terrain and walls (foliage only weakens it). A camera sees a bigger quad farther and a quad at
+  dusk or night closer; a radar's signal falls with the fourth power of range. Each look draws
+  from the detector's own seeded stream. The quad counts as detected when `confirm` [m, n]: m
+  of the last n looks saw it. Detections reach the HUD, the control API's observations and metrics,
+  and scenario tasks.
+- **target**: something to reach, inspect, track or follow: `shape` (`box sphere cylinder quad
+  vehicle person`), `size` [x, y, z], `radiusM` (how close counts as reached), `color`. A static
+  target with `"solid": true` collides; moving targets never do.
+
+### scenarios
+
+`"scenarios": ["scenarios/hunt.json"]` lists [fpvsim-scenario](SCENARIO_FORMAT.md) files that come
+with the map: drills and experiments on it. They are offered in **Settings → Research** when the
+map is loaded, and travel with the package.
+
 ### geometry: external sources
 
 ```json
@@ -284,6 +358,7 @@ the numbers.
 | `size` (half-extent) | 2000 m |
 | primitives (including the 3-8 parts each gate generates) | 5 000 |
 | gates / trees / wake zones / indoor boxes / lights / geometry entries | 64 / 3 000 / 32 / 32 / 8 / 16 |
+| spawns / courses / paths (points each) / actors / scenarios | 32 / 16 / 32 (256) / 64 / 16 |
 | convex brushes (Quake / Doom geometry + mesh collision) | 20 000 |
 | glTF triangles drawn, all meshes | 150 000 |
 | glTF triangles with `collision: "mesh"` | 20 000 |
@@ -335,6 +410,27 @@ npm run map:validate -- path/to/my-map
 ```
 
 Use `--local` to skip the repository rules (licence files, folder name) while you iterate.
+
+## Publishing a user map
+
+Instead of a pull request, a map can be published from the app (the map editor's **Publish**) to
+the relay that hosts the rooms (`server/src/mapStore.ts`). Published maps are **user maps**:
+
+- They are listed apart from the official maps (**User maps** in New game and in Simulation →
+  World), always carry a "User map · not reviewed" badge, and the first one a pilot opens shows a
+  disclaimer: made by players, not reviewed, may be removed, no warranty.
+- They never have an official leaderboard; personal bests stay on the pilot's device.
+- Their id is `u-` followed by 20 characters of the SHA-256 of the package's file list (each
+  file's path and SHA-256), so the same files always get the same id and the app re-checks every
+  download against it. Share a map with its link (`/?map=u-…`), or pick it as a room host: each
+  pilot in the room is asked before it downloads. Maps loaded from disk can't be sent to a room;
+  publish them (unlisted is fine) first.
+- **Unlisted** maps open only by link or in a room; **listed** maps also appear in the browser.
+- The relay checks what the validator checks, and more strictly: an accepted licence and its text
+  (`LICENSE.txt` for licences that require it), every referenced file present, image and `.glb`
+  headers, the budgets, and names that are not blank or offensive. Publishing requires confirming
+  that you made the map or may share every asset in it under its licence.
+- Anyone can report a map; after several reports it is hidden until it is reviewed.
 
 ## Versioning
 

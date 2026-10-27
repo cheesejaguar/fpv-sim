@@ -24,7 +24,7 @@ export const MIN_LAP_FLOOR_MS = 2_000;
  * Tracks with a board: built-in maps (shipped with the site) with timed gates, by `map` or
  * `map:course` (MapDef.courses). gates: timed passes per lap; pathM: the closed polyline through the
  * gate openings' centres, a lower bound for any real racing line (tests/leaderboard.test.ts checks
- * both against the maps). Maps loaded from disk ("local-…") never have a board.
+ * both against the maps). Maps loaded from disk ("local-…") and user maps ("u-…") never have a board.
  */
 export const TRACKS: Readonly<Record<string, { gates: number; pathM: number }>> = Object.freeze({
   field: { gates: 13, pathM: 307 },
@@ -63,7 +63,8 @@ export const CUSTOM = 'custom';
 /** A custom build's summary, as the client writes it: Custom · 5" · 2207 1950KV · 6S */
 export const CUSTOM_SUMMARY_RE = /^Custom · (?:\d{1,2}"|\d{2,3} mm) · \d{3,4}(?:\.\d)? \d{3,6}KV · \d{1,2}S$/;
 
-const MAP_RE = /^(?!local-)[a-z0-9_-]{1,24}$/;
+// maps from disk ("local-…") and published user maps ("u-…", not reviewed) never have a board
+const MAP_RE = /^(?!local-|u-)[a-z0-9_-]{1,24}$/;
 const COURSE_RE = /^[a-z0-9_-]{1,24}$/;
 const CLIENT_RE = /^[0-9a-f]{32}$/;
 const HASH_RE = /^[0-9a-f]{8,64}$/;

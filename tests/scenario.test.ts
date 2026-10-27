@@ -8,7 +8,7 @@ import { buildDrone, DEFAULT_SPEC } from '../src/builder/derive';
 import { createNodeEnv } from '../src/headless/node';
 import { MAPS } from '../src/maps/maps';
 import { checkDist, Dist, sample, sampleBuild } from '../src/scenario/randomize';
-import { parseScenario, resolveEpisode, Scenario } from '../src/scenario/scenario';
+import { MapFacts, parseScenario, resolveEpisode, Scenario } from '../src/scenario/scenario';
 import { Rng } from '../src/sim/math';
 
 const ROOT = new URL('../', import.meta.url);
@@ -59,6 +59,79 @@ describe('scenario format', () => {
     expect(resolveEpisode(noDrone, 5).settings.wind).toEqual(resolveEpisode(base, 5).settings.wind);
     // without randomization the scenario's own build flies, with the build's own unit
     expect(resolveEpisode({ format: 'fpvsim-scenario', version: 1 }).spec).toEqual({ ...DEFAULT_SPEC, overrides: {} });
+  });
+});
+
+describe('scenario format: spawns, actor tasks, actor observations and randomization', () => {
+  const S = { format: 'fpvsim-scenario', version: 1 } as const;
+  const facts = (id: string): MapFacts | null => (id === 'range' ? { spawns: ['north', 'east'], actors: [{ id: 'truck', type: 'target' }, { id: 'radar-1', type: 'detector' }], wind: { speed: 4, direction: 250, turbulence: 1, gusts: 2 } } : null);
+  const anyMap = (id: string) => id === 'range' || id in MAPS;
+  const good: [string, unknown][] = [
+    ['start.spawn', { ...S, map: { id: 'range' }, start: { spawn: 'north' } }],
+    ['reach-target', { ...S, map: { id: 'range' }, task: { type: 'reach-target', target: 'truck', radiusM: 3, holdS: 1 } }],
+    ['track-target', { ...S, map: { id: 'range' }, task: { type: 'track-target', target: 'truck', rangeM: 20, fovDeg: 50, holdS: 4 } }],
+    ['detect-avoid route', { ...S, map: { id: 'range' }, task: { type: 'detect-avoid', points: [[0, 10, 3], [0, 50, 3]], maxDetectedS: 1.5 } }],
+    ['detect-avoid to a target', { ...S, map: { id: 'range' }, task: { type: 'detect-avoid', target: 'truck', radiusM: 2 } }],
+    ['observations.actors', { ...S, observations: { actors: true, probes: 4 } }],
+    ['randomize.spawn any, actors', { ...S, map: { id: 'range' }, randomize: { spawn: 'any', actors: { jitterM: 5, speedScale: { uniform: [0.5, 1.5] } } } }],
+    ['randomize.spawn list', { ...S, map: { id: 'range' }, randomize: { spawn: ['north', 'east'] } }],
+  ];
+  test.each(good)('accepts: %s (schema and parser)', (_what, doc) => {
+    expect(schemaCheck(doc), JSON.stringify(schemaCheck.errors)).toBe(true);
+    expect(parseScenario(doc, anyMap, facts).errors).toEqual([]);
+  });
+
+  const bad: [string, unknown, RegExp, boolean][] = [
+    ['unknown task type', { ...S, task: { type: 'chase' } }, /task\.type: .*reach-target/, true],
+    ['reach-target without a target', { ...S, task: { type: 'reach-target' } }, /task\.target/, true],
+    ['track-target with a hover key', { ...S, task: { type: 'track-target', target: 'truck', heightM: 2 } }, /task\.heightM: unknown key/, true],
+    ['detect-avoid without a route', { ...S, task: { type: 'detect-avoid', maxDetectedS: 1 } }, /needs points, a target or both/, true],
+    ['negative maxDetectedS', { ...S, task: { type: 'detect-avoid', points: [[0, 0, 1]], maxDetectedS: -1 } }, /maxDetectedS/, true],
+    ['fovDeg too wide', { ...S, task: { type: 'track-target', target: 'truck', fovDeg: 400 } }, /fovDeg/, true],
+    ['empty start.spawn', { ...S, start: { spawn: '' } }, /start\.spawn/, true],
+    ['observations.actors not a flag', { ...S, observations: { actors: 1 } }, /observations\.actors/, true],
+    ['randomize.spawn neither any nor a list', { ...S, randomize: { spawn: 'all' } }, /randomize\.spawn/, true],
+    ['randomize.actors typo', { ...S, randomize: { actors: { jitter: 2 } } }, /randomize\.actors\.jitter: unknown key/, true],
+    ['randomize.actors bad speedScale', { ...S, randomize: { actors: { speedScale: { uniform: [1] } } } }, /speedScale\.uniform/, true],
+    // ids on the map: the parser checks them when the map is known (the schema can't)
+    ['unknown spawn', { ...S, map: { id: 'range' }, start: { spawn: 'south' } }, /start\.spawn: map "range" has no spawn "south" \(north, east\)/, false],
+    ['unknown randomized spawn', { ...S, map: { id: 'range' }, randomize: { spawn: ['north', 'west'] } }, /randomize\.spawn: .* no spawn "west"/, false],
+    ['a target that is a detector', { ...S, map: { id: 'range' }, task: { type: 'reach-target', target: 'radar-1' } }, /task\.target: map "range" has no target actor "radar-1"/, false],
+  ];
+  test.each(bad)('rejects: %s', (_what, doc, re, schemaToo) => {
+    const { scenario, errors } = parseScenario(doc, anyMap, facts);
+    expect(scenario).toBeNull();
+    expect(errors.join('\n')).toMatch(re);
+    if (schemaToo) expect(schemaCheck(doc)).toBe(false);
+  });
+
+  test('without the map loaded, map ids are not checked', () => {
+    expect(parseScenario({ ...S, map: { id: 'range' }, start: { spawn: 'south' } }, anyMap).errors).toEqual([]);
+  });
+
+  test('the spawn and the actors draw from new streams; the old ones draw as before; the map wind fills in', () => {
+    const base = examples.find(([f]) => f === 'hover-randomized.json')![1] as Scenario;
+    const more: Scenario = { ...base, randomize: { ...base.randomize, spawn: 'any', actors: { jitterM: 3, speedScale: { uniform: [0.5, 2] } } } };
+    const a = resolveEpisode(base, 9), b = resolveEpisode(more, 9, facts('range'));
+    expect(b.spec).toEqual(a.spec);
+    expect(b.settings.wind).toEqual(a.settings.wind);
+    expect(b.start).toEqual(a.start);
+    expect(a.actors).toBeNull();
+    expect(b.actors!.jitterM).toBe(3);
+    expect(b.actors!.speedScale.every((k) => k >= 0.5 && k < 2)).toBe(true);
+    expect(resolveEpisode(more, 9, facts('range'))).toEqual(b);
+    // "any": the default spawn or a named one, spread over seeds
+    const drawn = new Set(Array.from({ length: 40 }, (_, k) => resolveEpisode(more, k, facts('range')).settings.spawnId ?? ''));
+    expect(drawn).toEqual(new Set(['', 'north', 'east']));
+    // start.spawn without randomization; no spawn: settings untouched
+    expect(resolveEpisode({ ...S, map: { id: 'range' }, start: { spawn: 'east' } }).settings.spawnId).toBe('east');
+    expect('spawnId' in resolveEpisode({ ...S }).settings && resolveEpisode({ ...S }).settings.spawnId).toBeFalsy();
+    // a scenario without sim.wind flies the map's wind; with one, its own
+    expect(resolveEpisode({ ...S, map: { id: 'range' } }, 0, facts('range')).settings.wind).toEqual({ speed: 4, direction: 250, turbulence: 1, gusts: 2 });
+    expect(resolveEpisode({ ...S, map: { id: 'range' }, sim: { wind: { speed: 1 } } }, 0, facts('range')).settings.wind.speed).toBe(1);
+    // observations.actors: the map's targets, in map order
+    expect(resolveEpisode({ ...S, map: { id: 'range' }, observations: { actors: true } }, 0, facts('range')).observeActors).toEqual(['truck']);
+    expect(resolveEpisode({ ...S }).observeActors).toBeNull();
   });
 });
 

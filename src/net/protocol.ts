@@ -55,6 +55,10 @@ export function parsePeer(v: any): PeerInfo | null {
 const mapId = (v: unknown): string | null => (typeof v === 'string' && MAP_ID_RE.test(v) ? v : null);
 /** A pilot's own from-disk map (see maps/localMaps.ts): never sent to a room. */
 export const isLocalMapId = (id: string) => id.startsWith('local-');
+/** A published user map ("u-" + 20 base32 characters of its content hash, server/src/mapPackage.ts):
+ *  shareable in rooms (peers download it after they agree), never on the official leaderboards. */
+export const USER_MAP_RE = /^u-[a-z2-7]{20}$/;
+export const isUserMapId = (id: unknown): id is string => typeof id === 'string' && USER_MAP_RE.test(id);
 
 /** Roster note for a pilot on another protocol version (they still fly; some details may differ). */
 export function versionNote(v: number): string | null {

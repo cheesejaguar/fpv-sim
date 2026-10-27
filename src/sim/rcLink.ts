@@ -18,6 +18,9 @@ export const ELRS900_SENSITIVITY_DBM: Record<number, number> = { 200: -112, 100:
 /** OSD "RF mode" digit shown as LQ <mode>:<lq> (simulator's own index; ELRS's enum varies by version). */
 const RF_MODE: Record<number, number> = { 50: 0, 150: 1, 250: 2, 500: 3 };
 
+/** Receiver noise in the 812 kHz LoRa channel (dBm): kTB + a 6 dB noise figure. */
+export const RC_NOISE_DBM = -174 + 10 * Math.log10(812e3) + 6;
+
 export class RcLink {
   txPowerMw = 250;
   txGainDbi = 2;   // radio's dipole / moxon
@@ -46,6 +49,8 @@ export class RcLink {
   /** Last computed uplink RSSI (dBm) and margin over sensitivity (dB). */
   rssiDbm = -40;
   marginDb = 60;
+  /** in-band interference at the receiver in the last budget update (mW; 0 = none) */
+  interfMw = 0;
 
   constructor(seed = 0x5eed) {
     let s = seed >>> 0;
@@ -58,8 +63,12 @@ export class RcLink {
 
   reset(): void { this.history.fill(1); this.received = 100; this.hIdx = 0; this.fade = 0; }
 
-  /** Update the slowly varying link budget (call at ~20 Hz). */
-  updateBudget(world: RcLinkWorld | null, pilot: V3, quad: V3, dt: number): void {
+  /**
+   * Update the slowly varying link budget (call at ~20 Hz). interfMw: in-band interference at the
+   * receiver (jammers, other traffic: src/sim/actors.ts); the margin is then taken against noise +
+   * interference (SINR) instead of the plain sensitivity.
+   */
+  updateBudget(world: RcLinkWorld | null, pilot: V3, quad: V3, dt: number, interfMw = 0): void {
     const dx = quad.x - pilot.x, dy = quad.y - pilot.y, dz = quad.z - pilot.z;
     const d = Math.max(0.5, Math.hypot(dx, dy, dz));
     const fMHz = this.band === 'rc900' ? 915 : 2440;
@@ -77,7 +86,12 @@ export class RcLink {
     const fadeDb = this.fade * (1.5 + Math.min(5, this.obsDb / 5));
     const ptx = 10 * Math.log10(Math.max(1, this.txPowerMw));
     this.rssiDbm = ptx + this.txGainDbi + this.rxGainDbi - fspl - this.obsDb + fadeDb;
-    this.marginDb = this.rssiDbm - this.sensitivityDbm();
+    const sens = this.sensitivityDbm();
+    this.marginDb = this.rssiDbm - sens;
+    this.interfMw = interfMw;
+    // map emitters (src/sim/actors.ts): margin against noise + interference. Only with interference:
+    // without it the margin is exactly what it always was.
+    if (interfMw > 0) this.marginDb = this.rssiDbm - (10 * Math.log10(10 ** (RC_NOISE_DBM / 10) + interfMw) + (sens - RC_NOISE_DBM));
   }
 
   /** Receiver sensitivity at the current band and packet rate (dBm). */

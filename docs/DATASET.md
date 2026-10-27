@@ -54,7 +54,8 @@ for digital, times the render scale.
 | 5 | `person` | spectators |
 | 6 | `drone_self` | the quad's own props and ducts in view |
 | 7 | `drone_other` | other pilots' quads (multiplayer) |
-| 8 | `object` | the windsock, lights and similar props |
+| 8 | `object` | the windsock, lights and similar props (map actors' masts, stations and detector heads too) |
+| 9 | `target` | map actors of type `target` (vehicles, people, boxes …: [MAP_FORMAT.md](MAP_FORMAT.md#paths-and-actors)) |
 
 Leaf-card trees are labelled by their cards: foliage masks are coarser than the leaves drawn in the
 picture. Light shafts and glows are not surfaces and are not labelled.

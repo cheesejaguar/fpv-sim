@@ -5,6 +5,7 @@
 // Everything binds to the loopback interface unless told otherwise.
 import { createServer as createHttpServer, IncomingMessage } from 'node:http';
 import { createServer as createTcpServer, Socket } from 'node:net';
+import { registerMapFromDisk } from '../headless/mapFiles';
 import { createNodeEnv } from '../headless/node';
 import { HeadlessBackend } from './headlessBackend';
 import { API_MAX_MESSAGE, ApiSession, Clock, parseRequest } from './protocol';
@@ -51,11 +52,22 @@ export interface HeadlessServerOptions {
   host?: string;
   port?: number;
   log?: (t: string) => void;
+  /** map packages on disk (folders or .zip files) registered under their meta.id before serving */
+  maps?: string[];
+}
+
+/** Register the map packages from disk (validated: a broken one stops the server from starting). */
+async function registerMaps(o: Pick<HeadlessServerOptions, 'maps' | 'log'>) {
+  for (const path of o.maps ?? []) {
+    const m = await registerMapFromDisk(path);
+    o.log?.(`map "${m.id}" (${m.name}) from ${path}${m.warnings.length ? `: ${m.warnings.length} warning(s): ${m.warnings.join('; ')}` : ''}`);
+  }
 }
 
 /** One simulation per TCP connection. Resolves once listening, with the port. */
 export async function serveHeadless(o: HeadlessServerOptions): Promise<{ port: number; close: () => Promise<void> }> {
   const log = o.log ?? (() => {});
+  await registerMaps(o);
   const conns = new Set<Socket>();
   const server = createTcpServer((socket) => {
     conns.add(socket);
@@ -80,6 +92,7 @@ export async function serveHeadless(o: HeadlessServerOptions): Promise<{ port: n
 
 /** One simulation over stdin / stdout (logs go to stderr). */
 export async function serveStdio(o: Omit<HeadlessServerOptions, 'host' | 'port'>): Promise<void> {
+  await registerMaps(o);
   const env = await createNodeEnv();
   const out = (t: string) => process.stdout.write(t + '\n');
   const session = new ApiSession({ handle: (r) => backend.handle(r) }, out);

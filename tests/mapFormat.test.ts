@@ -9,9 +9,9 @@ import { crc32, deflateRawSync } from 'node:zlib';
 import Ajv from 'ajv';
 import { describe, expect, test } from 'vitest';
 import { buildDrone, DEFAULT_SPEC } from '../src/builder/derive';
-import { BUDGETS, glbTriangles, licenseError, loadMapPackage, MapFormatError, PackageSource, validateMapDoc } from '../src/maps/mapFormat';
+import { BUDGETS, buildMapDef, glbTriangles, licenseError, loadMapPackage, MapFormatError, PackageSource, validateMapDoc } from '../src/maps/mapFormat';
 import { bandoMap, MAP_LIST } from '../src/maps/maps';
-import { BoxPrim, CylPrim, PrimitiveWorld, spawnGroundZ } from '../src/maps/world';
+import { BoxPrim, CylPrim, MAX_MAP_LIGHTS, PrimitiveWorld, spawnGroundZ, withCourse, withSpawn } from '../src/maps/world';
 import { readZip } from '../src/maps/zip';
 import { ContactHit, MATERIALS } from '../src/sim/contact';
 import { QuadSim } from '../src/sim/quad';
@@ -72,6 +72,20 @@ describe('schema and loader agree', () => {
     ['too many lights', minimal({ lights: Array.from({ length: 9 }, () => ({ pos: [0, 0, 5], intensity: 10, range: 10 })) }), /lights: has 9 entries; the budget is 8/],
     ['light without range', minimal({ lights: [{ pos: [0, 0, 5], intensity: 10 }] }), /lights\[0\]\.range: is required/],
     ['bad light colour', minimal({ lights: [{ pos: [0, 0, 5], color: 'warm', intensity: 10, range: 10 }] }), /lights\[0\]\.color: must be a colour/],
+    ['spawn without pos', minimal({ spawns: [{ id: 'b' }] }), /spawns\[0\]\.pos: is required/],
+    ['duplicate spawn id', minimal({ spawns: [{ id: 'b', pos: [0, 0, 0] }, { id: 'b', pos: [1, 0, 0] }] }), /spawns\[1\]\.id: "b" is used twice/, false],
+    ['course with an unknown spawn', minimal({ courses: [{ id: 'c', name: 'C', gates: [{ kind: 'square', pos: [0, 5] }], spawn: 'nope' }] }), /courses\[0\]\.spawn: "nope" is not the id/, false],
+    ['empty course', minimal({ courses: [{ id: 'c', name: 'C', gates: [] }] }), /courses\[0\]\.gates: must have at least one gate/],
+    ['one-point path', minimal({ paths: [{ id: 'p', points: [[0, 0, 0]], speedMs: 1 }] }), /paths\[0\]\.points: must have at least 2 points/],
+    ['unknown actor type', minimal({ actors: [{ type: 'tank', id: 'a', pos: [0, 0, 0] }] }), /actors\[0\]\.type: must be one of/],
+    ['actor with pos and path', minimal({ paths: [{ id: 'p', points: [[0, 0, 0], [5, 0, 0]], speedMs: 1 }], actors: [{ type: 'target', id: 'a', pos: [0, 0, 0], path: 'p' }] }), /needs either pos .* or path/],
+    ['actor on an unknown path', minimal({ actors: [{ type: 'target', id: 'a', path: 'p' }] }), /actors\[0\]\.path: "p" is not the id/, false],
+    ['detector without range', minimal({ actors: [{ type: 'detector', id: 'd', sensor: 'radar', pos: [0, 0, 3] }] }), /actors\[0\]\.rangeM: is required/],
+    ['jammer typo', minimal({ actors: [{ type: 'rf-emitter', id: 'j', pos: [0, 0, 3], freqMHz: 2440, eirp: 30 }] }), /actors\[0\]\.eirp: unknown property/],
+    ['bad confirm', minimal({ actors: [{ type: 'detector', id: 'd', sensor: 'camera', pos: [0, 0, 3], rangeM: 50, confirm: [4, 2] }] }), /confirm: must be \[m, n\]/, false],
+    ['solid moving target', minimal({ paths: [{ id: 'p', points: [[0, 0, 0], [5, 0, 0]], speedMs: 1 }], actors: [{ type: 'target', id: 'a', path: 'p', solid: true }] }), /moving targets .* cannot be solid/, false],
+    ['wind without direction', minimal({ environment: { wind: { speed: 3 } } }), /environment\.wind\.directionDeg: is required/],
+    ['scenario that is not json', minimal({ scenarios: ['s.txt'] }), /scenarios\[0\]: must be a \.json file/],
   ];
   test.each(bad)('rejects %s', async (_, doc, re, inSchema = true) => {
     const clean = JSON.parse(JSON.stringify(doc));
@@ -265,3 +279,66 @@ describe('community index', () => {
     expect(problems).toHaveLength(2);
   });
 });
+
+describe('spawns, courses, paths, actors and scenarios', () => {
+  const doc = minimal({
+    environment: { wind: { speed: 4, directionDeg: 270 } },
+    gates: [{ kind: 'square', pos: [0, 10] }],
+    spawns: [{ id: 'north', name: 'North pad', pos: [0, 30, 0.25], yawDeg: 270, pilot: [2, 32, 1.6] }],
+    courses: [{ id: 'back', name: 'Back loop', gates: [{ kind: 'arch', pos: [0, 20], yawDeg: 180 }, { kind: 'flag', pos: [5, 5] }], spawn: 'north' }],
+    paths: [{ id: 'road', points: [[0, 0, 0], [20, 0, 0], [20, 20, 0]], speedMs: 5, mode: 'pingpong', delayS: 1 }],
+    actors: [
+      { type: 'rf-emitter', id: 'jammer', pos: [10, 10, 2], freqMHz: 2440, eirpDbm: 33 },
+      { type: 'ground-station', id: 'relay', pos: [-10, 0, 4], link: 'rc' },
+      { type: 'detector', id: 'radar-1', sensor: 'radar', pos: [0, -20, 3], yawDeg: 90, rangeM: 400 },
+      { type: 'target', id: 'truck', shape: 'vehicle', path: 'road' },
+      { type: 'target', id: 'crate', pos: [3, 3, 0], solid: true, size: [1, 1, 1] },
+    ],
+    scenarios: ['scenarios/hunt.json'],
+  });
+  const scenario = JSON.stringify({ format: 'fpvsim-scenario', version: 1 });
+
+  test('the schema and the loader accept them, and they build', async () => {
+    expect(schemaCheck(doc), JSON.stringify(schemaCheck.errors)).toBe(true);
+    const m = (await loadMapPackage(pkg(doc, { 'scenarios/hunt.json': scenario }), { strict: true, checkAssets: true })).build();
+    expect(m.wind).toEqual({ speed: 4, direction: 270, turbulence: 1, gusts: 2 });
+    expect(m.spawns).toEqual([{ id: 'north', name: 'North pad', pos: { x: 0, y: 30, z: 0.25 }, yaw: 1.5 * Math.PI, pilot: { x: 2, y: 32, z: 1.6 } }]);
+    expect(m.courses!.map((c) => [c.id, c.gates.map((g) => g.id)])).toEqual([['back', [1, 2]]]); // ids continue after the default course
+    expect(m.courses![0].spawn!.pos).toEqual({ x: 0, y: 30, z: 0.25 });
+    expect(m.paths).toEqual([{ id: 'road', points: [{ x: 0, y: 0, z: 0 }, { x: 20, y: 0, z: 0 }, { x: 20, y: 20, z: 0 }], speed: 5, mode: 'pingpong', delay: 1 }]);
+    expect(m.actors!.map((a) => [a.id, a.type])).toEqual([['jammer', 'rf-emitter'], ['relay', 'ground-station'], ['radar-1', 'detector'], ['truck', 'target'], ['crate', 'target']]);
+    const truck = m.actors!.find((a) => a.id === 'truck')!;
+    expect(truck.pos).toEqual({ x: 0, y: 0, z: 0 }); // on a path: its first point
+    expect(m.prims.some((p) => p.tag === 'target-crate')).toBe(true); // a static solid target collides
+    expect(m.prims.some((p) => p.tag === 'target-truck')).toBe(false);
+    expect(m.scenarios).toEqual([{ path: 'scenarios/hunt.json', url: 'mem://scenarios/hunt.json' }]);
+    // the course's gates exist in the world (they are drawn and collide even when not selected)
+    expect(m.prims.some((p) => p.tag === 'gate2')).toBe(true);
+  });
+
+  test('a listed scenario must exist and be a scenario', async () => {
+    expect((await errorsOf(pkg(doc))).join()).toMatch(/scenarios\[0\]: file "scenarios\/hunt.json" is not in the package/);
+    expect((await errorsOf(pkg(doc, { 'scenarios/hunt.json': '{"format":"other"}' }))).join()).toMatch(/is not an fpvsim-scenario file/);
+  });
+
+  test('withSpawn starts from a named spawn, and an unknown id keeps the map', async () => {
+    const m = (await loadMapPackage(pkg(doc, { 'scenarios/hunt.json': scenario }))).build();
+    const n = withSpawn(m, 'north');
+    expect(n.spawn).toEqual({ pos: { x: 0, y: 30, z: 0.25 }, yaw: 1.5 * Math.PI });
+    expect(n.pilot).toEqual({ x: 2, y: 32, z: 1.6 });
+    expect(withSpawn(m, 'nope')).toBe(m);
+    expect(withSpawn(m, '')).toBe(m);
+    expect(withSpawn(withCourse(m, 'back'), '').spawn.pos.y).toBe(30); // a course's own spawn
+  });
+
+  test('buildMapDef rebuilds an edited document from the loaded assets', async () => {
+    const loaded = await loadMapPackage(pkg(doc, { 'scenarios/hunt.json': scenario }));
+    const edited = { ...loaded.doc, primitives: [{ type: 'box' as const, pos: [5, 5, 0.5] as [number, number, number], size: [1, 1, 1] as [number, number, number], tag: 'edited' }] };
+    const m = buildMapDef(edited, loaded.assets, (p) => 'mem://' + p);
+    expect(m.prims.filter((p) => p.tag === 'edited').length).toBe(1);
+    const noFn = (d: object) => ({ ...d, terrain: null });
+    expect(noFn(buildMapDef(loaded.doc, loaded.assets, (p) => 'mem://' + p))).toEqual(noFn(loaded.build()));
+  });
+});
+
+test('the light budget is the renderer\'s', () => expect(BUDGETS.lights).toBe(MAX_MAP_LIGHTS));

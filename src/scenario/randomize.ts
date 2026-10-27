@@ -101,10 +101,21 @@ export interface StartDist {
   yawDeg?: Dist<number>;
 }
 
+/** Randomization of the map's actors: fixed ones moved, paths shifted and sped up / slowed down. */
+export interface ActorsDist {
+  /** fixed actors (solid targets excepted) and whole paths move by up to this much in x and y (m) */
+  jitterM?: number;
+  /** each path's speed is scaled by a draw of this */
+  speedScale?: Dist<number>;
+}
+
 export interface Randomization {
   drone?: DroneDist;
   sim?: SimDist;
   start?: StartDist;
+  /** start from a spawn variant: "any" (the default spawn or any named one) or one of these spawn ids */
+  spawn?: 'any' | string[];
+  actors?: ActorsDist;
   ops?: OpsDist;
 }
 
@@ -152,6 +163,16 @@ export function sampleSim(base: SimSettings, d: SimDist | undefined, rng: Rng): 
   if (d.rcLinkHz !== undefined) s.rcLinkHz = sample(d.rcLinkHz, rng);
   if (d.rcTxPowerMw !== undefined) s.rcTxPowerMw = Math.max(1, sample(d.rcTxPowerMw, rng));
   return s;
+}
+
+/**
+ * The spawn variant drawn: one of `ids`, or for "any" the default spawn ('') or any of the map's
+ * spawns (`mapSpawns`; null when the map isn't known: then no draw, undefined).
+ */
+export function sampleSpawn(d: 'any' | string[], mapSpawns: string[] | null, rng: Rng): string | undefined {
+  const list = d === 'any' ? (mapSpawns ? ['', ...mapSpawns] : null) : d;
+  if (!list?.length) return undefined;
+  return list[Math.min(list.length - 1, Math.floor(rng.next() * list.length))];
 }
 
 /** Start offsets drawn (zeros where the scenario randomizes nothing). */
