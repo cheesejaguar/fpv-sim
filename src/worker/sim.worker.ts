@@ -15,7 +15,7 @@ import { Betaflight, armingFlagNames } from '../bf/bfModule';
 import { batteryCli, defaultCli, loopCli, osdGrid, osdLayout } from '../bf/defaults';
 import { DEFAULT_SPEC, DroneBuild, DroneSpec, preloadPropTable } from '../builder/derive';
 import { hasMap, MapEntry, MAPS, preloadMap, registerMap } from '../maps/maps';
-import { MapDef, withCourse } from '../maps/world';
+import { MapDef, withCourse, withSpawn } from '../maps/world';
 import { Spectrum } from '../sim/fft';
 import { APP_VERSION } from '../ui/menu/about';
 import { ACC_CAL_KEY, accBoardKey } from './accCal';
@@ -150,7 +150,7 @@ async function loadMap(id: string): Promise<boolean> {
   // (a run that began while this map was loading flew the old one: it can't go on)
   stopRun('the map changed');
   let m: MapDef;
-  try { m = withCourse(MAPS[id](), core.settings.courseId); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
+  try { m = withSpawn(withCourse(MAPS[id](), core.settings.courseId), core.settings.spawnId); } catch (e) { error = (e as Error).message; id = 'field'; m = MAPS.field(); }
   core.setMap(m);
   post({ type: 'mapLoaded', id, requested: want, ok: !error, error });
   return true;
@@ -619,7 +619,7 @@ async function handle(m: ToWorker) {
       if (run && physicsKey({ ...m.settings, autoRate: false }) !== runKey) stopRun('the simulation settings changed');
       // (a run keeps the physics rate fixed)
       if (run) { runAutoRate = m.settings.autoRate; m = { ...m, settings: { ...m.settings, autoRate: false } }; }
-      const mapChanged = m.settings.mapId !== prev.mapId || (m.settings.courseId ?? '') !== (prev.courseId ?? '');
+      const mapChanged = m.settings.mapId !== prev.mapId || (m.settings.courseId ?? '') !== (prev.courseId ?? '') || (m.settings.spawnId ?? '') !== (prev.spawnId ?? '');
       const rateChanged = m.settings.physicsHz !== prev.physicsHz;
       core.settings = m.settings;
       if (!core.env || !core.quad) break;

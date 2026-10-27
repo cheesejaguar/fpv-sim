@@ -72,8 +72,31 @@ export interface MapDef {
   meshes?: MeshInstance[];            // glTF meshes to draw (their collision, if any, is in prims)
   lights?: MapLight[];                // point lights (<= MAX_MAP_LIGHTS): interior fixtures, floodlights
   courses?: CourseDef[];              // drill areas timed on their own (gates = the default course)
+  spawns?: SpawnDef[];                // named start variants (withSpawn); spawn = the default
+  wind?: { speed: number; direction: number; turbulence: number; gusts: number }; // the map's suggested wind (FROM, deg)
+  paths?: PathDef[];                  // polylines actors move along
+  actors?: ActorDef[];                // RF components, detectors, targets (src/sim/actors.ts)
+  scenarios?: { path: string; url: string }[]; // bundled fpvsim-scenario files
   collisionCell?: number;             // collision grid cell size (m), default 8; dense interiors use a finer grid
 }
+
+/** A named start: the quad's pose, and optionally where the pilot / video receiver stands for it. */
+export interface SpawnDef { id: string; name: string; pos: V3; yaw: number; groundZ?: number; pilot?: V3 }
+
+/** An actor path: points in order, travelled at speed (m/s) from sim time delay (s). */
+export interface PathDef { id: string; points: V3[]; speed: number; mode: 'loop' | 'pingpong' | 'once'; delay: number }
+
+/**
+ * Something in the world besides the quad: an RF emitter (jammer, other traffic), a ground station
+ * (relay / diversity site), a detector (camera, radar, RF) or a target. pos is where it stands (for
+ * an actor on a path: the path's first point; see posAt in src/sim/actors.ts). Angles are radians.
+ */
+export type ActorDef = { id: string; name: string; pos: V3; path?: string } & (
+  | { type: 'rf-emitter'; freqMHz: number; eirpDbm: number; bwMHz: number; duty: number; antenna?: { yaw: number; pitch: number; beam: number } }
+  | { type: 'ground-station'; link: 'rc' | 'video' | 'both'; txPowerMw?: number; gainDbi: number }
+  | { type: 'detector'; sensor: 'camera' | 'radar' | 'rf'; yaw: number; pitch: number; fovH: number; fovV: number; rangeM: number; r50M: number; sensitivityDbm: number; rateHz: number; confirmM: number; confirmN: number }
+  | { type: 'target'; shape: 'box' | 'sphere' | 'cylinder' | 'quad' | 'vehicle' | 'person'; size: V3; radius: number; solid: boolean; color?: number }
+);
 
 /** A .glb drawn by the renderer: placed at pos (ENU), rotated by yaw about +z, uniformly scaled. */
 export interface MeshInstance { url: string; pos: V3; yaw: number; scale: number }
@@ -82,6 +105,15 @@ export interface MeshInstance { url: string; pos: V3; yaw: number; scale: number
 export function withCourse(m: MapDef, courseId?: string): MapDef {
   const c = courseId ? m.courses?.find((x) => x.id === courseId) : undefined;
   return c ? { ...m, gates: c.gates, spawn: c.spawn ?? m.spawn } : m;
+}
+
+/** The map starting from spawn variant `spawnId` (its pose and pilot position), or the map itself for '' / an unknown id. */
+export function withSpawn(m: MapDef, spawnId?: string): MapDef {
+  const s = spawnId ? m.spawns?.find((x) => x.id === spawnId) : undefined;
+  if (!s) return m;
+  const out: MapDef = { ...m, spawn: { pos: { ...s.pos }, yaw: s.yaw, ...(s.groundZ !== undefined && { groundZ: s.groundZ }) } };
+  if (s.pilot) out.pilot = { ...s.pilot };
+  return out;
 }
 
 /** Floor height under the spawn point. */

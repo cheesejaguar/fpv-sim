@@ -21,7 +21,7 @@ import { droneClass } from './builder/droneClass';
 import { InputManager, SimAction } from './input/gamepad';
 import { isLocalMap, onLocalMap } from './maps/localMaps';
 import { hasMap, MAP_LIST, MAPS, preloadMap } from './maps/maps';
-import { PrimitiveWorld, withCourse } from './maps/world';
+import { PrimitiveWorld, withCourse, withSpawn } from './maps/world';
 import { MultiplayerClient } from './net/multiplayer';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
@@ -101,7 +101,7 @@ await Promise.all([
   preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; }),
   preloadPropTable(spec0.prop),
 ]);
-const map0 = withCourse(MAPS[sim0.mapId](), sim0.courseId);
+const map0 = withSpawn(withCourse(MAPS[sim0.mapId](), sim0.courseId), sim0.spawnId);
 const build0 = buildDrone(spec0);
 const makeDroneModel = (b: DroneBuild) => buildDroneMesh(b.spec, b.info, b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })), b.info.cgMm);
 
@@ -204,13 +204,13 @@ function rebuildScene() {
 }
 /** Rebuild the rendered world for a map that is loaded (preloaded or built in). */
 function showMap(id: string) {
-  ctx.map = withCourse(MAPS[id](), ctx.sim.courseId); ctx.world = new PrimitiveWorld(ctx.map);
+  ctx.map = withSpawn(withCourse(MAPS[id](), ctx.sim.courseId), ctx.sim.spawnId); ctx.world = new PrimitiveWorld(ctx.map);
   rebuildScene();
   resetLaps(ctx);
 }
 function applySim(s: SimSettings, reloadMap = false) {
   const shown = ctx.map.id; // what is on screen (and what the physics flew so far)
-  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '');
+  const mapChanged = reloadMap || s.mapId !== ctx.sim.mapId || (s.courseId ?? '') !== (ctx.sim.courseId ?? '') || (s.spawnId ?? '') !== (ctx.sim.spawnId ?? '');
   // the pilot picked another physics rate: that one is theirs (and the governor's no longer applies)
   if (s.physicsHz !== ctx.sim.physicsHz) { chosenHz = s.physicsHz; governedHz = null; }
   ctx.sim = s; storeSim(s);
@@ -306,7 +306,7 @@ document.addEventListener('visibilitychange', () => {
 ctx.mp.onMap = (m) => {
   if (!hasMap(m) || m === ctx.sim.mapId) return;
   applyingRoomMap = true;
-  applySim({ ...ctx.sim, mapId: m, courseId: '' }); // the room shares the map; everyone flies its default course
+  applySim({ ...ctx.sim, mapId: m, courseId: '', spawnId: '' }); // the room shares the map; everyone flies its default course
   applyingRoomMap = false;
   ctx.log(`Room switched the map to ${MAP_LIST[m]?.name ?? m}`);
 };

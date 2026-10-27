@@ -58,6 +58,11 @@ function coursesOf(id: string): { id: string; name: string; isDefault: boolean }
   return c;
 }
 
+/** A map's named spawn variants (MapDef.spawns) for the Spawn select; none when it isn't loaded. */
+function spawnsOf(id: string): { id: string; name: string }[] {
+  try { return (MAPS[id]?.().spawns ?? []).map((x) => ({ id: x.id, name: x.name })); } catch { return []; } // not preloaded yet
+}
+
 export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void, latency?: LatencySource): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
   const lat = latencyReadout(v, latency);
@@ -72,9 +77,17 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
     return select('Course', [{ value: '', label: def?.name ?? 'Default course' }, ...cs.filter((c) => !c.isDefault).map((c) => ({ value: c.id, label: c.name }))], s.courseId ?? '', (x) => { s.courseId = x; pushS(); });
   };
   let courseRow = courseSelect();
+  // a map with named spawn variants: where the flight starts
+  const spawnSelect = () => {
+    const sp = spawnsOf(s.mapId);
+    if (!sp.length) return el('div', { hidden: '' });
+    return select('Spawn', [{ value: '', label: 'Default spawn' }, ...sp.map((x) => ({ value: x.id, label: x.name }))], s.spawnId ?? '', (x) => { s.spawnId = x; pushS(); });
+  };
+  let spawnRow = spawnSelect();
   const mapChanged = (id: string) => {
-    s.mapId = id; s.courseId = ''; credit.textContent = MAP_LIST[id]?.credit ?? '';
+    s.mapId = id; s.courseId = ''; s.spawnId = ''; credit.textContent = MAP_LIST[id]?.credit ?? '';
     const c = courseSelect(); courseRow.replaceWith(c); courseRow = c;
+    const sp = spawnSelect(); spawnRow.replaceWith(sp); spawnRow = sp;
   };
   const mapSelect = () => select('Map', Object.entries(MAP_LIST).map(([id, m]) => ({ value: id, label: mapLabel(m) })), s.mapId, (x) => { mapChanged(x); pushS(); });
   let mapRow = mapSelect();
@@ -84,7 +97,7 @@ export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: S
       el('div', { class: 'col' },
         section('World',
           mapRow,
-          courseRow,
+          courseRow, spawnRow,
           credit,
           el('details', { class: 'note' }, el('summary', {}, 'Credits & licenses'),
             ...Object.values(MAP_LIST).map((m) => el('p', {}, el('b', {}, m.name), ': ', m.credit)),

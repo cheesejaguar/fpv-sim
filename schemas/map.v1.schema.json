@@ -207,6 +207,46 @@
           "minimum": 0,
           "maximum": 2,
           "description": "Multiplies the configured wind (indoor maps: 0.1 - 0.3)."
+        },
+        "wind": {
+          "type": "object",
+          "properties": {
+            "speed": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 30,
+              "description": "Mean wind speed at 6 m (m/s)."
+            },
+            "directionDeg": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 360,
+              "description": "Direction the wind blows FROM, clockwise from north."
+            },
+            "turbulence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 3,
+              "default": 1
+            },
+            "gusts": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 20,
+              "default": 2,
+              "description": "Gusts per minute."
+            }
+          },
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {},
+            "^\\$comment$": {}
+          },
+          "required": [
+            "speed",
+            "directionDeg"
+          ],
+          "description": "The wind this map suggests: used by scenarios that set no wind, and offered in the live game."
         }
       },
       "required": [],
@@ -1080,6 +1120,722 @@
             }
           }
         ]
+      }
+    },
+    "spawns": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Named spawn variants. Pick one in Simulation, New game or a scenario (start.spawn); spawn stays the default.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+            "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "pos": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Quad position [x, y, z] (m)."
+          },
+          "yawDeg": {
+            "type": "number",
+            "description": "Heading, counter-clockwise from east."
+          },
+          "groundZ": {
+            "type": "number",
+            "description": "Floor height at the spawn (m)."
+          },
+          "pilot": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Where the pilot / video receiver stands for this spawn."
+          }
+        },
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        },
+        "required": [
+          "id",
+          "pos"
+        ]
+      }
+    },
+    "courses": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "Alternative gate courses, each timed on its own (gates is the default course).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+            "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "\\S"
+          },
+          "gates": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "square",
+                    "arch",
+                    "dive",
+                    "flag",
+                    "hurdle",
+                    "ladder"
+                  ]
+                },
+                "pos": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y] standing on the terrain, or [x, y, z]; dive gates need z (frame height)."
+                },
+                "yawDeg": {
+                  "type": "number",
+                  "description": "Rotation about +z. At 0 the gate spans east-west and is flown through northwards."
+                },
+                "width": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 20,
+                  "description": "Opening (m). Defaults: square / dive / flag 1.524, arch 3.0."
+                },
+                "height": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 20,
+                  "description": "Defaults: square / dive 1.524, arch 2.6, flag 3.2."
+                },
+                "stack": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 6,
+                  "description": "ladder: number of stacked openings (only the top one counts)"
+                },
+                "onTop": {
+                  "type": "boolean",
+                  "description": "the gate sits on the gate below it (no legs / bottom bar), e.g. a split-S stack"
+                }
+              },
+              "required": [
+                "kind",
+                "pos"
+              ],
+              "additionalProperties": false,
+              "patternProperties": {
+                "^x-": {},
+                "^\\$comment$": {}
+              },
+              "if": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "dive"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "pos": {
+                    "minItems": 3
+                  }
+                }
+              }
+            }
+          },
+          "spawn": {
+            "type": "string",
+            "description": "id of a spawns entry to start this course from."
+          }
+        },
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        },
+        "required": [
+          "id",
+          "name",
+          "gates"
+        ]
+      }
+    },
+    "paths": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Polylines that actors move along, in simulation time.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+            "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+          },
+          "points": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 256,
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            }
+          },
+          "speedMs": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Speed along the path (m/s)."
+          },
+          "mode": {
+            "enum": [
+              "loop",
+              "pingpong",
+              "once"
+            ],
+            "default": "loop"
+          },
+          "delayS": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Sim time before moving (s)."
+          }
+        },
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x-": {},
+          "^\\$comment$": {}
+        },
+        "required": [
+          "id",
+          "points",
+          "speedMs"
+        ]
+      }
+    },
+    "actors": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "RF components, detection components and targets.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "rf-emitter",
+              "ground-station",
+              "detector",
+              "target"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "rf-emitter"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "rf-emitter"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+                  "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "pos": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "Where it stands [x, y, z] (m). Give pos or path."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "id of a paths entry to move along. Give pos or path."
+                },
+                "freqMHz": {
+                  "type": "number",
+                  "minimum": 100,
+                  "maximum": 10000,
+                  "description": "Centre frequency (MHz)."
+                },
+                "eirpDbm": {
+                  "type": "number",
+                  "minimum": -30,
+                  "maximum": 70,
+                  "description": "Radiated power (dBm EIRP)."
+                },
+                "bwMHz": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000,
+                  "default": 20,
+                  "description": "Occupied bandwidth (MHz)."
+                },
+                "duty": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1,
+                  "description": "Share of time on air."
+                },
+                "antenna": {
+                  "type": "object",
+                  "properties": {
+                    "yawDeg": {
+                      "type": "number"
+                    },
+                    "pitchDeg": {
+                      "type": "number",
+                      "minimum": -90,
+                      "maximum": 90
+                    },
+                    "beamDeg": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 360,
+                      "description": "Beamwidth."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "patternProperties": {
+                    "^x-": {},
+                    "^\\$comment$": {}
+                  },
+                  "required": [
+                    "yawDeg",
+                    "beamDeg"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "patternProperties": {
+                "^x-": {},
+                "^\\$comment$": {}
+              },
+              "required": [
+                "type",
+                "id",
+                "freqMHz",
+                "eirpDbm"
+              ],
+              "description": "A transmitter: a jammer, or another link's traffic. Raises the noise for links in its band.",
+              "oneOf": [
+                {
+                  "required": [
+                    "pos"
+                  ],
+                  "not": {
+                    "required": [
+                      "path"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "path"
+                  ],
+                  "not": {
+                    "required": [
+                      "pos"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "ground-station"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "ground-station"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+                  "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "pos": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "Where it stands [x, y, z] (m). Give pos or path."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "id of a paths entry to move along. Give pos or path."
+                },
+                "link": {
+                  "enum": [
+                    "rc",
+                    "video",
+                    "both"
+                  ],
+                  "default": "both"
+                },
+                "txPowerMw": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000
+                },
+                "gainDbi": {
+                  "type": "number",
+                  "minimum": -10,
+                  "maximum": 30,
+                  "default": 2
+                }
+              },
+              "additionalProperties": false,
+              "patternProperties": {
+                "^x-": {},
+                "^\\$comment$": {}
+              },
+              "required": [
+                "type",
+                "id"
+              ],
+              "description": "An extra RC transmitter / video receiver site (relay, diversity): the best site carries the link.",
+              "oneOf": [
+                {
+                  "required": [
+                    "pos"
+                  ],
+                  "not": {
+                    "required": [
+                      "path"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "path"
+                  ],
+                  "not": {
+                    "required": [
+                      "pos"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "detector"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "detector"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+                  "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "pos": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "Where it stands [x, y, z] (m). Give pos or path."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "id of a paths entry to move along. Give pos or path."
+                },
+                "sensor": {
+                  "enum": [
+                    "camera",
+                    "radar",
+                    "rf"
+                  ]
+                },
+                "yawDeg": {
+                  "type": "number",
+                  "description": "Boresight, counter-clockwise from east."
+                },
+                "pitchDeg": {
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
+                },
+                "fovDeg": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 360
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "Field of view [horizontal, vertical]."
+                },
+                "rangeM": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 20000,
+                  "description": "Maximum range (m)."
+                },
+                "r50M": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 20000,
+                  "description": "Range of 50 % detection probability for a 5-inch quad (camera, radar)."
+                },
+                "sensitivityDbm": {
+                  "type": "number",
+                  "minimum": -150,
+                  "maximum": 0,
+                  "description": "RF detector sensitivity."
+                },
+                "rateHz": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 100,
+                  "description": "Looks per second."
+                },
+                "confirm": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[m, n]: detected when m of the last n looks see the quad."
+                }
+              },
+              "additionalProperties": false,
+              "patternProperties": {
+                "^x-": {},
+                "^\\$comment$": {}
+              },
+              "required": [
+                "type",
+                "id",
+                "sensor",
+                "rangeM"
+              ],
+              "description": "A sensor that detects the quad.",
+              "oneOf": [
+                {
+                  "required": [
+                    "pos"
+                  ],
+                  "not": {
+                    "required": [
+                      "path"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "path"
+                  ],
+                  "not": {
+                    "required": [
+                      "pos"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "target"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "target"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+                  "description": "Identifier: 1-32 characters of a-z, 0-9, _ and -. Unique within its list."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "pos": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "description": "Where it stands [x, y, z] (m). Give pos or path."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "id of a paths entry to move along. Give pos or path."
+                },
+                "shape": {
+                  "enum": [
+                    "box",
+                    "sphere",
+                    "cylinder",
+                    "quad",
+                    "vehicle",
+                    "person"
+                  ],
+                  "default": "box"
+                },
+                "size": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "radiusM": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000,
+                  "description": "Reach radius (m)."
+                },
+                "solid": {
+                  "type": "boolean",
+                  "description": "Collides (static targets only)."
+                },
+                "color": {
+                  "type": "string",
+                  "pattern": "^#[0-9a-fA-F]{6}$"
+                }
+              },
+              "additionalProperties": false,
+              "patternProperties": {
+                "^x-": {},
+                "^\\$comment$": {}
+              },
+              "required": [
+                "type",
+                "id"
+              ],
+              "description": "Something to reach, inspect, track or follow.",
+              "oneOf": [
+                {
+                  "required": [
+                    "pos"
+                  ],
+                  "not": {
+                    "required": [
+                      "path"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "path"
+                  ],
+                  "not": {
+                    "required": [
+                      "pos"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "fpvsim-scenario files bundled with the map (package paths).",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._/-]+\\.json$"
       }
     }
   },

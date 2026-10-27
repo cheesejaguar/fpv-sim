@@ -246,6 +246,8 @@ export interface SimSettings {
   mapId: string;
   /** a drill course of the map (MapDef.courses) timed instead of its default gates; '' = default */
   courseId?: string;
+  /** a named spawn variant of the map (MapDef.spawns) to start from; '' = the map's (or course's) spawn */
+  spawnId?: string;
   physicsHz: number;
   timeScale: number;
   damage: boolean;
