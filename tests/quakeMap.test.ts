@@ -97,6 +97,7 @@ describe.each([['quake-e1m1', 'e1m1.map'], ['quake-dm3', 'dm3.map']])('%s', (id,
       prev = { ...q.s.pos };
       minSpeed = Math.min(minSpeed, Math.hypot(q.s.vel.x, q.s.vel.y));
     }
-    if (wall < 40) expect(minSpeed).toBeLessThan(15); // it really hit the wall
-  });
+    expect(wall).toBeLessThan(40); // every heading from the spawn faces a wall within reach
+    expect(minSpeed).toBeLessThan(15); // it really hit the wall
+  }, 60000);
 });

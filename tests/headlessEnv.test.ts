@@ -53,6 +53,7 @@ describe.skipIf(!have)('headless environment (real Betaflight)', () => {
     expect(m.type).toBe('hover');
     expect(m.elapsedS).toBeCloseTo(4, 1);
     expect(m.rmsErrorM).toBeGreaterThan(0);
+    expect(m.rmsErrorM).toBeLessThan(2.5); // (about 1.6 m on this run)
     expect(m.normalizedError).toBeCloseTo(m.rmsErrorM! / 1, 6);
     expect(res.obs.probes).toHaveLength(6);
     expect(obsVectorLabels(6)).toHaveLength(trace[0].length);

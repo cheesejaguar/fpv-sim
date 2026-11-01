@@ -116,7 +116,7 @@ describe.skipIf(!have)('Betaflight WASM firmware realism', () => {
     expect(b.bf.accCalibrated()).toBe(false);
     b.cli(defaultCli(buildDrone(DEFAULT_SPEC))); // defaults configure ANGLE / HORIZON on AUX2
     b.run(4);
-    expect(b.bf.armingDisableFlags() & ACC_CALIBRATION_FLAG).toBeTruthy();
+    expect(b.bf.armingDisableFlags() & ACC_CALIBRATION_FLAG).toBe(ACC_CALIBRATION_FLAG);
     b.bf.eepromDirty(); // baseline
     expect(b.bf.calibrateAcc()).toBe(true);
     expect(b.bf.accCalibrating()).toBe(true);

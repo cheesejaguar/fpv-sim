@@ -163,11 +163,14 @@ describe.skipIf(!have)('operations on the real Betaflight', () => {
     const run = await fly(env, sc);
     const rel = run.events.find((e) => e.type === 'payload_release');
     const imp = run.events.find((e) => e.type === 'payload_impact');
-    expect(rel).toBeTruthy();
+    expect(rel).toMatchObject({ type: 'payload_release', t: expect.closeTo(2.5, 1) });
+    const meanVz = (t0: number, t1: number) => { const w = run.obs.filter((o) => o.t >= t0 && o.t < t1); return w.reduce((s, o) => s + o.vel[2], 0) / w.length; };
+    expect(run.obs[0].ops!.payload).toMatchObject({ attached: true, released: false });
+    // lighter after the release: the same altitude-hold law climbs faster
+    expect(meanVz(2.5, 3.0)).toBeGreaterThan(meanVz(2.0, 2.5) + 0.15);
     expect(imp && imp.type === 'payload_impact' && imp.flightS).toBeGreaterThan(0.5);
     expect(run.res.info.reason).toBe('success');
     expect(run.res.info.metrics.missM).toBeLessThan(3);
-    // lighter after the release: the same throttle climbs (altitude-hold transient)
     expect(run.obs[run.obs.length - 1].ops!.payload).toMatchObject({ attached: false, released: true });
   }, 120000);
 

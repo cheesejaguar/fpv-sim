@@ -127,6 +127,7 @@ describe('freedoom-map01', () => {
       prev = { ...q.s.pos };
       minSpeed = Math.min(minSpeed, Math.hypot(q.s.vel.x, q.s.vel.y));
     }
-    if (wall < 40) expect(minSpeed).toBeLessThan(15);
-  });
+    expect(wall).toBeLessThan(40); // every heading from the spawn faces a wall within reach
+    expect(minSpeed).toBeLessThan(15); // it really hit the wall
+  }, 60000); // 12k physics steps with two solid checks each: ~6 s alone, longer beside the other files
 });

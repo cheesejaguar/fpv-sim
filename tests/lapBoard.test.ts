@@ -41,10 +41,13 @@ describe('drone class and summary', () => {
 
   test('every frame, motor and battery gives a summary the server accepts', () => {
     const specs: DroneSpec[] = [...FRAMES.map((f) => ({ ...DEFAULT_SPEC, frame: f.id })), ...MOTORS.map((m) => ({ ...DEFAULT_SPEC, motor: m.id })), ...BATTERIES.map((b) => ({ ...DEFAULT_SPEC, battery: b.id }))];
+    let custom = 0;
     for (const spec of specs) {
       const sum = droneSummary({ spec, info: { components: buildDrone(spec).info.components } as any });
-      if (droneClass(spec) === 'custom') expect(CUSTOM_SUMMARY_RE.test(sum), sum).toBe(true);
+      if (droneClass(spec) === 'custom') { custom++; expect(CUSTOM_SUMMARY_RE.test(sum), sum).toBe(true); }
+      else expect(sum).toBe(presetOf(spec)!.name); // a preset posts under its class name
     }
+    expect(custom).toBeGreaterThan(specs.length / 2);
   });
 });
 

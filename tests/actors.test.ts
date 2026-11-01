@@ -327,6 +327,7 @@ describe.skipIf(!have)('actors in the headless simulator', () => {
     expect(res.terminated).toBe(true);
     expect(res.info.metrics.failed).toBe(true);
     expect(res.info.metrics.detectedS).toBeGreaterThan(0.2);
-    expect(res.info.metrics.firstDetectT).not.toBeNull();
+    // seen continuously from the first detection to the end of the episode
+    expect(res.info.metrics.firstDetectT).toBeCloseTo(res.obs.t - res.info.metrics.detectedS!, 2);
   }, 120000);
 });

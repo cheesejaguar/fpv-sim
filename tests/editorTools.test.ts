@@ -116,7 +116,7 @@ describe('clipboard', () => {
     // the centre (11, 10) moved to (100, 0); the box keeps its 3 m over the ground (now 5 m high)
     expect((ed.doc.primitives![1] as { pos: number[] }).pos).toEqual([99, 0, 8]);
     expect(ed.doc.gates![0].pos).toEqual([101, 0]);
-    expect(validateMapDoc(ed.doc).warnings).toBeDefined();
+    expect(validateMapDoc(ed.doc).warnings).toEqual([]);
   });
   it('gives pasted groups, spawns and actors fresh ids and puts orphaned course gates on the main course', () => {
     const ed = tpl('research');

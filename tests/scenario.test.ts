@@ -125,7 +125,7 @@ describe('scenario format: spawns, actor tasks, actor observations and randomiza
     expect(drawn).toEqual(new Set(['', 'north', 'east']));
     // start.spawn without randomization; no spawn: settings untouched
     expect(resolveEpisode({ ...S, map: { id: 'range' }, start: { spawn: 'east' } }).settings.spawnId).toBe('east');
-    expect('spawnId' in resolveEpisode({ ...S }).settings && resolveEpisode({ ...S }).settings.spawnId).toBeFalsy();
+    expect(resolveEpisode({ ...S }).settings).not.toHaveProperty('spawnId');
     // a scenario without sim.wind flies the map's wind; with one, its own
     expect(resolveEpisode({ ...S, map: { id: 'range' } }, 0, facts('range')).settings.wind).toEqual({ speed: 4, direction: 250, turbulence: 1, gusts: 2 });
     expect(resolveEpisode({ ...S, map: { id: 'range' }, sim: { wind: { speed: 1 } } }, 0, facts('range')).settings.wind.speed).toBe(1);
