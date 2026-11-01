@@ -36,5 +36,6 @@ test('wake() while polling at full rate starts no second chain', async () => {
   const rate = n - a;
   stop();
   // one chain: about as many polls in the second 50 ms as there are ~1 ms ticks, not 50 extra chains
+  expect(rate).toBeGreaterThan(10);
   expect(rate).toBeLessThan(200);
 });

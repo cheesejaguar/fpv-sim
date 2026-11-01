@@ -337,15 +337,18 @@ describe('synthetic logs from a port of Betaflight\'s writer', () => {
     expect(decodeBbl(new Uint8Array(0))).toEqual([]);
   });
 
-  test('truncated at every byte: never throws, frames decoded are a prefix of the full decode', () => {
+  test('truncated every 97 bytes: never throws, frames decoded are a prefix of the full decode', () => {
     const full = logs[0];
+    let checked = 0;
     for (let cut = 1; cut < a.bytes.length; cut += 97) {
       const [l] = decodeBbl(a.bytes.subarray(0, cut));
       if (!l || !l.frameCount) continue; // cut inside the header
       expect(l.stats.endOfLog).toBe(false);
       const n = l.frameCount;
       expect(Array.from(l.main.time)).toEqual(Array.from(full.main.time.subarray(0, n)));
+      checked++;
     }
+    expect(checked).toBeGreaterThan(300); // (350 of the cuts land past the header)
   });
 });
 
@@ -438,12 +441,12 @@ describe.skipIf(!have)('a real Betaflight 4.5.5 log from the simulator', () => {
     expect(sc.firmwareVersion).toEqual([4, 5, 5]);
     expect(sc.dataVersion).toBe(2);
     expect(sc.looptime).toBe(125); // 8 kHz gyro
-    expect(sc.pid_process_denom).toBeGreaterThanOrEqual(1);
+    expect(sc.pid_process_denom).toBe(1); // src/bf/defaults.ts
     expect(sc.frameIntervalPNum).toBe(1);
     expect(sc.frameIntervalPDenom).toBe(4); // blackbox_sample_rate = 1/4
     expect(sc.pRatio).toBe(sc.frameIntervalI / sc.frameIntervalPDenom);
     expect(sc.gyro_scale).toBe(1);
-    expect(sc.acc_1G).toBeGreaterThan(0);
+    expect(sc.acc_1G).toBe(256);
     expect(sc.motorOutput[1]).toBe(2047); // DShot
     const I = l.fields.I!;
     for (const name of ['loopIteration', 'time', 'gyroADC[0]', 'gyroADC[2]', 'setpoint[0]', 'rcCommand[3]', 'motor[0]', 'motor[3]', 'eRPM[0]', 'vbatLatest']) expect(I.names).toContain(name);

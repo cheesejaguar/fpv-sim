@@ -107,19 +107,21 @@ describe('PrimitiveWorld.sphere matches a brute-force reference', () => {
       // terrain contacts: a quad-sized cluster of spheres resting on the ground (they share the
       // terrain planes) at random spots; the plane is the exact terrain where it was taken
       const S = m.size * 0.8;
-      let maxErr = 0, maxNz = 0;
+      let maxErr = 0, maxNz = 0, terrainHits = 0;
       for (let i = 0; i < 300; i++) {
         const cx = (rng.next() - 0.5) * 2 * S, cy = (rng.next() - 0.5) * 2 * S, g = m.terrain(cx, cy);
         for (let j = 0; j < 40; j++) {
           const p = { x: cx + (rng.next() - 0.5) * 0.4, y: cy + (rng.next() - 0.5) * 0.4, z: g + 0.004 + rng.next() * 0.03 }, r = 0.008 + rng.next() * 0.03;
           const ref = reference(m, prims, p, r), got = query(w, p, r);
           if (ref.prim.depth > 0 || (got.depth > 0 && got.material !== m.groundMat)) continue;
+          terrainHits++;
           maxErr = Math.max(maxErr, Math.abs(got.depth - ref.terrain.depth));
           if (ref.terrain.depth > 1e-3) maxNz = Math.max(maxNz, Math.abs(got.nz - ref.terrain.nz));
         }
       }
       // (worst on the hilly / baked-heightfield maps: field 3.0 mm in the country outside the bowl,
       // park 1.5 mm, mountains 1.0 mm; a tenth of a millimetre or less on the flat fields)
+      expect(terrainHits).toBeGreaterThan(10_000); // of 12 000 samples: most land on bare ground
       expect(maxErr).toBeLessThan(4e-3);
       expect(maxNz).toBeLessThan(2e-2);
     }, 30000);

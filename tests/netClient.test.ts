@@ -144,7 +144,7 @@ describe('MultiplayerClient', () => {
     mp.join('FULLR', ME);
     last().open(); last().recv({ t: 'bye', code: 4001, msg: 'room full' }); // the relay says so before closing
     expect(mp.failure).toBe('full');                                        // at once, not at onclose
-    expect(last().closedWith).not.toBeNull();
+    expect(last().closedWith).toBe(1000);
     mp.join('FULLR', ME);
     last().open(); last().recv(welcome(1)); last().drop(4001); // full after a reconnect race: also final
     vi.advanceTimersByTime(60_000);
@@ -170,7 +170,7 @@ describe('MultiplayerClient', () => {
     vi.advanceTimersByTime(1);
     expect(mp.status).toBe('error');
     expect(mp.failure).toBe('timeout');
-    expect(last().closedWith).not.toBeNull();
+    expect(last().closedWith).toBe(1000);
   });
 
   test('welcome clears the previous ping timer; pongs are timed; a silent relay counts as a drop', () => {

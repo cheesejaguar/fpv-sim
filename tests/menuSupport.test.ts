@@ -1,6 +1,8 @@
 // Menu support pieces: version label, prefilled bug report, glass-to-glass latency readout, Betaflight
 // backup replay lines, and the race / roster panel data.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LapBoard } from '../src/app/leaderboard';
+import { KEYS, KV } from '../src/app/persist';
 import { newDrill, newRace, raceInfo } from '../src/app/race';
 import type { AppCtx } from '../src/app/context';
 import { DEFAULT_SPEC } from '../src/builder/derive';
@@ -61,16 +63,25 @@ describe('race panel', () => {
     mp: { connected, room: connected ? 'ABCD' : null, peers: new Map([[2, { info: { name: 'Bob', color: '#00ff00' }, lap: { lap: 3, best: 29.9 } }]]) },
   }) as unknown as AppCtx;
 
-  it('shows the personal best and the leaderboard record for this track and drone class', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('shows the personal best and the leaderboard record for this track and drone class', async () => {
+    // a real LapBoard: the pilot's stored best and posted entry ids, and the board fetched from the
+    // leaderboard server (the network is the only stand-in)
+    const m = new Map<string, string>(), kv: KV = { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, v); } };
+    kv.setItem(KEYS.pbs, JSON.stringify({ 'field|freestyle5': { lapMs: 30_250, splitsMs: [], at: 1, summary: '', submitted: { id: 9, at: 2 } }, 'field|race5': { lapMs: 20_000, splitsMs: [], at: 1, summary: '' } }));
+    kv.setItem(KEYS.lbMine, JSON.stringify([9]));
     const asked: string[] = [];
-    const lb = {
-      pb: (m: string, c: string, cls: string) => { asked.push(`${m}|${c}|${cls}`); return { lapMs: 30_250, splitsMs: [], at: 1, summary: '', submitted: { id: 9, at: 2 } }; },
-      record: () => ({ id: 9, initials: 'ACE', lapMs: 30_250, cls: 'freestyle5', summary: '', at: 2, replay: true }),
-      isMine: (id: number) => id === 9,
-    };
-    const r = raceInfo(ctx(8, false, lb))!;
-    expect(asked).toEqual(['field||freestyle5']);
-    expect(r).toMatchObject({ pb: 30.25, record: { initials: 'ACE', lap: 30.25, mine: true } });
+    vi.stubGlobal('location', { hostname: 'example.com' });
+    vi.stubGlobal('fetch', async (url: string) => {
+      asked.push(new URL(url).search);
+      return new Response(JSON.stringify({ entries: [{ id: 9, initials: 'ACE', lapMs: 30_250, cls: 'freestyle5', summary: '5" Freestyle 6S', at: 2, replay: true }] }));
+    });
+    const c = ctx(8, false, new LapBoard(kv));
+    expect(raceInfo(c)).toMatchObject({ pb: 30.25, record: undefined }); // the board is still on its way
+    await new Promise((r) => setTimeout(r));
+    expect(asked).toEqual(['?map=field&class=freestyle5']);
+    expect(raceInfo(c)).toMatchObject({ pb: 30.25, record: { initials: 'ACE', lap: 30.25, mine: true } });
   });
 
   it('has no panel solo on a map without gates', () => {

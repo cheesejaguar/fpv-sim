@@ -175,12 +175,15 @@ describe('clutter and crowd', () => {
     const a = clutterPoints(field, spots, 2), b = clutterPoints(field, spots, 2);
     expect(a.length).toBeGreaterThan(200); expect(a).toEqual(b);
     const pads = field.prims.filter((p) => p.tag === 'pad');
+    expect(pads.some((p) => p.kind === 'box')).toBe(true);
     for (const t of a) for (const p of pads) if (p.kind === 'box') expect(Math.abs(t.x - p.c.x) < p.half.x && Math.abs(t.y - p.c.y) < p.half.y).toBe(false);
   });
   it('spectators face the pitch and the arms are flagged for the shader', () => {
     expect(figureGeometry().getAttribute('aPart').itemSize).toBe(3);
     const people = (field.decor ?? []).filter((p) => p.tag === 'crowd').slice(0, 400) as never[];
     const crowd = buildCrowd(people, { x: 0, y: 0 }, makeWorldUniforms())!;
+    expect(people).toHaveLength(400);
+    expect(crowd.meshes.reduce((n, im) => n + im.count, 0)).toBeGreaterThanOrEqual(400);
     const m = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
     for (const im of crowd.meshes) for (let i = 0; i < im.count; i++) {
       im.getMatrixAt(i, m); m.decompose(pos, q, s);
@@ -193,7 +196,7 @@ describe('clutter and crowd', () => {
 
 describe('drone mesh', () => {
   it('prop colour is fixed per spec name', () => {
-    expect(propColor('5" Freestyle 6S')).toBe(propColor('5" Freestyle 6S'));
+    expect(propColor('5" Freestyle 6S')).toBe(PROP_COLORS[0]); // FNV-1a of the name, pinned
     expect(PROP_COLORS).toContain(propColor('anything'));
     expect(new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(propColor)).size).toBeGreaterThan(1);
   });

@@ -119,7 +119,9 @@ describe('RoomCore', () => {
     room.open(a); room.open(b);
     room.message(a, hello('A')); room.message(b, hello('B'));
     for (let i = 0; i < 200; i++) room.message(a, state(i));
-    expect(b.sent.filter((m) => m.t === 's').length).toBeLessThanOrEqual(40);
+    const relayed = b.sent.filter((m) => m.t === 's').length;
+    expect(relayed).toBeGreaterThan(30); // a burst gets through
+    expect(relayed).toBeLessThanOrEqual(40); // the rest is dropped
   });
 
   test('map change broadcasts to everyone, laps relay', () => {

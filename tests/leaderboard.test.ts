@@ -340,19 +340,20 @@ describe.skipIf(!sqlite)('Worker /leaderboard', () => {
 
   test('GET: CORS, a short cache, unknown boards refused', async () => {
     vi.setSystemTime(9_000_000);
-    const e = env();
-    const r = await get(e.env, 'map=field&class=whoop65');
-    expect(r.status).toBe(200);
-    expect(r.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN);
-    expect(r.headers.get('Cache-Control')).toBe('public, max-age=10');
-    expect((await r.json()).entries).toEqual([]);
-    await get(e.env, 'map=field&class=whoop65');
-    expect(e.calls()).toBe(1); // the isolate cache
-    expect((await get(e.env, 'map=local-x')).status).toBe(400);
-    const pre = await mod.default.fetch(new Request('https://relay.example/leaderboard', { method: 'OPTIONS', headers: { Origin: ORIGIN } }), e.env);
-    expect(pre.status).toBe(204);
-    expect(pre.headers.get('Access-Control-Allow-Methods')).toContain('POST');
-    vi.useRealTimers();
+    try {
+      const e = env();
+      const r = await get(e.env, 'map=field&class=whoop65');
+      expect(r.status).toBe(200);
+      expect(r.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN);
+      expect(r.headers.get('Cache-Control')).toBe('public, max-age=10');
+      expect((await r.json()).entries).toEqual([]);
+      await get(e.env, 'map=field&class=whoop65');
+      expect(e.calls()).toBe(1); // the isolate cache
+      expect((await get(e.env, 'map=local-x')).status).toBe(400);
+      const pre = await mod.default.fetch(new Request('https://relay.example/leaderboard', { method: 'OPTIONS', headers: { Origin: ORIGIN } }), e.env);
+      expect(pre.status).toBe(204);
+      expect(pre.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+    } finally { vi.useRealTimers(); }
   });
 
   test('POST: allowed origins only, size limit, validation, rate limit; stores hashes, not the IP or token', async () => {

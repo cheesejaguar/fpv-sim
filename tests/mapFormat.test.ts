@@ -276,7 +276,7 @@ describe('community index', () => {
       { id: 'a-map', name: 'A', author: 'Y', license: 'CC0-1.0', version: '0.1.0' },
       { id: 'b-map', name: 'B', author: 'X', license: 'MIT', version: '1.0.0', preview: 'maps/community/b-map/p.jpg' },
     ]);
-    expect(problems).toHaveLength(2);
+    expect(problems).toEqual(['empty/: no map.json', 'wrong/map.json: meta.id "other" must equal the folder name']);
   });
 });
 

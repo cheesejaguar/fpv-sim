@@ -40,7 +40,9 @@ describe('protocol', () => {
     expect(parseRequest('{"cmd":"teleport","pos":[1,2]}').error).toMatch(/pos/);
     expect(parseRequest('{"cmd":"cli","lines":"get x"}').error).toMatch(/lines/);
     expect(parseRequest('{"cmd":"reset","seed":-1}').error).toMatch(/seed/);
-    expect(parseRequest('{"cmd":"act","action":{"roll":0.2,"arm":true,"mode":"angle","rc":[1500,1500]}}').req).toBeDefined();
+    const ok = parseRequest('{"cmd":"act","action":{"roll":0.2,"arm":true,"mode":"angle","rc":[1500,1500]}}');
+    expect(ok.error).toBeUndefined();
+    expect(ok.req).toMatchObject({ cmd: 'act', action: { roll: 0.2, arm: true, mode: 'angle', rc: [1500, 1500] } });
     expect(checkAction({ mode: 'sport' })[0]).toMatch(/mode/);
   });
 

@@ -23,5 +23,7 @@ test('faster packet rates need more signal (lower sensitivity)', () => {
   const walls = { obstructionDb: () => 45 };
   const fast = new RcLink(3); fast.rateHz = 500; fast.txPowerMw = 25;
   const slow = new RcLink(3); slow.rateHz = 50; slow.txPowerMw = 25;
-  expect(run(slow, walls, 1500)).toBeGreaterThanOrEqual(run(fast, walls, 1500));
+  const lqSlow = run(slow, walls, 1500), lqFast = run(fast, walls, 1500);
+  expect(lqFast).toBeLessThan(100);
+  expect(lqSlow).toBeGreaterThan(lqFast);
 });
