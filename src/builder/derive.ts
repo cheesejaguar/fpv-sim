@@ -11,6 +11,8 @@ import { V3 } from '../sim/math';
 import { MotorParams } from '../sim/motor';
 import { QuadParams, RotorConfig, STRENGTH } from '../sim/quad';
 import { RotorAero, RotorAeroOut, emptyRotorOut } from '../sim/rotor';
+import { isAirframe } from '../data/airframes';
+import { buildPlane, type PlaneInfo } from './plane';
 
 export interface DroneSpec {
   name: string;
@@ -29,6 +31,14 @@ export interface DroneSpec {
    * Unset: the build's own, which stay put while sliders are tuned. Scenarios set it per episode.
    */
   unitSeed?: number;
+  /**
+   * The flight controller's firmware: Betaflight (the default for quads) or ArduPilot (ArduCopter
+   * for a quad, ArduPlane for a plane: a plane always flies ArduPilot), run in the browser as WebAssembly.
+   */
+  autopilot?: 'betaflight' | 'ardupilot';
+  /** ArduPilot: parameters set over the build's defaults, and Lua scripts by file name (run from APM/scripts) */
+  apParams?: Record<string, number>;
+  apScripts?: Record<string, string>;
 }
 
 /** Everything a slider can override (per-component raw specs and derived values). */
@@ -48,6 +58,12 @@ export const DEFAULT_SPEC: DroneSpec = {
   batterySoc: 1, batteryAge: 1, motorTiltDeg: 0, overrides: {},
 };
 
+/** What a plane build starts from: ArduPlane on a wing FC with GPS, the camera level with the wing chord. */
+const PLANE_SPEC: DroneSpec = {
+  ...DEFAULT_SPEC, fc: 'fc-wing', batteryMount: 'bottom', cameraUptiltDeg: 0, propDirection: 'props-out',
+  extraMassG: 15, extraMassZmm: 0, autopilot: 'ardupilot',
+};
+
 // Camera uptilt follows how each class is flown (typical real setups): racers lean far forward at
 // speed (45°), freestyle 5" ~30°, long range cruises ~25°, whoops indoors ~18-20°, cinewhoops are
 // flown slow and level for footage (~10°).
@@ -62,6 +78,12 @@ export const PRESETS: DroneSpec[] = [
   { ...DEFAULT_SPEC, name: 'Beginner: 75 mm Whoop 1S', frame: 'f75-whoop', motor: 'm0802-19000', prop: 'p-40mm3', battery: 'b1s450hv', esc: 'e5aio', fc: 'fc-whoop-aio', video: 'v-analog-whoop', batteryMount: 'bottom', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 20, propDirection: 'props-out' },
   { ...DEFAULT_SPEC, name: 'Beginner: 3" Cinewhoop 4S HD', frame: 'f3-cinewhoop', motor: 'm1404-3800', prop: 'p-hq3030', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-dji-o4', batteryMount: 'top', extraMassG: 0, extraMassZmm: 0, cameraUptiltDeg: 10 },
   { ...DEFAULT_SPEC, name: '3" Toothpick 4S', frame: 'f3-toothpick', motor: 'm1404-3800', prop: 'p-gf3018', battery: 'b4s650', esc: 'e20aio', fc: 'fc-bmi270', video: 'v-analog', extraMassG: 5, extraMassZmm: 5, cameraUptiltDeg: 30 },
+  // Fixed wings (ArduPlane): the five planes in src/data/airframes.ts with the power systems they ship with
+  { ...PLANE_SPEC, name: 'Plane: HEEWING T1 Ranger', frame: 'a-heewing-t1', motor: 'm1404-3700', prop: 'p-fx3830', battery: 'b3s1300', esc: 'e20s', video: 'v-walksnail', extraMassG: 12 },
+  { ...PLANE_SPEC, name: 'Plane: AtomRC Penguin', frame: 'a-atomrc-penguin', motor: 'm2004-2400', prop: 'p-6026', battery: 'b4s2200', esc: 'e20s', video: 'v-dji-o3', extraMassG: 15 },
+  { ...PLANE_SPEC, name: 'Plane: SonicModell AR Wing Pro', frame: 'a-ar-wing-pro', motor: 'm2216-1400', prop: 'p-8x5', battery: 'b4s3300', esc: 'e40s', video: 'v-dji-o4', extraMassG: 15 },
+  { ...PLANE_SPEC, name: 'Plane: ZOHD Talon GT Rebel', frame: 'a-zohd-talon-gt', motor: 'm2216-1300', prop: 'p-8x5', battery: 'b4s2p-p45b', esc: 'e40s', video: 'v-dji-o3', extraMassG: 15 },
+  { ...PLANE_SPEC, name: 'Plane: Volantex Ranger 2000', frame: 'a-volantex-ranger2000', motor: 'm2215-1400', prop: 'p-8x4-fold', battery: 'b3s2200', esc: 'e40s', video: 'v-analog', extraMassG: 20 },
 ];
 
 interface MassItem { name: string; m: number; pos: V3; box: V3 } // box = full dimensions
@@ -85,6 +107,8 @@ export interface DerivedInfo {
   frameFreqHz: number;
   /** Ducted frames: bottom of the duct guards (frame z, mm, arm plane = 0), what the quad stands on. */
   ductBottomMm?: number;
+  /** Fixed-wing builds: the plane's own figures (src/builder/plane.ts). */
+  plane?: PlaneInfo;
 }
 
 export interface DroneBuild { spec: DroneSpec; params: QuadParams; info: DerivedInfo; tables: BemtTable }
@@ -178,6 +202,7 @@ export function preloadPropTable(propId: string, opts: { url?: string; timeoutMs
 }
 
 export function buildDrone(spec: DroneSpec): DroneBuild {
+  if (isAirframe(spec.frame)) return buildPlane(spec);
   const ov = spec.overrides;
   const frame = byId(FRAMES, spec.frame), motor = byId(MOTORS, spec.motor), prop = byId(PROPS, spec.prop);
   const battery = byId(BATTERIES, spec.battery), esc = byId(ESCS, spec.esc), fc = byId(FCS, spec.fc), video = byId(VIDEO, spec.video);

@@ -44,7 +44,9 @@ describe('on the pad', () => {
     q.reset({ x: 0, y: 0, z: 0.06 - Math.min(...p.colliders.map((c) => c.pos.z - c.radius)) }); // as the worker spawns it
     for (let i = 0; i < 4 * 8000; i++) { q.command([0, 0, 0, 0], false); q.step(DT, e); }
     const [r, pt] = rollPitch(q.s.q);
-    expect(Math.abs(r)).toBeLessThan(1); expect(Math.abs(pt)).toBeLessThan(1);
+    // a plane rests on its belly and, the ridge being narrow, on one wingtip: settled, not level
+    const lim = buildDrone(spec).info.plane ? 10 : 1;
+    expect(Math.abs(r)).toBeLessThan(lim); expect(Math.abs(pt)).toBeLessThan(lim);
     expect(q.s.touching).toBe(true);
   });
 

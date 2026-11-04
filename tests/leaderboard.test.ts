@@ -210,7 +210,7 @@ describe('classes match the presets', () => {
     for (const p of PRESETS) {
       const id = PRESET_CLASS[p.name];
       expect(id, p.name).toBeDefined();
-      expect(CLASSES[id].name).toBe(p.name.replace(/^Beginner: /, ''));
+      expect(CLASSES[id].name).toBe(p.name.replace(/^(Beginner|Plane): /, ''));
     }
     expect([...CLASS_IDS].sort()).toEqual(Object.keys(CLASSES).sort());
   });

@@ -4,6 +4,7 @@
 // versioning (the bare object) are accepted and re-saved in the current format.
 import { DEFAULT_SPEC, DroneSpec, PRESETS } from '../builder/derive';
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO } from '../data/catalog';
+import { AIRFRAMES } from '../data/airframes';
 import { hasMap } from '../maps/maps';
 import { DEFAULT_VIEW, ViewSettings } from '../ui/settingsPanel';
 import { DEFAULT_SETTINGS, SimSettings } from '../worker/shared';
@@ -95,8 +96,31 @@ function merge<T extends object>(defaults: T, raw: unknown, rules: { [K in keyof
 // Drone build (fpv-spec, fpv-spec-mine)
 
 const COMPONENTS: Record<'frame' | 'motor' | 'prop' | 'battery' | 'esc' | 'fc' | 'video', readonly { id: string }[]> = {
-  frame: FRAMES, motor: MOTORS, prop: PROPS, battery: BATTERIES, esc: ESCS, fc: FCS, video: VIDEO,
+  // a plane's airframe goes where a quad's frame does
+  frame: [...FRAMES, ...AIRFRAMES], motor: MOTORS, prop: PROPS, battery: BATTERIES, esc: ESCS, fc: FCS, video: VIDEO,
 };
+
+/** ArduPilot parameter names (uppercase, digits, underscores; at most 16 characters as ArduPilot has them). */
+const AP_PARAM_RE = /^[A-Z][A-Z0-9_]{0,15}$/;
+/** Lua script file names: plain names ending .lua (they become files in APM/scripts). */
+const AP_SCRIPT_RE = /^[A-Za-z0-9_-]{1,40}\.lua$/;
+
+/** The build's ArduPilot settings: autopilot choice, parameters, Lua scripts (64 kB each, 16 at most). */
+function apFields(raw: Record<string, unknown>): Partial<DroneSpec> {
+  const out: Partial<DroneSpec> = {};
+  if (raw.autopilot === 'betaflight' || raw.autopilot === 'ardupilot') out.autopilot = raw.autopilot;
+  if (isObj(raw.apParams)) {
+    const ps: Record<string, number> = {};
+    for (const [k, v] of Object.entries(raw.apParams).slice(0, 512)) if (AP_PARAM_RE.test(k) && typeof v === 'number' && finite(v)) ps[k] = v;
+    out.apParams = ps;
+  }
+  if (isObj(raw.apScripts)) {
+    const sc: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw.apScripts).slice(0, 16)) if (AP_SCRIPT_RE.test(k) && typeof v === 'string' && v.length <= 65536) sc[k] = v;
+    out.apScripts = sc;
+  }
+  return out;
+}
 const known = (list: readonly { id: string }[]): Rule => (x, d) => (typeof x === 'string' && list.some((c) => c.id === x) ? x : d);
 
 /** Builder overrides: physically sane bounds (wider than the sliders, which may change). */
@@ -125,7 +149,7 @@ const overrides: Rule = (x) => {
 export function parseSpec(raw: unknown): DroneSpec | null {
   if (!isObj(raw)) return null;
   for (const [k, list] of Object.entries(COMPONENTS)) if (known(list)(raw[k], null) === null) return null;
-  return merge(DEFAULT_SPEC, raw, {
+  const spec = merge(DEFAULT_SPEC, raw, {
     name: text(120),
     batteryMount: oneOf('top', 'bottom'),
     cameraUptiltDeg: num(-30, 90),
@@ -137,6 +161,7 @@ export function parseSpec(raw: unknown): DroneSpec | null {
     motorTiltDeg: num(-30, 30),
     overrides,
   });
+  return { ...spec, ...apFields(raw) };
 }
 
 /** The saved build, or `fallback` (the 65 mm whoop on first run) when it can't be used. */

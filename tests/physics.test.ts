@@ -119,6 +119,8 @@ describe('generated 5" 6S freestyle quad', () => {
 test('all presets build and give sane hover throttle', () => {
   for (const p of PRESETS) {
     const b = buildDrone(p);
+    // a plane's figure there is its cruise throttle (tests/plane.test.ts)
+    if (b.info.plane) { expect(b.info.hoverThrottle, p.name).toBeLessThan(0.85); continue; }
     expect(b.info.hoverThrottle, p.name).toBeGreaterThan(0.12);
     expect(b.info.hoverThrottle, p.name).toBeLessThan(0.5);
   }

@@ -1,5 +1,7 @@
 // Full multirotor plant: 6-DoF rigid body with rotor gyroscopics, BLDC/ESC motors, BEMT rotors,
-// battery bus, airframe drag, wind + wake, vibration excitation, IMU, and compliant contacts.
+// battery bus, airframe drag, wind + wake, vibration excitation, IMU, and compliant contacts. With
+// lifting surfaces (params.surfaces: wings, tails, fins with servo-driven controls, src/sim/wing.ts)
+// the same plant is a fixed-wing aircraft.
 // World frame ENU (z up); body frame FLU. Units SI.
 import { Battery, BatteryParams } from './battery';
 import { BemtTable } from './bemt';
@@ -11,6 +13,7 @@ import { CommonNoise, RotorAero, RotorAeroOut, emptyRotorOut, pristineDamage } f
 import { WakeField } from './wake';
 import { Wind } from './wind';
 import { G0, isa } from './atmosphere';
+import { emptySurfaceOut, evaluateSurface, SurfaceConfig, SurfaceOut } from './wing';
 
 export interface RotorConfig {
   pos: V3;        // hub position relative to CG, body frame (m)
@@ -30,6 +33,8 @@ export interface RotorConfig {
   /** Blade Lock number and non-rotating first flap-bending frequency (Hz): set the flapping lag. */
   lock?: number;
   flapHz?: number;
+  /** Folding prop (gliders): with the motor not driven the blades fold back against the fuselage, out of the air. */
+  folding?: boolean;
 }
 
 /** Crash strength scale (J): prop per g^(2/3) (x (0.5 + blade stiffness)), motor per g^(2/3), 5" arm (15 x 5 mm). */
@@ -59,6 +64,10 @@ export interface QuadParams {
   mountIsolation: number;
   /** Per-build seed: sensor calibration errors, cell spread, arm detuning, ESC randomness. */
   seed?: number;
+  /** Fixed wing: lifting surfaces, wings first (the tail reads their lift for its downwash). */
+  surfaces?: SurfaceConfig[];
+  /** servo slew rate (deg/s) */
+  servoSlewDegPerS?: number;
 }
 
 export interface QuadEnv {
@@ -123,6 +132,11 @@ export class QuadSim {
   rotorVib: V3[];
   /** External force on the CG (world, N): a fibre's payout tension, a tether, a host's own effects. */
   extForce: V3 = v3();
+  /** Fixed wing: servo commands by output channel (-1..1, from PWM 1000..2000), each surface's deflection (rad) and its forces. */
+  servoCmd = new Float64Array(16);
+  surfaceDefl: Float64Array;
+  surfaceOut: SurfaceOut[];
+  private surfU = v3();
   private windTimer = 0;
   private windAgl = 0;
   private axis0: V3[];
@@ -182,6 +196,8 @@ export class QuadSim {
     this.hubW = p.rotors.map(() => v3());
     this.hubLift = p.rotors.map((rc) => 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)));
     this.misImb = p.rotors.map(() => NaN); this.misV = p.rotors.map(() => 0);
+    this.surfaceDefl = new Float64Array(p.surfaces?.length ?? 0);
+    this.surfaceOut = (p.surfaces ?? []).map(() => emptySurfaceOut());
     this.battery = new Battery(p.battery, soc, ambientC);
     this.imu = new Imu(p.imuChip, physicsHz, p.flex, p.seed ?? 42, p.rotors.map((r) => r.pos));
     this.rotorVib = p.rotors.map(() => v3());
@@ -222,6 +238,7 @@ export class QuadSim {
     s.accWorld = v3(); s.specForce = v3(0, 0, G0);
     for (const m of this.motors) m.resetDynamics();
     this.rotorExtraTorque.fill(0);
+    this.servoCmd.fill(0); this.surfaceDefl.fill(0);
     this.cState.fill(0); this.hD.fill(0); this.windTimer = 0;
     this.evAge.fill(0); this.evProp.fill(0); this.evStrike.fill(0); this.evMotor.fill(0); this.evArm.fill(0); this.evTouch.fill(0);
     for (const v of this.wakeVel) { v.x = v.y = v.z = 0; }
@@ -246,6 +263,11 @@ export class QuadSim {
   /** Set the motors' commanded DShot values (called whenever the FC outputs). */
   command(dshot: ArrayLike<number>, reversed: boolean): void {
     for (let k = 0; k < this.motors.length; k++) this.motors[k].command(dshot[k] ?? 0, reversed);
+  }
+
+  /** Fixed wing: the flight controller's servo outputs (PWM us; 0 = not driven: the surface centres). */
+  servos(pwm: ArrayLike<number>): void {
+    for (let k = 0; k < this.servoCmd.length; k++) { const v = pwm[k] ?? 0; this.servoCmd[k] = v > 0 ? Math.max(-1, Math.min(1, (v - 1500) / 500)) : 0; }
   }
 
   step(dt: number, env: QuadEnv): void {
@@ -347,6 +369,7 @@ export class QuadSim {
       // omega, so the ESCs partly make up for it by spinning the unloaded pair up.
       const omegaAir = omega + rc.dir * (s.w.x * rc.axis.x + s.w.y * rc.axis.y + s.w.z * rc.axis.z);
       ro.evaluate(omegaAir, vc, vip, rho, this.groundCache[k], this.wakeTurb[k], dt, o, this.ceilCache[k]);
+      if (rc.folding && m.s.dshotCmd < 48) { o.thrust = o.torque = o.hForce = o.vi = o.mAdv = o.mFront = 0; }
       // aerodynamic forces on the body
       let fx = rc.axis.x * o.thrust, fy = rc.axis.y * o.thrust, fz = rc.axis.z * o.thrust;
       if (vip > 1e-4) {
@@ -434,6 +457,9 @@ export class QuadSim {
     Tq.y -= p.angularDrag.y * s.w.y * Math.abs(s.w.y);
     Tq.z -= p.angularDrag.z * s.w.z * Math.abs(s.w.z);
 
+    // ---------- lifting surfaces (fixed wing) ----------
+    if (p.surfaces) this.surfaceForces(dt, ux, uy, uz, rho, F, Tq);
+
     // ---------- contacts (forces in world, torques in body) ----------
     const Fw = rotate(this.Fb, s.q, F);
     const xf = this.extForce;
@@ -471,6 +497,40 @@ export class QuadSim {
       const p0 = Number.isFinite(s.pos.x + s.pos.y + s.pos.z) ? { ...s.pos } : { x: 0, y: 0, z: 1 };
       this.reset(p0);
       s.crashed = true;
+    }
+  }
+
+  /**
+   * Wings, tails and fins: each surface's own airflow (the airframe's, ux..uz, plus w x r, the wing's
+   * downwash on the tail and a tractor prop's slipstream), its servo-driven control, its force and
+   * moment added to F / Tq (body).
+   */
+  private surfaceForces(dt: number, ux: number, uy: number, uz: number, rho: number, F: V3, Tq: V3): void {
+    const p = this.p, sf = p.surfaces!, w = this.s.w, u = this.surfU;
+    const slew = ((p.servoSlewDegPerS ?? 450) * Math.PI) / 180 * dt;
+    for (let i = 0; i < sf.length; i++) {
+      const sc = sf[i], o = this.surfaceOut[i];
+      // servo: toward its command at the slew rate
+      let delta = this.surfaceDefl[i];
+      if (sc.control) {
+        const c = sc.control, target = c.sign * this.servoCmd[c.channel] * (c.maxDeg * Math.PI) / 180;
+        delta += Math.max(-slew, Math.min(slew, target - delta));
+        this.surfaceDefl[i] = delta;
+      }
+      const r = sc.pos;
+      u.x = ux + (w.y * r.z - w.z * r.y); u.y = uy + (w.z * r.x - w.x * r.z); u.z = uz + (w.x * r.y - w.y * r.x);
+      if (sc.slipstream) {
+        const rc = p.rotors[sc.slipstream.rotor];
+        if (rc) { const slip = 2 * this.rotorOut[sc.slipstream.rotor].vi * sc.slipstream.frac; u.x += rc.axis.x * slip; u.y += rc.axis.y * slip; u.z += rc.axis.z * slip; }
+      }
+      if (sc.downwash) {
+        // the air leaving the wing turns down by eps = perCl * CL_wing: the tail meets it from above
+        const eps = sc.downwash.perCl * this.surfaceOut[sc.downwash.from].cl;
+        u.z += eps * Math.abs(u.x);
+      }
+      evaluateSurface(sc, u, rho, delta, o);
+      F.x += o.fx; F.y += o.fy; F.z += o.fz;
+      Tq.x += o.mx; Tq.y += o.my; Tq.z += o.mz;
     }
   }
 
