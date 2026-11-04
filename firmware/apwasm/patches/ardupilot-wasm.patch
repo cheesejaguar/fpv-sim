@@ -1,3 +1,17 @@
+diff --git a/ArduCopter/takeoff_check.cpp b/ArduCopter/takeoff_check.cpp
+index ce20f56..5f4b2e6 100644
+--- a/ArduCopter/takeoff_check.cpp
++++ b/ArduCopter/takeoff_check.cpp
+@@ -51,5 +51,9 @@ void Copter::takeoff_check()
+             gcs().send_text(MAV_SEVERITY_CRITICAL, "%s CPU overload (%4.1f%%)", prefix_str, avg_load);
+         }
+     }
++#else
++    // fpv-sim: without ESC telemetry there is nothing to check, and nothing else clears the block
++    // the motors library sets once ground idle is reached: the copter would never spool up
++    motors->set_spoolup_block(false);
+ #endif
+ }
 diff --git a/Tools/ardupilotwaf/boards.py b/Tools/ardupilotwaf/boards.py
 index b1d6681..24b53a0 100644
 --- a/Tools/ardupilotwaf/boards.py

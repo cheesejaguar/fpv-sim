@@ -42,6 +42,8 @@ export interface PlaneInfo {
   params: Record<string, number>;
   /** servo output (0-based) that drives each rotor's ESC */
   motorChannels: number[];
+  /** roll and pitch rate (deg/s) at full aileron / elevator at cruise: what ArduPilot's rate feed-forward is set from */
+  rollRateMax: number; pitchRateMax: number;
 }
 
 interface MassItem { name: string; m: number; pos: V3; box: V3 }
@@ -310,6 +312,69 @@ function trimSurfaces(a: AirframeSpec, p: QuadParams, W: number, V: number) {
   knob(Math.max(-1.2, Math.min(1.2, k)));
 }
 
+/**
+ * ArduPlane's output mixing (servos.cpp channel_function_mixer, MIXING_GAIN 1): aileron, elevator,
+ * rudder (-1..1: roll right, nose up, yaw right) as each output's command (-1..1) by SERVOn_FUNCTION.
+ */
+export function mixOutputs(functions: Record<number, number>, a: number, e: number, r: number): Float64Array {
+  const out = new Float64Array(16);
+  for (const [o, fn] of Object.entries(functions)) {
+    const v = ({ 4: a, 19: e, 21: r, 77: e - a, 78: e + a, 79: e + r, 80: e - r } as Record<number, number>)[fn];
+    if (v !== undefined) out[Number(o) - 1] = Math.max(-1, Math.min(1, v));
+  }
+  return out;
+}
+
+/**
+ * Steady rate (rad/s) about a body axis (0 roll, 1 pitch: FLU, positive roll right / negative nose
+ * up) at airspeed V and angle of attack alpha, with the controls at cmd: where the control's moment
+ * and the surfaces' damping balance (what full deflection gives; the plant's stiffness aside).
+ */
+function steadyRate(p: QuadParams, cmd: Float64Array, V: number, alpha: number, axis: 0 | 1): number {
+  const out = emptySurfaceOut();
+  const moment = (w: number) => {
+    let m = 0;
+    for (const sc of p.surfaces!) {
+      const r = sc.pos, wx = axis === 0 ? w : 0, wy = axis === 1 ? w : 0;
+      const u = { x: V * Math.cos(alpha) + wy * r.z, y: -wx * r.z, z: -V * Math.sin(alpha) + wx * r.y - wy * r.x };
+      const c = sc.control, d = c ? c.sign * cmd[c.channel] * (c.maxDeg * Math.PI) / 180 : 0;
+      evaluateSurface(sc, u, RHO, d, out);
+      m += axis === 0 ? out.mx : out.my;
+    }
+    return m;
+  };
+  const m0 = moment(0), dir = Math.sign(m0) || 1;
+  let lo = 0, hi = 40 * dir;
+  for (let i = 0; i < 50; i++) { const mid = (lo + hi) / 2; if (Math.sign(moment(mid)) === dir) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
+}
+
+/**
+ * Pitch rate (rad/s) of the steady pull-up full elevator gives at airspeed V: the angle of attack
+ * where the deflected surfaces' pitching moment is zero again (the airframe's stiffness), and the
+ * extra lift there turning the flight path (q = (L - W) / (m V)).
+ */
+function pullUpRate(p: QuadParams, cmd: Float64Array, V: number, W: number): number {
+  const out = emptySurfaceOut(), outs = p.surfaces!.map(() => emptySurfaceOut());
+  const at = (alpha: number) => {
+    let my = 0, lift = 0;
+    p.surfaces!.forEach((sc, i) => {
+      const u = { x: V * Math.cos(alpha), y: 0, z: -V * Math.sin(alpha) };
+      if (sc.downwash) u.z += sc.downwash.perCl * outs[sc.downwash.from].cl * Math.abs(u.x);
+      const c = sc.control, d = c ? c.sign * cmd[c.channel] * (c.maxDeg * Math.PI) / 180 : 0;
+      evaluateSurface(sc, u, RHO, d, out);
+      outs[i].cl = out.cl;
+      my += out.my; lift += out.fz * Math.cos(alpha) + out.fx * Math.sin(alpha);
+    });
+    return { my, lift };
+  };
+  // nose-up moment is negative my (FLU): find where it has fallen back to zero
+  let lo = -0.2, hi = 0.6;
+  for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (at(m).my < 0) lo = m; else hi = m; }
+  const dL = at(lo).lift - W;
+  return Math.max(0.05, dL / ((W / G) * V));
+}
+
 /** Level-flight performance with the same rotor and surface models the plant flies. */
 function performance(a: AirframeSpec, p: QuadParams, W: number, Vc: number, S: number, AR: number, mac: number, map: ReturnType<typeof servoMap>, spec: DroneSpec): PlaneInfo {
   const rc = p.rotors[0], mp = rc.motor, n = p.rotors.length, cells = p.battery.cellsSeries;
@@ -353,8 +418,28 @@ function performance(a: AirframeSpec, p: QuadParams, W: number, Vc: number, S: n
   wl.cl0 += warp / 2; wr.cl0 -= warp / 2;
   let ld = 0;
   for (let V = vStall * 1.05; V < vTop; V += 0.5) ld = Math.max(ld, W / dragAt(V));
+  // full-deflection rates at cruise, controls centred but the one moved
+  let alphaC = 0;
+  { let lo = -0.2, hi = 0.5; for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (surfaceTotals(p, Vc, m).lift > W) hi = m; else lo = m; } alphaC = lo; }
+  const rollRate = Math.abs(steadyRate(p, mixOutputs(map.functions, 1, 0, 0), Vc, alphaC, 0)) * (180 / Math.PI);
+  // (pitch: a quarter of the elevator, scaled up; full elevator would stall the wing in the pull-up,
+  // while the feed-forward is a linear gain)
+  const pitchRate = (pullUpRate(p, mixOutputs(map.functions, 0, 0.25, 0), Vc, W) / 0.25) * (180 / Math.PI);
   const functions = map.functions, params: Record<string, number> = { ...PLANE_PARAMS_COMMON, ...a.params };
+  // ArduPlane's rate loops (AP_FW_Controller: output in degrees of deflection, 45 = full): FF = 45 /
+  // the rate full deflection gives at SCALING_SPEED (what its AUTOTUNE measures), P and I in the
+  // ratios of its own defaults (roll P 0.08 / I 0.15 / FF 0.345; pitch P 0.04 / I 0.15 / FF 0.345)
+  const r3 = (x: number) => Math.round(x * 1000) / 1000;
+  const ffR = Math.min(1, Math.max(0.05, 45 / Math.max(1, rollRate))), ffP = Math.min(1, Math.max(0.05, 45 / Math.max(1, pitchRate)));
+  Object.assign(params, {
+    SCALING_SPEED: Math.round(Vc),
+    RLL_RATE_FF: r3(ffR), RLL_RATE_P: r3(ffR * 0.23), RLL_RATE_I: r3(ffR * 0.43), RLL_RATE_D: 0,
+    PTCH_RATE_FF: r3(ffP), PTCH_RATE_P: r3(ffP * 0.12), PTCH_RATE_I: r3(ffP * 0.43), PTCH_RATE_D: 0,
+  });
   for (const [out, fn] of Object.entries(functions)) params[`SERVO${out}_FUNCTION`] = fn;
+  // mixed tails: the mixer's full gain, so pitch alone moves the surfaces through their whole throw
+  // (ArduPilot's default 0.5 leaves half of it for roll or yaw)
+  if (a.layout !== 'conventional') params.MIXING_GAIN = 1;
   // the motors' outputs are throttles (1000-2000 us), the rest servos centred at 1500
   for (const ch of map.motors) { params[`SERVO${ch + 1}_MIN`] = 1000; params[`SERVO${ch + 1}_MAX`] = 2000; params[`SERVO${ch + 1}_TRIM`] = 1000; }
   params.AIRSPEED_CRUISE = Math.round(Vc);
@@ -369,6 +454,7 @@ function performance(a: AirframeSpec, p: QuadParams, W: number, Vc: number, S: n
     cruiseThrottle: dHi, cruiseCurrentA: cruise.I, enduranceMin: (capAh / cruise.I) * 60, rangeKm: (capAh / cruise.I) * Vc * 3.6,
     glideRatio: ld, staticMarginPct: 0, cgAftOfLeMm: 0, balanced: true,
     servoFunctions: functions, params, motorChannels: map.motors,
+    rollRateMax: rollRate, pitchRateMax: pitchRate,
   };
 }
 

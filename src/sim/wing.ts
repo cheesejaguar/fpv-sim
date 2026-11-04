@@ -11,7 +11,10 @@
 //   separated: a flat plate, CL = 2 sin(alpha_e) cos(alpha_e), CD = CD0 + 2 sin^2(alpha_e) (alpha_e
 //     includes the deflection), blended in by Beard & McLain's sigmoid around the stall angle
 //     (Small Unmanned Aircraft, 2012, eq. 4.9), so a stalled wing keeps flying as a plate does
-//   CM about the aerodynamic centre: CM0 - 0.25 tau delta (a trailing-edge flap pitches nose down)
+//   CM about the aerodynamic centre: CM0 - 0.7 tau delta (a trailing-edge flap pitches nose down: its
+//     lift acts well behind the quarter chord; thin-aerofoil theory gives dCM/d(delta) = -0.5 sin(t)
+//     (1 - cos(t)), cos(t) = 2 cf - 1, about -1.07 tau for a 20-35 % chord flap, and real flaps reach
+//     ~2/3 of it (Abbott & von Doenhoff 1959, ch. 8)); a flying wing's elevons pitch it mostly this way
 // The deflection delta comes from the surface's servo, which follows its command at a slew rate.
 import type { V3 } from './math';
 
@@ -89,7 +92,7 @@ export function coefficients(sc: SurfaceConfig, alpha: number, delta: number): {
   const cdAtt = sc.cd0 + (clAtt * clAtt) / (Math.PI * sc.oswald * sc.aspect) + 0.7 * d * d;
   const ae = alpha + d;
   const clPlate = 2 * Math.sin(ae) * Math.cos(ae), cdPlate = sc.cd0 + 2 * Math.sin(ae) * Math.sin(ae);
-  return { cl: (1 - s) * clAtt + s * clPlate, cd: (1 - s) * cdAtt + s * cdPlate, cm: (1 - s) * (sc.cm0 - 0.25 * d) - s * 0.5 * Math.sin(ae) * 0.25 };
+  return { cl: (1 - s) * clAtt + s * clPlate, cd: (1 - s) * cdAtt + s * cdPlate, cm: (1 - s) * (sc.cm0 - 0.7 * d) - s * 0.5 * Math.sin(ae) * 0.25 };
 }
 
 /**

@@ -51,11 +51,12 @@ export interface AirframeSpec {
   url: string;
 }
 
-/** ArduPlane parameters every airframe here shares: stabilised flight modes, a hand launch, a 4-in-1 pilot's switch layout. */
+/** ArduPlane parameters every airframe here shares: stabilised flight modes and a hand launch (switches: src/ap/apConfig.ts). */
 export const PLANE_PARAMS_COMMON: Record<string, number> = {
-  // modes on channel 5: Manual, FBWA, Cruise, Loiter, RTL, Auto (a 6-position switch, or a 3-position one: 0, 2, 5)
-  FLTMODE_CH: 5, FLTMODE1: 0, FLTMODE2: 5, FLTMODE3: 7, FLTMODE4: 12, FLTMODE5: 11, FLTMODE6: 10,
-  ARMING_CHECK: 0, ARMING_RUDDER: 2, RC_OPTIONS: 0,
+  // modes on AUX2 (CH6), a 3-position switch: low MANUAL, mid FBWA, high CRUISE (slots 1, 4, 6; a
+  // 6-position switch also gets ACRO and FBWB)
+  FLTMODE_CH: 6, FLTMODE1: 0, FLTMODE2: 4, FLTMODE3: 5, FLTMODE4: 5, FLTMODE5: 6, FLTMODE6: 7,
+  ARMING_SKIPCHK: -1, ARMING_RUDDER: 2, RC_OPTIONS: 0,
   THR_MIN: 0, THR_MAX: 100, THR_SLEWRATE: 100,
   TKOFF_THR_MINACC: 10, TKOFF_THR_DELAY: 2, TKOFF_THR_MINSPD: 0,
   ARSPD_USE: 1, AIRSPEED_MIN: 10, AIRSPEED_MAX: 30,
@@ -111,7 +112,7 @@ export const AIRFRAMES: AirframeSpec[] = [
     airfoil: { cl0: 0.3, cd0: 0.012, cm0: -0.06, stallDeg: 13 },
     tail: { hAreaDm2: 3.2, vAreaDm2: 0, armMm: 420, vAngleDeg: 36 },
     fuselage: { lengthMm: 660, widthMm: 80, heightMm: 85, noseMm: 230 },
-    motors: { count: 1, mount: 'pusher', xMm: -170, yMm: 0, zMm: 40 },
+    motors: { count: 1, mount: 'pusher', xMm: -170, yMm: 0, zMm: 15 },
     throwsDeg: { aileron: 20, ruddervator: 18 },
     airframeMassG: 470, cruiseKmh: 65, staticMargin: 0.1,
     params: { AIRSPEED_CRUISE: 18, AIRSPEED_MIN: 11, AIRSPEED_MAX: 32, TRIM_THROTTLE: 40 },
