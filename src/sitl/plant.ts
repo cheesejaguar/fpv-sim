@@ -128,8 +128,8 @@ export class SitlPlant {
 
   /** Geodetic position of a local ENU point (the origin is the map's GPS origin). */
   geo(p: V3): { lat: number; lon: number; altM: number } {
-    const mLat = 111320, mLon = 111320 * Math.cos((GPS_ORIGIN.lat * Math.PI) / 180);
-    return { lat: GPS_ORIGIN.lat + p.y / mLat, lon: GPS_ORIGIN.lon + p.x / mLon, altM: this.core.map.elevationM + p.z };
+    const o = this.core.map.geo ?? GPS_ORIGIN, mLat = 111320, mLon = 111320 * Math.cos((o.lat * Math.PI) / 180);
+    return { lat: o.lat + p.y / mLat, lon: o.lon + p.x / mLon, altM: this.core.map.elevationM + p.z };
   }
 
   /**

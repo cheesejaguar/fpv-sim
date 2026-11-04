@@ -250,6 +250,7 @@ export async function loadMapPackage(src: PackageSource, opts: LoadOptions = {})
   const images: [string, string, number, number][] = []; // path, what, max px, max bytes
   if (doc.meta.preview) { referenced.add(doc.meta.preview); images.push([doc.meta.preview, 'map.json.meta.preview', 4096, BUDGETS.previewBytes]); }
   if (doc.ground?.texture) { referenced.add(doc.ground.texture); images.push([doc.ground.texture, 'map.json.ground.texture', BUDGETS.texturePx, BUDGETS.textureBytes]); }
+  if (doc.ground?.drape) { referenced.add(doc.ground.drape.image); images.push([doc.ground.drape.image, 'map.json.ground.drape.image', BUDGETS.drapePx, BUDGETS.drapeBytes]); }
   (doc.primitives ?? []).forEach((p, i) => { if (p.type === 'box' && p.texture && !referenced.has(p.texture)) { referenced.add(p.texture); images.push([p.texture, `map.json.primitives[${i}].texture`, BUDGETS.texturePx, BUDGETS.textureBytes]); } });
 
   let hf: { w: number; h: number; data: Float32Array } | undefined;
@@ -454,6 +455,15 @@ export function buildMapDef(doc: MapDocV1, assets: MapAssets, url: (path: string
   if (env.fog) def.fog = { color: hex(env.fog.color)!, density: env.fog.density };
   if (doc.lights?.length) def.lights = doc.lights.map((l) => ({ pos: { x: l.pos[0], y: l.pos[1], z: l.pos[2] }, color: hex(l.color) ?? 0xffffff, intensity: l.intensity, range: l.range }));
   if (doc.ground?.texture) def.groundTexture = url(doc.ground.texture);
+  const dr = doc.ground?.drape;
+  if (dr) {
+    const hfg = doc.ground!.type === 'heightfield' ? doc.ground as Extract<GroundDoc, { type: 'heightfield' }> : undefined;
+    const [w, h] = dr.extent ?? hfg!.extent, [cx, cy] = dr.center ?? (dr.extent ? undefined : hfg!.center) ?? [0, 0];
+    def.drape = { url: url(dr.image), x0: cx - w / 2, y0: cy - h / 2, w, h, detail: dr.detail ?? 0.5 };
+  }
+  if (hf && doc.ground?.type === 'heightfield') def.terrainRes = Math.min(doc.ground.extent[0] / (hf.w - 1), doc.ground.extent[1] / (hf.h - 1));
+  if (doc.water) def.water = { level: doc.water.level, ...(doc.water.color && { color: hex(doc.water.color) }) };
+  if (doc.geo) def.geo = { lat: doc.geo.lat, lon: doc.geo.lon };
   if (meshes.length) def.meshes = meshes.map((m) => ({ ...m.inst, pos: { ...m.inst.pos } }));
   if (courses.length) def.courses = courses;
   if (spawns.length) def.spawns = spawns;

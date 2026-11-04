@@ -24,6 +24,8 @@ export const MATERIALS: Record<string, SurfaceMaterial> = {
   // tree canopies are drag volumes (CollisionWorld.foliage); this is for thin solids (safety nets, flags)
   foliage: { name: 'foliage', restitution: 0.05, friction: 0.9, stiffness: 1.5e3, propDamage: 0.15, snag: 0.3, plough: 0, rolling: 0.3 },
   // padded PVC / aluminium gate frame: gives a little, then stops (or deflects) the quad
+  // open water (map water): no bounce, the quad ploughs in and stops; props and electronics drown
+  water: { name: 'water', restitution: 0.02, friction: 0.25, stiffness: 2e4, propDamage: 1, snag: 0.8, plough: 6000, rolling: 0.5 },
   gate: { name: 'gate', restitution: 0.3, friction: 0.5, stiffness: 2e5, propDamage: 0.5, snag: 0, plough: 0, rolling: 0.08 },
 };
 
