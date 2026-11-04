@@ -93,8 +93,8 @@ once 32 MiB are waiting, and is disconnected if a reply can't be queued.
 | `act` | `action` | | ✓ | ✓ | ✓ |
 | `release` | | | | | ✓ |
 | `state` | `vector?` | `obs`, `metrics`, `vec?` | ✓ | ✓ | ✓ |
-| `subscribe` | `stream: "state"`, `hz?` (default 60) | `hz` | | ✓ | ✓ |
-| `unsubscribe` | `stream: "state"` | | | ✓ | ✓ |
+| `subscribe` | `stream: "state"`, `hz?` (default 60); or `stream: "mavlink"` | `hz` | (mavlink) | ✓ | ✓ |
+| `unsubscribe` | `stream: "state"` or `"mavlink"` | | (mavlink) | ✓ | ✓ |
 | `cli` | `lines` (Betaflight CLI, disarmed) | `output` | ✓ | ✓ | ✓ |
 | `respawn` | `fullBattery?` | | ✓ | ✓ | ✓ |
 | `teleport` | `pos` [x, y, z], `yawDeg?` | | ✓ | ✓ | ✓ |
@@ -106,12 +106,24 @@ once 32 MiB are waiting, and is disconnected if a reply can't be queued.
 | `drop` | | (releases the payload) | ✓ | ✓ | ✓ |
 | `ops` | `config`: an `ops` block, or null to remove it | `status` (headless) | ✓ | ✓ | ✓ |
 | `linkmap` | `centre?` [x, y], `halfM?` (200), `n?` (21), `heightM?` (20) | `map`: `xs`, `ys`, `marginDb`, `jammedFrac`, `gnssSats`, `pilot`, `link` | ✓ | ✓ | |
+| `ap` | `op`: `{kind: "params", params}`, `{kind: "mission", items}`, `{kind: "mode", mode}`, `{kind: "arm", on, force?}`, `{kind: "command", command, params}` | `message`; a mission: `ok`, `steppedS` (headless) | ✓ | ✓ | ✓ |
+| `mavlink` | `data`: MAVLink bytes, base64 (ArduPilot's pass-through port) | | ✓ | ✓ | ✓ |
 | `bye` | | | ✓ | ✓ | ✓ |
 
 **fault**, **drop**, **ops** and **linkmap** drive the operational layer: jammers and spoofers,
 the fibre-optic link, scheduled faults and the payload ([OPERATIONS.md](OPERATIONS.md)). In the
 live game they work on the running flight (the Research tab's Operations section uses the same
 messages).
+
+**ap** and **mavlink** work with ArduPilot builds: planes, and quads with `drone.spec.autopilot:
+"ardupilot"` ([ARDUPILOT.md](ARDUPILOT.md)). `ap` goes through the simulator's own ground station
+(parameters, a mission, the flight mode, arming, any MAV_CMD). `mavlink` writes raw bytes into
+ArduPilot's pass-through port (SERIAL1); `subscribe` with `stream: "mavlink"` streams what ArduPilot
+sends there as `mavlink` events (base64). For a full ground station, start the server with
+`--mavlink 5760` and connect pymavlink, MAVProxy, QGroundControl or Mission Planner to
+`tcp:127.0.0.1:5760` (headless: the newest connection's simulation; with `--live`: the page's).
+In lock-step, MAVLink moves as the simulation is stepped. `cli` refuses ArduPilot builds: their
+parameters go through `ap` or MAVLink.
 
 **reset** starts an episode. The scenario ([SCENARIO_FORMAT.md](SCENARIO_FORMAT.md)) sets up the
 map, drone, conditions, Betaflight configuration, start, task and limits. Without one, the last
@@ -267,7 +279,18 @@ with Client.launch() as sim:                       # a private headless simulati
 env = FpvSimEnv("scenarios/hover-randomized.json")  # gymnasium.Env, actions [roll, pitch, yaw, throttle]
 ```
 
-See [`python/README.md`](../python/README.md) and the examples in `python/examples/`.
+ArduPilot builds (a plane, or a quad on ArduCopter):
+
+```python
+with Client.launch(mavlink_port=5760) as sim:     # also ArduPilot's MAVLink on tcp:127.0.0.1:5760
+    sim.reset({"format": "fpvsim-scenario", "version": 1, "map": {"id": "park"}, "drone": {"preset": "Plane: AtomRC Penguin"}})
+    sim.set_params(AIRSPEED_CRUISE=17)
+    sim.upload_mission(items)                     # [{"command": 16, "lat": ..., "lon": ..., "alt": 40}, ...]
+    sim.set_mode(10)                              # AUTO
+```
+
+See [`python/README.md`](../python/README.md) and the examples in `python/examples/`
+(`ardupilot_mission.py`: a mission flown from a hand launch).
 
 ## Performance
 

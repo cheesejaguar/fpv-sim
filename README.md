@@ -5,6 +5,13 @@ firmware compiled to WebAssembly**, in lock-step with a physics / electrical / s
 The drone and its flight model are generated from component-level specs: frame, motors, props,
 battery, ESC, FC gyro and video system.
 
+It flies **fixed-wing FPV planes** too: the HEEWING T1 Ranger, AtomRC Penguin, SonicModell AR Wing
+Pro, ZOHD Talon GT Rebel and Volantex Ranger 2000, with a per-surface aerodynamic model, hand
+launches and **ArduPlane 4.7.2**. Any quad can fly **ArduCopter 4.7.2** instead of Betaflight. Both
+are the real ArduPilot compiled to WebAssembly, with Lua scripts in the builder, missions drawn in
+the map builder and MAVLink to Python, pymavlink and ground stations ([docs/FIXED_WING.md](docs/FIXED_WING.md),
+[docs/ARDUPILOT.md](docs/ARDUPILOT.md)).
+
 Live: https://fpv-sim-gamma.vercel.app · Source: https://github.com/cheesejaguar/fpv-sim ·
 Changes: [CHANGELOG.md](CHANGELOG.md)
 
@@ -17,6 +24,7 @@ tablets work only with a paired Bluetooth gamepad: there are no touch controls.
 npm install
 npm run firmware   # builds public/bf/betaflight.{mjs,wasm} (Docker, emscripten/emsdk:4.0.10)
 npm run fonts      # downloads Betaflight's OSD fonts (public/fonts/*.mcm)
+bash firmware/apwasm/build.sh   # optional: ArduPlane / ArduCopter -> public/ap/ (planes, ArduCopter quads)
 npm run dev        # http://localhost:5173
 ```
 

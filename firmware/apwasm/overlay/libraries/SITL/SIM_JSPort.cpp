@@ -12,7 +12,7 @@
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 
-// Module.fpvsim.portRead / portWrite: the JavaScript ends (src/ap/apWorker.ts in fpv-sim)
+// Module.fpvsim.portRead / portWrite: the JavaScript ends (src/ap/apHost.mjs in fpv-sim)
 EM_JS(int, fpvsim_port_read, (int ch, char *buf, int max), {
     return Module['fpvsim'].portRead(ch, HEAPU8, buf, max);
 });

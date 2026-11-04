@@ -743,13 +743,14 @@ export class FlightCore {
   private readonly handF: V3 = { x: 0, y: 0, z: 0 };
 
   /**
-   * Throw when the pilot means it: the motor run up past 40 % (FBWA, MANUAL) or, armed, the throttle
-   * stick past 80 % (AUTO's takeoff keeps the motor off until it feels the throw), for 0.3 s.
+   * Throw when the pilot means it: the motor run up to launch power, past 65 % (ACRO, FBWA, MANUAL:
+   * a heavy wing thrown at part throttle sinks in), or, armed, the throttle stick past 80 % (AUTO's
+   * takeoff keeps the motor off until it feels the throw), for 0.3 s.
    */
   private handRelease(dt: number) {
     const h = this.hand!;
     const motor = this.motorCmd.reduce((a, c) => Math.max(a, c), 0);
-    const want = motor > 48 + 0.4 * 1999 || (this.armed && this.rcBuf[2] > 1800);
+    const want = motor > 48 + 0.65 * 1999 || (this.armed && this.rcBuf[2] > 1800);
     h.hold = want ? h.hold + dt : 0;
     if (h.hold >= 0.3) h.throwT = 0;
   }

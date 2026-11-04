@@ -7,7 +7,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { CUSTOM } from '../../server/src/leaderboardCore';
 import { DerivedInfo, DroneBuild, DroneSpec, PRESETS } from '../builder/derive';
 import { PRESET_CLASS } from '../builder/droneClass';
-import { buildDroneMesh } from '../render/droneMesh';
+import { buildDroneMesh, preloadDroneMesh } from '../render/droneMesh';
 import type { Palette, Picture } from './types';
 
 /** What the model needs from a build (DroneBuild has it; the worker sends it). */
@@ -16,7 +16,8 @@ export interface DroneData { spec: DroneSpec; info: DerivedInfo; rotors: { x: nu
 export const fromBuild = (b: DroneBuild): DroneData => ({ spec: b.spec, info: b.info, rotors: b.params.rotors.map((r) => ({ ...r.pos, dir: r.dir })) });
 
 /** Derive a build in a worker (build.worker.ts): the BEMT tables would block the page for a second or more. */
-export function buildOffThread(spec: DroneSpec): Promise<DroneData> {
+export async function buildOffThread(spec: DroneSpec): Promise<DroneData> {
+  await preloadDroneMesh(spec); // (a plane's model code, before droneShot draws it)
   return new Promise((done, fail) => {
     const w = new Worker(new URL('./build.worker.ts', import.meta.url), { type: 'module' });
     w.onmessage = (e: MessageEvent<DroneData | { error: string }>) => { w.terminate(); if ('error' in e.data) fail(new Error(e.data.error)); else done(e.data); };

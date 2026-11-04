@@ -35,6 +35,30 @@ const COMPONENTS = [
     text: 'GPL-3.0',
   },
   {
+    name: 'ArduPilot 4.7.2 flight controller firmware: ArduPlane and ArduCopter (compiled to WebAssembly)',
+    files: '/ap/arduplane.wasm, /ap/arduplane.mjs, /ap/arducopter.wasm, /ap/arducopter.mjs',
+    copyright: 'Copyright (C) the ArduPilot Dev Team and contributors',
+    license: 'GPL-3.0-or-later',
+    source: 'https://github.com/ArduPilot/ardupilot (tag Plane-4.7.2 = Copter-4.7.2, commit fb773567896014da007bca58358704d4a0d8516f), built with the board definition, patch and overlay in this repository\'s firmware/apwasm/ (see firmware/apwasm/README.md)',
+    text: 'GPL-3.0',
+  },
+  {
+    name: 'Lua 5.3 (ArduPilot\'s scripting engine, compiled into the ArduPilot build)',
+    files: '/ap/arduplane.wasm, /ap/arducopter.wasm',
+    copyright: 'Copyright (C) 1994-2020 Lua.org, PUC-Rio',
+    license: 'MIT',
+    source: 'https://www.lua.org/ (via ArduPilot libraries/AP_Scripting/lua)',
+    text: 'Lua',
+  },
+  {
+    name: 'MAVLink generated C headers (compiled into the ArduPilot build)',
+    files: '/ap/arduplane.wasm, /ap/arducopter.wasm',
+    copyright: 'Copyright (C) the MAVLink development team',
+    license: 'MIT (the generator\'s exception to the LGPL-3.0 for generated code)',
+    source: 'https://github.com/ArduPilot/mavlink (commit 288b907c384a892c8519bfe271682424b1e1a3a0, ArduPilot\'s modules/mavlink)',
+    text: 'MAVLink',
+  },
+  {
     name: 'Betaflight OSD fonts (MAX7456 .mcm) from betaflight-configurator',
     files: '/fonts/*.mcm',
     copyright: 'Copyright (C) the Betaflight Configurator contributors',
@@ -44,15 +68,15 @@ const COMPONENTS = [
   },
   {
     name: 'Emscripten 4.0.10 runtime (JavaScript loader and support code in the firmware build)',
-    files: '/bf/betaflight.mjs, /bf/betaflight.wasm',
+    files: '/bf/betaflight.mjs, /bf/betaflight.wasm, /ap/*.mjs, /ap/*.wasm',
     copyright: 'Copyright (c) 2010-2014 Emscripten authors',
     license: 'MIT (Emscripten is dual-licensed MIT / University of Illinois NCSA; used here under MIT)',
     source: 'https://github.com/emscripten-core/emscripten (tag 4.0.10)',
     text: 'Emscripten',
   },
   {
-    name: 'musl libc (as bundled with Emscripten 4.0.10, compiled into the firmware build)',
-    files: '/bf/betaflight.wasm',
+    name: 'musl libc (as bundled with Emscripten 4.0.10, compiled into the firmware builds)',
+    files: '/bf/betaflight.wasm, /ap/*.wasm',
     copyright: 'Copyright (c) 2005-2020 Rich Felker, et al.',
     license: 'MIT',
     source: 'https://musl.libc.org/ (via emscripten system/lib/libc/musl)',
@@ -141,10 +165,12 @@ const COMPONENTS = [
 ];
 
 const TEXTS = {
-  'GPL-3.0': ['GNU General Public License v3.0 (Betaflight, Betaflight OSD fonts; also this project\'s own license)', gpl3],
+  'GPL-3.0': ['GNU General Public License v3.0 (Betaflight, ArduPilot, Betaflight OSD fonts; also this project\'s own license)', gpl3],
   'GPL-2.0': ['GNU General Public License v2.0 (as shipped with the Quake map source release)', () => read('public/maps/quake/COPYING-GPL-2.0.txt')],
   Emscripten: ['Emscripten license (MIT / NCSA)', () => read('scripts/licenses/emscripten-MIT.txt')],
   musl: ['musl libc copyright and license (MIT)', () => read('scripts/licenses/musl-MIT.txt')],
+  Lua: ['Lua license (MIT)', () => read('scripts/licenses/lua-MIT.txt')],
+  MAVLink: ['MAVLink generated code license (MIT)', () => read('scripts/licenses/mavlink-generated-MIT.txt')],
   'three.js': ['three.js license (MIT)', () => readMod('three', 'LICENSE')],
   'Russo One': ['Russo One: SIL Open Font License 1.1', () => readMod('@fontsource/russo-one', 'LICENSE')],
   'Chakra Petch': ['Chakra Petch: SIL Open Font License 1.1', () => readMod('@fontsource/chakra-petch', 'LICENSE')],

@@ -293,6 +293,22 @@ optional `name`, and either a fixed `pos` or a `path` it moves along.
   vehicle person`), `size` [x, y, z], `radiusM` (how close counts as reached), `color`. A static
   target with `"solid": true` collides; moving targets never do.
 
+### mission
+
+The autopilot's mission, for ArduPilot builds (planes, and quads set to ArduPilot): one of the
+paths, flown as waypoints.
+
+```json
+"mission": { "path": "survey", "end": "loop", "takeoffAltM": 30, "speedMs": 16 }
+```
+
+ArduPilot takes off to `takeoffAltM` above the spawn (default 30; a plane climbs out at 12°),
+flies the path's points as waypoints at their heights above the spawn's ground (a plane at least
+8 m), then `end`s: `rtl` (default) returns home, `land` lands at the last point, `loop` flies the
+path again. `speedMs` asks for a speed (default: the vehicle's own cruise). The simulator uploads
+it when ArduPilot first has a GPS fix; AUX4 (AUTO) flies it. In the map builder, a path's details
+have an **Autopilot mission** section ([ARDUPILOT.md](ARDUPILOT.md)).
+
 ### scenarios
 
 `"scenarios": ["scenarios/hunt.json"]` lists [fpvsim-scenario](SCENARIO_FORMAT.md) files that come

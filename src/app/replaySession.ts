@@ -5,7 +5,7 @@ import { buildDrone, preloadPropTable } from '../builder/derive';
 import { hasMap, MAPS, preloadMap } from '../maps/maps';
 import { MapDef, PrimitiveWorld, withCourse } from '../maps/world';
 import { cameraMountQuat } from '../render/coords';
-import { buildDroneMesh } from '../render/droneMesh';
+import { buildDroneMesh, preloadDroneMesh } from '../render/droneMesh';
 import { OsdRenderer } from '../render/osdRenderer';
 import { buildScene, TimeOfDay } from '../render/scene';
 import { VideoLink } from '../render/videoLink';
@@ -23,7 +23,7 @@ export async function replayWorld(track: ReplayTrack): Promise<{ map: MapDef; sp
   if (!spec) throw new Error('This replay was flown with drone parts this version of FPV Sim doesn’t have.');
   if (!hasMap(h.map)) throw new Error(`This replay was flown on a map this version of FPV Sim doesn’t have (${h.map}).`);
   // the map's data and the prop's precomputed BEMT table (else enterReplay's buildDrone spends ~1.2 s on it)
-  await Promise.all([preloadMap(h.map), preloadPropTable(spec.prop)]);
+  await Promise.all([preloadMap(h.map), preloadPropTable(spec.prop), preloadDroneMesh(spec)]);
   const map = withCourse(MAPS[h.map](), h.course);
   if (courseOf(map) !== h.course && h.course) throw new Error(`This replay was flown on a course this map doesn’t have any more (${h.course}).`);
   return { map, spec };

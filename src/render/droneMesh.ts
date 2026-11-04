@@ -5,7 +5,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { DerivedInfo, DroneSpec } from '../builder/derive';
-import { buildPlaneMesh } from './planeMesh';
 
 /** fpvHidden: parts hidden while rendering the FPV camera (the camera body around the lens) */
 export interface DroneModel {
@@ -48,8 +47,26 @@ export function cameraMountZ(frame: { stackHeightMm: number; ducted?: boolean; d
   return Math.max(st / 2, ductTop + 0.005);
 }
 
+// A plane's model (planeMesh.ts) loads on first use, not with the page: preloadDroneMesh() before
+// building one (the app does, where it already waits for the prop's table).
+let planeMesh: typeof import('./planeMesh') | null = null;
+let planeMeshLoad: Promise<void> | null = null;
+
+/** Load what building this spec's model needs (a plane's model code); resolves at once for a quad. */
+export function preloadDroneMesh(spec: Pick<DroneSpec, 'frame'>): Promise<void> {
+  if (!spec.frame.startsWith('a-') || planeMesh) return Promise.resolve();
+  return (planeMeshLoad ??= import('./planeMesh').then((m) => { planeMesh = m; }, (e) => { planeMeshLoad = null; throw e; }));
+}
+
+/** Everything this spec's model needs is loaded (preloadDroneMesh resolved). */
+export const droneMeshReady = (spec: Pick<DroneSpec, 'frame'>) => !spec.frame.startsWith('a-') || !!planeMesh;
+
 export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x: number; y: number; z: number; dir: number }[], cg: { x: number; y: number; z: number }): DroneModel {
-  if (info.plane) return buildPlaneMesh(spec, info, rotorPos, cg);
+  if (info.plane) {
+    if (planeMesh) return planeMesh.buildPlaneMesh(spec, info, rotorPos, cg);
+    // (not loaded yet: a caller that skipped preloadDroneMesh gets it next time)
+    void preloadDroneMesh(spec);
+  }
   const root = new THREE.Group();
   root.userData.gt = 'drone_self'; // dataset ground truth: the quad's own props and ducts in view
   const disp: { dispose(): void }[] = [];

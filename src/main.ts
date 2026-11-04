@@ -29,7 +29,7 @@ import { isUserMapId } from './net/protocol';
 import { installUserMaps } from './app/userMapsHost';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
-import { buildDroneMesh } from './render/droneMesh';
+import { buildDroneMesh, preloadDroneMesh, droneMeshReady } from './render/droneMesh';
 import { autoCubeSize, FpvCamera } from './render/fpvCamera';
 import { OsdRenderer } from './render/osdRenderer';
 import { RemoteQuads } from './render/remoteQuads';
@@ -108,6 +108,7 @@ if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 await Promise.all([
   preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; }),
   preloadPropTable(spec0.prop),
+  preloadDroneMesh(spec0),
 ]);
 const map0 = withSpawn(withCourse(MAPS[sim0.mapId](), sim0.courseId), sim0.spawnId);
 const build0 = buildDrone(spec0);
@@ -201,8 +202,8 @@ function applySpec(s: DroneSpec) {
   // the rendered quad: a prop whose precomputed BEMT table isn't here yet waits for it (a short
   // download) instead of building it on the main thread (~1.2 s); the newest spec wins
   const n = ++specSeq;
-  if (hasPropTable(s.prop)) showBuild(s);
-  else void preloadPropTable(s.prop).then(() => { if (n === specSeq) showBuild(s); });
+  if (hasPropTable(s.prop) && droneMeshReady(s)) showBuild(s);
+  else void Promise.all([preloadPropTable(s.prop), preloadDroneMesh(s)]).then(() => { if (n === specSeq) showBuild(s); });
 }
 function showBuild(s: DroneSpec) {
   ctx.build = buildDrone(s);

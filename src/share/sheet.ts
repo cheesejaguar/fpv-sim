@@ -15,6 +15,7 @@ import { detectEnv, PhoneLink, shareUi } from './actions';
 import type { PbShots } from './capture';
 import { CardDeck } from './deck';
 import { buildOffThread, DroneData, droneChips, droneName, droneShot, fromBuild, specForClass } from './droneShot';
+import { preloadDroneMesh } from '../render/droneMesh';
 import { classLabel, fmtLap, SITE } from './layout';
 import { shareUrl } from './link';
 import { drawQr, encodeQr } from './qr';
@@ -84,7 +85,7 @@ export function shareScreen(h: ShareScreenHost): HTMLElement {
   let drone: DroneData | null = null;
   const droneData = (): Promise<DroneData> => {
     const cur = h.build(), mine = h.mine();
-    if (droneClass(cur.spec) === t.cls) return Promise.resolve(fromBuild(cur));
+    if (droneClass(cur.spec) === t.cls) return preloadDroneMesh(cur.spec).then(() => fromBuild(cur));
     return buildOffThread(t.cls === CUSTOM && mine ? mine : specForClass(t.cls, lap.summary));
   };
   const deck = new CardDeck(lap, palette, (p) => {
