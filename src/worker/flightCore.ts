@@ -519,13 +519,15 @@ export class FlightCore {
   physicsStep(dt: number) {
     const { bf, quad, brownout } = this;
     // 1S boards: the FC browns out when the pack sags too far, and boots again once it recovers
-    if (bf && quad.p.battery.cellsSeries === 1) {
+    if (bf && !this.ap && quad.p.battery.cellsSeries === 1) {
       const ev = brownout.update(quad.s.vbus, dt);
       if (ev === 'down') { this.log(`Flight controller brownout: the 1S pack sagged to ${quad.s.vbus.toFixed(2)} V (FC rebooting, motors off)`); this.hooks.brownout?.('down'); }
       if (ev === 'up') { bf.eepromSet(bf.eepromGet()); this.powerOnFirmware(); this.log('Flight controller rebooted after the brownout (arm switch must be cycled)'); this.hooks.brownout?.('up'); }
     }
-    // sensors -> FC
-    if (bf && !brownout.off) {
+    // sensors -> FC (ArduPilot when the build flies it: a Betaflight instance stays loaded, unused)
+    if (this.ap) {
+      this.apStep(dt);
+    } else if (bf && !brownout.off) {
       this.fcInputs(dt, false);
       for (let k = 0; k < 4; k++) this.erpm[k] = Math.abs(quad.motors[k].erpm());
       bf.setErpm(this.erpm);
@@ -533,8 +535,6 @@ export class FlightCore {
       this.armed = bf.getMotors(this.motorCmd);
       if (this.ops?.motorsTouched) { this.escCmd.set(this.motorCmd); this.ops.motors(this.escCmd); quad.command(this.escCmd, bf.motorsReversed()); }
       else quad.command(this.motorCmd, bf.motorsReversed());
-    } else if (this.ap) {
-      this.apStep(dt);
     } else if (this.external) {
       // an external autopilot (PX4 / ArduPilot SITL) drives the ESCs: 0 stops a motor, 0..1 is the throttle
       const ext = this.external;

@@ -59,6 +59,8 @@ addEventListener('pagehide', flushStore);
 document.addEventListener('visibilitychange', () => { if (document.hidden) flushStore(); });
 /** The physics rate the overload governor lowered to this session (not saved), and the pilot's own. */
 let governedHz: number | null = null, chosenHz = 0;
+/** the firmware the worker last reported running (the menu's status chip) */
+let fwName = 'Betaflight 4.5.5';
 /** Save simulation settings, with the pilot's own physics rate in place of a governed one. */
 const storeSim = (s: SimSettings) => store(KEYS.sim, governedHz !== null && s.physicsHz === governedHz ? { ...s, physicsHz: chosenHz } : s);
 
@@ -132,7 +134,7 @@ void ctx.osd.setFont(ctx.view.osdFont);
 const sticks = new SticksView(), spectrum = new SpectrumView();
 bridge.onMessage = (m) => {
   switch (m.type) {
-    case 'ready': ctx.fwStatus = ''; ctx.log(`Firmware running: ${m.fw}`); break;
+    case 'ready': ctx.fwStatus = ''; fwName = /^Ardu/.test(m.fw) ? m.fw : 'Betaflight 4.5.5'; ctx.log(`Firmware running: ${m.fw}`); break;
     case 'fwMissing': ctx.fwStatus = m.reason; ctx.log(m.reason); break;
     case 'fatal': {
       // the bridge already restarted the worker once: a second failure needs a reload
@@ -442,6 +444,7 @@ const gameMenu = new GameMenu({
   sim: () => ctx.sim, applySim: (s) => applySim(s),
   build: () => ctx.build,
   fwStatus: () => ctx.fwStatus,
+  fwName: () => fwName,
   settingsTabs: [
     { id: 'sim', label: 'Simulation', icon: 'sliders', render: () => settingsPanel(ctx.sim, ctx.view, applySim, applyView, {
       video: () => ctx.build.info.components.video,

@@ -26,6 +26,9 @@ import { encodeRun, RunLog, RunRecorder, RUN_FORMAT, RUN_GPS_EPOCH_MS, RUN_VERSI
 import { EepromStore } from './fwCli';
 import { IdbKv } from './kv';
 import { createShared, FromWorker, GyroSpectrum, OSD_MAX_COLS, OSD_MAX_ROWS, R, REC, RING_N, Shared, StickSampler, Telemetry, ToWorker } from './shared';
+import { apVehicle } from '../ap/apConfig';
+import { apOsd, apOsdSize } from '../ap/apOsd';
+import { apModuleUrl, browserSpawn } from '../ap/apSpawn';
 
 /** Bump when defaultCli() changes so existing users get the new baseline. */
 const DEFAULTS_VERSION = 6; // 4: RSSI dBm OSD element; 5: battery follows the pack; 6: GPS, serial blackbox, beacon, small_angle 25, PID denom
@@ -120,6 +123,10 @@ const core = new FlightCore({
   },
   record: () => writeRing(),
   afterFirmware: (dt) => { if (specOn) sampleSpectrum(dt); },
+}, {
+  // planes, and quads set to ArduPilot: the firmware in its own worker, lock-stepped every millisecond
+  // (a frame it answers later than 50 ms goes on with its last outputs)
+  ardupilot: { spawn: browserSpawn, moduleUrl: (v) => apModuleUrl(v), waitMs: 50 },
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -203,7 +210,34 @@ async function loadFirmware(): Promise<Betaflight> {
   throw last;
 }
 
+/** Wall-clock wait (the firmware's module and threads load outside sim time). */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * ArduPilot for the current build (a plane, or a quad set to it): starts (or restarts: a power
+ * cycle) its firmware thread and waits for it to run. Betaflight, if loaded, stays loaded unused.
+ */
+async function bootArduPilot() {
+  fwState = 1; Atomics.store(sh.ctrl, 7, 1);
+  blankOsd();
+  const ap = core.startArduPilot();
+  const v = core.apVehicle!, name = `Ardu${v === 'plane' ? 'Plane' : 'Copter'} 4.7.2`;
+  if (!ap) { fwState = 3; Atomics.store(sh.ctrl, 7, 3); post({ type: 'fwMissing', reason: `${name} WASM not found. Build it with: bash firmware/apwasm/build.sh` }); return; }
+  const t0 = performance.now();
+  while (ap.status === 'loading' && performance.now() - t0 < 30000) await sleep(25);
+  if (ap.status !== 'running') {
+    core.stopArduPilot();
+    fwState = 4; Atomics.store(sh.ctrl, 7, 4);
+    post({ type: 'fwMissing', reason: `${name} failed to start: ${ap.failure || 'no answer within 30 s'}` });
+    return;
+  }
+  fwState = 2; core.fwRunning = true; Atomics.store(sh.ctrl, 7, 2);
+  resyncClock();
+  post({ type: 'ready', fw: name });
+}
+
 async function bootFirmware() {
+  if (core.apVehicle) return bootArduPilot();
   fwState = 1; Atomics.store(sh.ctrl, 7, 1);
   let bf: Betaflight;
   try {
@@ -267,7 +301,7 @@ async function calibrateAcc(): Promise<boolean> {
 }
 
 /** The stored trims don't fit the simulated board: never calibrated, another build's IMU errors, or an older calibration. */
-const accCalStale = () => !!core.bf && (!core.bf.accCalibrated() || accCalKey !== accBoardKey(core.quad.imu));
+const accCalStale = () => !!core.bf && !core.ap && (!core.bf.accCalibrated() || accCalKey !== accBoardKey(core.quad.imu));
 
 /**
  * Run CLI lines on the firmware, persist the EEPROM if they saved. The plant is held at rest
@@ -339,7 +373,8 @@ function writeRing() {
   r[o + R.qw] = s.q.w; r[o + R.qx] = s.q.x; r[o + R.qy] = s.q.y; r[o + R.qz] = s.q.z;
   r[o + R.wx] = s.w.x; r[o + R.wy] = s.w.y; r[o + R.wz] = s.w.z;
   r[o + R.vx] = s.vel.x; r[o + R.vy] = s.vel.y; r[o + R.vz] = s.vel.z;
-  for (let k = 0; k < 4; k++) { r[o + R.rpm0 + k] = quad.motors[k].rpm(); r[o + R.m0 + k] = motorCmd[k]; }
+  // (a plane has one or two motors)
+  for (let k = 0; k < 4; k++) { r[o + R.rpm0 + k] = quad.motors[k]?.rpm() ?? 0; r[o + R.m0 + k] = motorCmd[k]; }
   const b = quad.battery.s;
   r[o + R.vbus] = s.vbus; r[o + R.ibus] = s.ibus; r[o + R.mah] = b.mAhDrawn; r[o + R.armed] = armed ? 1 : 0;
   r[o + R.gx] = quad.imu.gyroOut.x; r[o + R.gy] = quad.imu.gyroOut.y; r[o + R.gz] = quad.imu.gyroOut.z;
@@ -348,23 +383,23 @@ function writeRing() {
   r[o + R.vrs] = Math.max(...quad.rotorOut.map((x) => x.vrs));
   r[o + R.touching] = s.touching ? 1 : 0; r[o + R.impact] = 0;
   r[o + R.cellV] = s.vbus / quad.p.battery.cellsSeries;
-  r[o + R.crashFlip] = bf?.motorsReversed() ? 1 : 0;
+  r[o + R.crashFlip] = !core.ap && bf?.motorsReversed() ? 1 : 0;
   r[o + R.simRate] = simRate;
   r[o + R.damage] = core.damageTotal();
   r[o + R.rc0] = rcBuf[0]; r[o + R.rc1] = rcBuf[1]; r[o + R.rc2] = rcBuf[2]; r[o + R.rc3] = rcBuf[3];
   Atomics.store(sh.ctrl, 1, head + 1);
   Atomics.store(sh.ctrl, 5, armed ? 1 : 0);
   // live buzzer / DShot beacon bits for sample-accurate audio: bit 0 beeper, bit 1 beacon
-  Atomics.store(sh.ctrl, 9, bf && !core.brownout.off ? (bf.beeper() ? 1 : 0) | (bf.beacon() ? 2 : 0) : 0);
+  Atomics.store(sh.ctrl, 9, bf && !core.ap && !core.brownout.off ? (bf.beeper() ? 1 : 0) | (bf.beacon() ? 2 : 0) : 0);
   // map actors: detections and targets reached
   Atomics.store(sh.ctrl, 10, core.actors ? core.actors.detectedMask : 0);
   Atomics.store(sh.ctrl, 11, core.actors ? core.actors.targetMask : 0);
 }
 
 function sendTelemetry() {
-  const { quad, bf, simT } = core;
+  const { quad, bf, simT, ap } = core;
   const b = quad.battery.s;
-  const on = bf && !core.brownout.off ? bf : null;
+  const on = bf && !ap && !core.brownout.off ? bf : null;
   const flags = on ? on.armingDisableFlags() : 0;
   const gi = on?.gpsInfo() ?? null;
   const tel: Telemetry = {
@@ -382,11 +417,51 @@ function sendTelemetry() {
     rc: { marginDb: core.rcLink.marginDb, interfMw: core.rcLink.interfMw, lq: core.rcLink.lq },
     ...(core.ops ? { ops: core.ops.status(core) } : {}),
   };
+  if (ap) {
+    const t = ap.hub.tel;
+    tel.fw = `Ardu${ap.vehicle === 'plane' ? 'Plane' : 'Copter'} 4.7.2`;
+    tel.attitudeDeg = [t.roll, t.pitch, t.yaw].map((x) => (x * 180) / Math.PI);
+    tel.gps = { fix: t.gpsFix >= 3, sats: t.sats, homeDistM: homeDist(), homeDirDeg: 0 };
+    tel.ap = {
+      vehicle: ap.vehicle, status: ap.status, connected: t.connected, armed: t.armed, mode: t.modeName,
+      airspeed: t.airspeed, groundspeed: t.groundspeed, relAlt: t.relAlt, climb: t.climb, throttle: t.throttle, headingDeg: t.headingDeg,
+      gpsFix: t.gpsFix, sats: t.sats, wpSeq: t.wpSeq, wpTotal: t.wpTotal, wpDist: t.wpDist, texts: t.texts.slice(), stalls: ap.stalls,
+      inHand: !!core.hand && !core.hand.released,
+    };
+  }
   core.beeperSeen = false; core.beaconSeen = false;
   post({ type: 'telemetry', tel });
 }
 
+/** Distance (m) from where ArduPilot's home is (the spawn: it sets home where it first gets a fix). */
+function homeDist(): number {
+  const sp = core.map.spawn.pos, p = core.quad.s.pos;
+  return Math.hypot(p.x - sp.x, p.y - sp.y);
+}
+
+let apPassAcc = 0;
+/** ArduPilot's side channels: its OSD (50 Hz) and the MAVLink pass-through port (SERIAL1) to the page. */
+function pumpArduPilot(dt: number) {
+  const ap = core.ap!;
+  osdAcc += dt;
+  if (osdAcc >= 0.02) {
+    osdAcc = 0;
+    const grid = apOsdSize(core.build.info.components.video.kind === 'digital');
+    const s = core.quad.s;
+    apOsd(ap.hub.tel, { vehicle: ap.vehicle, vbus: s.vbus, current: s.ibus, mah: core.quad.battery.s.mAhDrawn, homeDistM: homeDist(), inHand: !!core.hand && !core.hand.released, t: ap.hub.t }, grid, OSD_MAX_COLS, sh.osd, OSD_MAX_COLS * OSD_MAX_ROWS);
+    Atomics.store(sh.ctrl, 3, grid.cols); Atomics.store(sh.ctrl, 4, grid.rows);
+    Atomics.add(sh.ctrl, 2, 1);
+  }
+  apPassAcc += dt;
+  if (apPassAcc >= 0.01) {
+    apPassAcc = 0;
+    const bytes = ap.read(1);
+    if (bytes.length) (self as unknown as Worker).postMessage({ type: 'mavlink', data: bytes } satisfies FromWorker, [bytes.buffer]);
+  }
+}
+
 function pumpSideChannels(dt: number) {
+  if (core.ap) { pumpArduPilot(dt); return; }
   const bf = core.bf;
   if (!bf || core.brownout.off) return;
   osdAcc += dt;
@@ -541,6 +616,7 @@ async function firmwareOp(m: ToWorker) {
   switch (m.type) {
     case 'sync': post({ type: 'synced', id: m.id }); break;
     case 'runStart': {
+      if (core.ap) { post({ type: 'log', text: 'Reproducible run: not with ArduPilot (its threads are not deterministic); fly a Betaflight build' }); break; }
       const bf = core.bf;
       if (!bf || fwState !== 2) { post({ type: 'log', text: 'Reproducible run: Betaflight is not running' }); break; }
       stopRun('a new run started');
@@ -579,6 +655,15 @@ async function firmwareOp(m: ToWorker) {
       const old = core.spec;
       const spec = core.spec = m.spec as DroneSpec;
       buildQuad();
+      // ArduPilot builds: its parameters and scripts come with the build, so any change power-cycles
+      // it (or swaps between ArduPilot and Betaflight)
+      if (apVehicle(spec) || core.ap) {
+        if (apVehicle(spec)) await bootArduPilot();
+        else { core.stopArduPilot(); blankOsd(); if (!core.bf) await bootFirmware(); else { fwState = 2; Atomics.store(sh.ctrl, 7, 2); post({ type: 'ready', fw: core.bf.version }); } }
+        if (!apVehicle(spec) && apVehicle(old)) post({ type: 'log', text: 'Back on Betaflight' });
+        resyncClock();
+        break;
+      }
       // keep firmware hardware settings in sync with the generated airframe
       const bf = core.bf;
       if (bf && fwState === 2) {
@@ -680,5 +765,21 @@ async function handle(m: ToWorker) {
       break;
     }
     case 'clearBbl': bbl.clear(); break;
+    case 'mavlink': core.ap?.write(1, m.data); break;
+    case 'ap': {
+      const ap = core.ap;
+      if (!ap) { post({ type: 'apResult', id: m.id, ok: false, message: 'this build flies Betaflight' }); break; }
+      const op = m.op, hub = ap.hub, id = m.id;
+      if (op.kind === 'mission') {
+        hub.uploadMission(op.items, (ok, why) => post({ type: 'apResult', id, ok, message: ok ? `mission of ${op.items.length} items ${why}` : `mission upload: ${why}` }));
+        break;
+      }
+      if (op.kind === 'params') hub.setParams(op.params);
+      else if (op.kind === 'mode') hub.setMode(op.mode);
+      else if (op.kind === 'arm') hub.arm(op.on, op.force);
+      else hub.command(op.command, op.params);
+      post({ type: 'apResult', id: m.id, ok: true, message: 'sent' });
+      break;
+    }
   }
 }

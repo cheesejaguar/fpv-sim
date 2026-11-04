@@ -234,7 +234,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         rpmNow[0] = rec[R.rpm0]; rpmNow[1] = rec[R.rpm1]; rpmNow[2] = rec[R.rpm2]; rpmNow[3] = rec[R.rpm3];
         // lens pose: body pose * camera mount offset
         drone.root.updateMatrixWorld();
-        const camOffset = tmpV.set(build.info.components.frame.plateLengthMm / 2000 + 0.006 - build.info.cgMm.x / 1000, cameraMountZ(build.info.components.frame, build.info.components.motor) - build.info.cgMm.z / 1000, 0);
+        const camOffset = drone.lens ? tmpV.copy(drone.lens) : tmpV.set(build.info.components.frame.plateLengthMm / 2000 + 0.006 - build.info.cgMm.x / 1000, cameraMountZ(build.info.components.frame, build.info.components.motor) - build.info.cgMm.z / 1000, 0);
         lensPos.copy(camOffset).applyQuaternion(drone.root.quaternion).add(drone.root.position);
         lensQ.copy(drone.root.quaternion).multiply(ctx.mountQ);
         if (!link.state.freeze) {

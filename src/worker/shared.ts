@@ -10,6 +10,7 @@
 //   osd   Uint8[2*64*32]: chars then attributes
 //   sticks Float64[STICK_N*STICK_REC]: timestamped stick samples {t, ch0..15}; t in ms since the
 //                       epoch (performance.timeOrigin + now), so main and worker clocks compare
+import type { ApMissionItem } from '../ap/apLink';
 import type { FaultSpec } from '../sim/faults';
 import type { OpsConfig, OpsEvent, OpsStatus } from './ops';
 
@@ -294,7 +295,36 @@ export type ToWorker =
   | { type: 'ops'; config: OpsConfig | null }
   | { type: 'opsFaults'; faults: FaultSpec[] }
   | { type: 'opsDrop' }
-  | { type: 'registerMap'; id: string; info: { name: string; author: string; license: string }; urls: Record<string, string> };
+  | { type: 'registerMap'; id: string; info: { name: string; author: string; license: string }; urls: Record<string, string> }
+  /**
+   * ArduPilot (planes, quads set to it): raw MAVLink bytes into its pass-through port (SERIAL1), or a
+   * request to the simulator's own ground station on SERIAL0 (answered by { type: 'apResult' })
+   */
+  | { type: 'mavlink'; data: Uint8Array }
+  | { type: 'ap'; id: number; op: ApOp };
+
+/** What the app asks ArduPilot for through the simulator's ground station. */
+export type ApOp =
+  | { kind: 'params'; params: Record<string, number> }
+  | { kind: 'mission'; items: ApMissionItem[] }
+  | { kind: 'mode'; mode: number }
+  | { kind: 'arm'; on: boolean; force?: boolean }
+  | { kind: 'command'; command: number; params: number[] };
+
+/** ArduPilot as the simulator's ground station sees it (Telemetry.ap). */
+export interface ApTelemetryOut {
+  vehicle: 'plane' | 'copter';
+  status: 'loading' | 'running' | 'exited' | 'failed';
+  connected: boolean; armed: boolean; mode: string;
+  airspeed: number; groundspeed: number; relAlt: number; climb: number; throttle: number; headingDeg: number;
+  gpsFix: number; sats: number;
+  wpSeq: number; wpTotal: number; wpDist: number;
+  texts: { t: number; severity: number; text: string }[];
+  /** frames ArduPilot answered late (the plant went on with its last outputs) */
+  stalls: number;
+  /** a plane still in the pilot's hand (respawn): it is thrown once the motor runs up */
+  inHand: boolean;
+}
 
 export interface Telemetry {
   t: number;
@@ -326,6 +356,8 @@ export interface Telemetry {
   rc?: { marginDb: number; interfMw: number; lq: number };
   /** the operational picture (links, jamming, GNSS, fibre, payload, faults) while an ops configuration is on */
   ops?: OpsStatus;
+  /** ArduPilot instead of Betaflight */
+  ap?: ApTelemetryOut;
 }
 
 export type FromWorker =
@@ -355,7 +387,11 @@ export type FromWorker =
   | { type: 'runState'; active: boolean; seed?: number; reason?: string }
   | { type: 'synced'; id: number }
   /** the run as a .fpvrun file (empty when there was none) */
-  | { type: 'run'; id: number; data: ArrayBuffer; seconds: number; reason: string };
+  | { type: 'run'; id: number; data: ArrayBuffer; seconds: number; reason: string }
+  /** MAVLink bytes from ArduPilot's pass-through port (SERIAL1) */
+  | { type: 'mavlink'; data: Uint8Array }
+  /** the answer to an { type: 'ap' } request */
+  | { type: 'apResult'; id: number; ok: boolean; message: string };
 
 /**
  * Gyro noise spectra computed in the worker (the 1 kHz state ring is too slow for this).

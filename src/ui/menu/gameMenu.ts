@@ -49,6 +49,8 @@ export interface MenuHost {
   applySim(s: SimSettings): void;
   build(): DroneBuild;
   fwStatus(): string;
+  /** the firmware running (Betaflight 4.5.5, ArduPlane 4.7.2, ArduCopter 4.7.2) */
+  fwName(): string;
   settingsTabs: SettingsTab[];
   /** Respawn with a fresh battery and start the chosen mode. */
   startFlight(mode: GameMode): void;
@@ -289,7 +291,7 @@ export class GameMenu {
     const mp = this.host.mp;
     const chip = (cls: string, text: string, title = '') => el('span', { class: `gm-chip ${cls}`, title }, el('span', { class: 'dot' }), text);
     // refreshed every second: only rebuild (and let the live region speak) when something changed
-    const sig = [this.stack.join('>'), fw, pad?.id ?? '', mp.status, mp.room ?? '', mp.peers.size, mp.error ?? ''].join('|');
+    const sig = [this.stack.join('>'), fw, this.host.fwName(), pad?.id ?? '', mp.status, mp.room ?? '', mp.peers.size, mp.error ?? ''].join('|');
     if (sig === this.topSig) return;
     this.topSig = sig;
     this.top.replaceChildren(
@@ -297,7 +299,7 @@ export class GameMenu {
       this.stack.length > 1 ? el('div', { class: 'gm-crumbs' }, names[this.stack[0]], icon('chevron'), el('b', {}, names[s])) : el('span'),
       el('span', { class: 'gm-spacer' }),
       el('div', { class: 'gm-status', 'aria-live': 'polite' },
-        chip(fw ? (/missing|fail|error/i.test(fw) ? 'err' : 'warn') : 'ok', fw ? 'Firmware loading' : 'Betaflight 4.5.5', fw),
+        chip(fw ? (/missing|fail|error/i.test(fw) ? 'err' : 'warn') : 'ok', fw ? 'Firmware loading' : this.host.fwName(), fw),
         chip(pad ? 'ok' : 'warn', pad ? shortPad(pad.id) : 'Keyboard', pad?.id ?? 'No controller detected: press a button on it'),
         chip(mp.connected ? 'ok' : mp.status === 'connecting' || mp.status === 'reconnecting' ? 'warn' : mp.status === 'error' ? 'err' : '', mp.connected ? `Room ${mp.room} · ${mp.peers.size + 1}` : mp.status === 'connecting' ? 'Connecting…' : mp.status === 'reconnecting' ? 'Reconnecting…' : 'Offline', mp.error || ''),
       ),
@@ -998,7 +1000,7 @@ export class GameMenu {
             el('dl', { class: 'gm-kv', style: { marginBottom: '16px' } },
               el('dt', {}, 'FPV Sim'), el('dd', {}, versionLabel(APP_VERSION, '')),
               el('dt', {}, 'Commit'), el('dd', {}, commit),
-              el('dt', {}, 'Firmware'), el('dd', {}, fw ? 'loading…' : 'Betaflight 4.5.5 (WebAssembly)'),
+              el('dt', {}, 'Firmware'), el('dd', {}, fw ? 'loading…' : `${this.host.fwName()} (WebAssembly)`),
               el('dt', {}, 'Controller'), el('dd', {}, this.host.input.active ? shortPad(this.host.input.active.id) : 'Keyboard')),
             el('p', { class: 'gm-room-sub', style: { margin: '0 0 12px' } }, 'Found a problem? The report opens on GitHub with your version, browser, GPU and controller filled in. Nothing is sent until you submit it there.'),
             bug))));

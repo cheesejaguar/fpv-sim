@@ -5,12 +5,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { DerivedInfo, DroneSpec } from '../builder/derive';
+import { buildPlaneMesh } from './planeMesh';
 
 /** fpvHidden: parts hidden while rendering the FPV camera (the camera body around the lens) */
 export interface DroneModel {
   root: THREE.Group; props: THREE.Object3D[]; propDirs: number[]; blur: THREE.Mesh[]; fpvHidden: THREE.Object3D[];
   /** Show prop damage per rotor (Telemetry.rotorDamage): chipped blades shorter, a broken one snapped and bent. */
   setDamage(rotorDamage: { thrust: number; broken: boolean }[]): void;
+  /** where the FPV lens is (body space, relative to the CG), when the model knows better than the frame's numbers (a plane's nose) */
+  lens?: THREE.Vector3;
   dispose(): void;
 }
 
@@ -46,6 +49,7 @@ export function cameraMountZ(frame: { stackHeightMm: number; ducted?: boolean; d
 }
 
 export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x: number; y: number; z: number; dir: number }[], cg: { x: number; y: number; z: number }): DroneModel {
+  if (info.plane) return buildPlaneMesh(spec, info, rotorPos, cg);
   const root = new THREE.Group();
   root.userData.gt = 'drone_self'; // dataset ground truth: the quad's own props and ducts in view
   const disp: { dispose(): void }[] = [];
@@ -166,7 +170,7 @@ export function buildDroneMesh(spec: DroneSpec, info: DerivedInfo, rotorPos: { x
  * shadow pass and in each cube face of the FPV near pass. Props (spin, damage), their blur discs and
  * the camera (hidden in FPV) stay separate.
  */
-function mergeStatic(root: THREE.Group, T: <X extends { dispose(): void }>(x: X) => X) {
+export function mergeStatic(root: THREE.Group, T: <X extends { dispose(): void }>(x: X) => X) {
   root.updateMatrixWorld(true); // root is at the origin: world = relative to the model
   const groups = new Map<THREE.Material, THREE.Mesh[]>();
   // root's own mesh parts and their mesh children (a duct's lip); the hubs (props) and the camera
@@ -194,7 +198,7 @@ function mergeStatic(root: THREE.Group, T: <X extends { dispose(): void }>(x: X)
 }
 
 /** Lofted blade from hub to tip along +X, chord along Z, slight pitch twist. */
-function makeBladeGeometry(R: number, chordFracs: number[], hubFrac: number): THREE.BufferGeometry {
+export function makeBladeGeometry(R: number, chordFracs: number[], hubFrac: number): THREE.BufferGeometry {
   const n = 12, verts: number[] = [], idx: number[] = [];
   for (let i = 0; i <= n; i++) {
     const rf = hubFrac + (1 - hubFrac) * (i / n);

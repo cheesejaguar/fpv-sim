@@ -30,6 +30,7 @@ export class ArduPilotLink {
   readonly rings: [ByteRing, ByteRing][] = [];
   readonly hub: ApHub;
   private readonly enc = new TextEncoder();
+  private readonly scratch = new Uint8Array(AP.STATE_MAX);
   private seenFrame = -1;
   private synced = false;
   private thread: { terminate(): void } | null = null;
@@ -79,7 +80,9 @@ export class ArduPilotLink {
       this.synced = true;
       this.takeServos();
     }
-    const r = this.enc.encodeInto(stateLine, this.stateBuf);
+    // (browsers refuse encodeInto on shared memory: encode privately, then copy across)
+    const r = this.enc.encodeInto(stateLine, this.scratch);
+    this.stateBuf.set(this.scratch.subarray(0, r.written));
     Atomics.store(this.ctrl, AP.STATE_LEN, r.written);
     Atomics.add(this.ctrl, AP.STATE_SEQ, 1);
     Atomics.notify(this.ctrl, AP.STATE_SEQ);
@@ -157,7 +160,8 @@ export class ApHub {
   private parser = new MavlinkParser();
   private seq = 0;
   private hbAcc = 1;
-  private t = 0;
+  /** time since ArduPilot started (s, of pump calls) */
+  t = 0;
   /** the vehicle's system id (from its HEARTBEAT) */
   private sys = 1;
   private upload: { items: ApMissionItem[]; t0: number; done: (ok: boolean, why: string) => void } | null = null;

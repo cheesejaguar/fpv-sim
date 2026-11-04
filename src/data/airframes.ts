@@ -53,9 +53,10 @@ export interface AirframeSpec {
 
 /** ArduPlane parameters every airframe here shares: stabilised flight modes and a hand launch (switches: src/ap/apConfig.ts). */
 export const PLANE_PARAMS_COMMON: Record<string, number> = {
-  // modes on AUX2 (CH6), a 3-position switch: low MANUAL, mid FBWA, high CRUISE (slots 1, 4, 6; a
-  // 6-position switch also gets ACRO and FBWB)
-  FLTMODE_CH: 6, FLTMODE1: 0, FLTMODE2: 4, FLTMODE3: 5, FLTMODE4: 5, FLTMODE5: 6, FLTMODE6: 7,
+  // modes on AUX2 (CH6), a 3-position switch, as Betaflight's acro / horizon / angle: low ACRO (rate
+  // with attitude hold), mid FBWA (self-levelling), high CRUISE (holds heading and altitude); slots
+  // 1, 4, 6 (a 6-position switch also gets MANUAL and FBWB)
+  FLTMODE_CH: 6, FLTMODE1: 4, FLTMODE2: 0, FLTMODE3: 5, FLTMODE4: 5, FLTMODE5: 6, FLTMODE6: 7,
   ARMING_SKIPCHK: -1, ARMING_RUDDER: 2, RC_OPTIONS: 0,
   THR_MIN: 0, THR_MAX: 100, THR_SLEWRATE: 100,
   TKOFF_THR_MINACC: 10, TKOFF_THR_DELAY: 2, TKOFF_THR_MINSPD: 0,
