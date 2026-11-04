@@ -130,6 +130,7 @@ export interface ApTelemetry {
   lat: number; lon: number;
   gpsFix: number; sats: number;
   voltage: number; current: number; remaining: number;
+  /** the mission item flown (1 = the first after home) and how many there are (home not counted) */
   wpSeq: number; wpTotal: number; wpDist: number;
   /** the last STATUSTEXT lines (newest last) */
   texts: { t: number; severity: number; text: string }[];
@@ -239,7 +240,8 @@ export class ApHub {
         if (!u) break;
         this.upload = null;
         u.done(m.fields.type === 0, m.fields.type === 0 ? 'accepted' : `refused (MAV_MISSION_RESULT ${m.fields.type})`);
-        if (m.fields.type === 0) this.tel.wpTotal = u.items.length;
+        // (MISSION_CURRENT's total, as here: the items without home)
+        if (m.fields.type === 0) this.tel.wpTotal = u.items.length - 1;
         break;
       }
     }

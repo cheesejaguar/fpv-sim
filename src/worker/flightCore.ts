@@ -28,6 +28,7 @@ import { GPS_ORIGIN, UbxReceiver } from './ubxGps';
 import { OpsConfig, OpsLayer } from './ops';
 import { apLaunch, apVehicle, ApVehicle } from '../ap/apConfig';
 import { AP_FRAME_DT, ApSpawn, ArduPilotLink } from '../ap/apLink';
+import { missionItems } from '../ap/apMission';
 import { stateJson } from '../sitl/ardupilotJson';
 
 /** What the host provides. Only `sticks` is required. */
@@ -82,7 +83,7 @@ export interface HandLaunch {
  * the arm pushes (s: the IMU feels the push, as the autopilot's estimator must), the nose-up
  * attitude while held (rad).
  */
-const THROW_MPS = 9, THROW_UP_MPS = 1.5, THROW_S = 0.2, HAND_PITCH = (8 * Math.PI) / 180, HAND_HEIGHT = 1.6;
+const THROW_MPS = 11, THROW_UP_MPS = 1.5, THROW_S = 0.4, HAND_PITCH = (8 * Math.PI) / 180, HAND_HEIGHT = 1.6;
 
 /** A crash worth flagging: ~4 m/s into something, or anything that actually damaged the quad. */
 export const CRASH_MIN_MPS = 4;
@@ -149,6 +150,8 @@ export class FlightCore {
   /** a plane waiting in the pilot's hand (respawn), until thrown */
   hand: HandLaunch | null = null;
   private apAcc = 0;
+  /** the map's mission went to this ArduPilot (uploaded once it has a GPS fix; again after a map change) */
+  private apMissionSent = false;
   /** firmware time of the last RC packet that arrived (ArduPilot gets the sticks until 100 ms without one) */
   private apRcT = -Infinity;
   private readonly apOpts: FlightCoreOptions['ardupilot'];
@@ -249,6 +252,7 @@ export class FlightCore {
   /** Fly this map from now on (its collision world, wind, GPS origin and actors). */
   setMap(m: MapDef) {
     this.map = m;
+    this.apMissionSent = false;
     this.world = new PrimitiveWorld(m);
     this.env = this.makeEnv();
     this.gps.origin = { ...GPS_ORIGIN, altM: m.elevationM ?? 0 };
@@ -627,7 +631,7 @@ export class FlightCore {
     const headingDeg = 90 - (this.map.spawn.yaw * 180) / Math.PI;
     const launch = apLaunch(this.build, { ...this.gps.origin }, headingDeg);
     this.ap = new ArduPilotLink(v, { moduleUrl: url, files: launch.files, args: launch.args, cwd: launch.cwd }, o.spawn, (t) => this.log(t));
-    this.apAcc = 0; this.apRcT = -Infinity;
+    this.apAcc = 0; this.apRcT = -Infinity; this.apMissionSent = false;
     this.motorCmd.fill(0); this.armed = false;
     this.log(`Ardu${v === 'plane' ? 'Plane' : 'Copter'} 4.7.2 starting (WebAssembly)`);
     return this.ap;
@@ -675,6 +679,12 @@ export class FlightCore {
       if (ap.live || ap.status === 'running') ap.exchange(this.apStateLine(this.fcT - this.apRcT < 0.1), this.apOpts?.waitMs ?? 100);
       ap.hub.pump(AP_FRAME_DT);
       this.armed = ap.hub.tel.armed;
+      const ms = this.map.mission;
+      if (ms && !this.apMissionSent && ap.hub.tel.connected && ap.hub.tel.gpsFix >= 3) {
+        this.apMissionSent = true;
+        ap.hub.uploadMission(missionItems(ms, ap.vehicle, this.gps.origin, spawnGroundZ(this.map)), (ok, why) =>
+          this.log(ok ? `Mission loaded: ${ms.points.length} waypoints, then ${ms.end === 'rtl' ? 'home' : ms.end} (AUX4 flies it)` : `The map's mission was not loaded: ${why}`));
+      }
       this.fcT += AP_FRAME_DT;
     }
     // outputs: PWM 1000..2000 to the ESCs (DShot 48..2047; at or below 1000 the motor stops), the rest to the servos

@@ -76,6 +76,7 @@ export interface MapDef {
   wind?: { speed: number; direction: number; turbulence: number; gusts: number }; // the map's suggested wind (FROM, deg)
   paths?: PathDef[];                  // polylines actors move along
   actors?: ActorDef[];                // RF components, detectors, targets (src/sim/actors.ts)
+  mission?: MissionDef;               // the autopilot's mission (ArduPilot builds; src/ap/apMission.ts)
   scenarios?: { path: string; url: string }[]; // bundled fpvsim-scenario files
   collisionCell?: number;             // collision grid cell size (m), default 8; dense interiors use a finer grid
 }
@@ -88,6 +89,9 @@ export interface LosLoss { db: number; hardDb: number; foliageDb: number }
 
 /** An actor path: points in order, travelled at speed (m/s) from sim time delay (s). */
 export interface PathDef { id: string; points: V3[]; speed: number; mode: 'loop' | 'pingpong' | 'once'; delay: number }
+
+/** An ArduPilot mission: waypoints (world, m), what follows the last, takeoff altitude and speed. */
+export interface MissionDef { points: V3[]; end: 'rtl' | 'land' | 'loop'; takeoffAltM: number; speedMs?: number }
 
 /**
  * Something in the world besides the quad: an RF emitter (jammer, other traffic), a ground station

@@ -460,6 +460,8 @@ export function buildMapDef(doc: MapDocV1, assets: MapAssets, url: (path: string
   if (env.wind) def.wind = { speed: env.wind.speed, direction: env.wind.directionDeg, turbulence: env.wind.turbulence ?? 1, gusts: env.wind.gusts ?? 2 };
   if (paths.size) def.paths = [...paths.values()].map((p) => ({ id: p.id, points: p.points.map(v3), speed: p.speedMs, mode: p.mode ?? 'loop', delay: p.delayS ?? 0 }));
   if (actors.length) def.actors = actors;
+  const mp = doc.mission && paths.get(doc.mission.path);
+  if (doc.mission && mp) def.mission = { points: mp.points.map(v3), end: doc.mission.end ?? 'rtl', takeoffAltM: doc.mission.takeoffAltM ?? 30, ...(doc.mission.speedMs ? { speedMs: doc.mission.speedMs } : {}) };
   if (doc.scenarios?.length) def.scenarios = doc.scenarios.map((p) => ({ path: p, url: url(p) }));
   return def;
 }

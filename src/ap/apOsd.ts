@@ -53,7 +53,7 @@ export function apOsd(tel: ApTelemetry, x: ApOsdExtra, grid: { cols: number; row
   put(rows - 2, 1, `SAT ${tel.sats}${tel.gpsFix >= 3 ? '' : ' NOFIX'}`);
   if (Number.isFinite(x.homeDistM)) center(rows - 2, `HOME ${Math.round(x.homeDistM)}M`);
   right(rows - 2, `HDG ${String(Math.round(tel.headingDeg)).padStart(3, '0')}`);
-  if (tel.wpTotal > 1 && (tel.modeName === 'AUTO' || tel.modeName === 'GUIDED')) center(rows - 3, `WP ${tel.wpSeq}/${tel.wpTotal - 1} ${Math.round(tel.wpDist)}M`);
+  if (tel.wpTotal > 0 && (tel.modeName === 'AUTO' || tel.modeName === 'GUIDED')) center(rows - 3, `WP ${tel.wpSeq}/${tel.wpTotal} ${Math.round(tel.wpDist)}M`);
   // the newest message for 4 s; a plane in the hand says how to throw it
   const msg = tel.texts[tel.texts.length - 1];
   if (x.inHand) center(mid + 3, tel.armed ? 'THROTTLE UP TO THROW' : 'ARM, THEN THROTTLE UP TO THROW');

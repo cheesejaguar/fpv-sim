@@ -922,7 +922,7 @@
     "lights": {
       "type": "array",
       "maxItems": 8,
-      "description": "Point lights (interior fixtures, floodlights), at most 8. The illuminance at distance d is about intensity / d² (the sun is about 4.5).",
+      "description": "Point lights (interior fixtures, floodlights), at most 8. The illuminance at distance d is about intensity / d\u00b2 (the sun is about 4.5).",
       "items": {
         "type": "object",
         "properties": {
@@ -1827,6 +1827,41 @@
             }
           }
         ]
+      }
+    },
+    "mission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "description": "The autopilot mission for ArduPilot builds (planes, quads set to ArduPilot): take off, fly one of the paths' points as waypoints (heights above the spawn's ground), then return home, land at the last point, or fly the path again. AUX4 (CH8) switches to it (AUTO).",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+          "description": "Id of the path in paths to fly."
+        },
+        "end": {
+          "enum": [
+            "rtl",
+            "land",
+            "loop"
+          ],
+          "description": "After the last waypoint: rtl (default) returns home, land lands there, loop flies the path again."
+        },
+        "takeoffAltM": {
+          "type": "number",
+          "minimum": 2,
+          "maximum": 500,
+          "description": "Takeoff altitude above the spawn (m, default 30)."
+        },
+        "speedMs": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "description": "Speed to fly the mission at (m/s; default: the vehicle's own cruise)."
+        }
       }
     },
     "scenarios": {
