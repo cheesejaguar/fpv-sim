@@ -73,12 +73,18 @@ function finish() {
   process.exit(heard.heartbeat > 0 ? 0 : 1);
 }
 
-Module.FS.mkdirTree('/sitl');
+Module.FS.mkdirTree('/sitl/scripts');
 Module.FS.chdir('/sitl');
+// a Lua script (ArduPilot runs it in its own thread): proves scripting and the file system work
+const lua = process.env.AP_LUA !== '0';
+if (lua) {
+  Module.FS.writeFile('/sitl/fpv.parm', 'SCR_ENABLE 1\nSCR_HEAP_SIZE 200000\n');
+  Module.FS.writeFile('/sitl/scripts/hello.lua', 'local n = 0\nfunction update()\n  n = n + 1\n  gcs:send_text(6, string.format("fpv-sim lua %d", n))\n  return update, 2000\nend\nreturn update, 2000\n');
+}
 Module.callMain([
   '--model', 'JSON', '--speedup', process.env.AP_SPEEDUP ?? '100', '-w',
   '--home', '-35.363261,149.165230,584,353',
-  ...(vehicle === 'plane' ? ['--defaults', '@ROMFS/models/plane.parm'] : []),
+  '--defaults', [...(vehicle === 'plane' ? ['@ROMFS/models/plane.parm'] : []), ...(lua ? ['/sitl/fpv.parm'] : [])].join(',') || '/dev/null',
   '--serial0', 'sim:js:0', '--serial1', 'none', '--serial2', 'none',
   '--serial5', 'none', '--serial6', 'none', '--serial7', 'none', '--serial8', 'none',
 ]);
