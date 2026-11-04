@@ -81,11 +81,12 @@ export function copterParams(b: DroneBuild): Record<string, number> {
     ATC_RAT_RLL_P: r4(rollP), ATC_RAT_RLL_I: r4(rollP), ATC_RAT_RLL_D: r4(rollP * 0.025), ATC_RAT_RLL_FLTD: 40, ATC_RAT_RLL_FLTT: 40,
     ATC_RAT_PIT_P: r4(pitchP), ATC_RAT_PIT_I: r4(pitchP), ATC_RAT_PIT_D: r4(pitchP * 0.025), ATC_RAT_PIT_FLTD: 40, ATC_RAT_PIT_FLTT: 40,
     ATC_RAT_YAW_P: 0.3, ATC_RAT_YAW_I: 0.03, ATC_RAT_YAW_FLTE: 5,
-    ATC_ACCEL_R_MAX: 360000, ATC_ACCEL_P_MAX: 360000, ATC_ACCEL_Y_MAX: 120000,
-    ACRO_RP_RATE: 670, ACRO_Y_RATE: 400, ANGLE_MAX: 5500,
+    // (4.7 names and units: degrees, deg/s^2, metres, m/s)
+    ATC_ACC_R_MAX: 3600, ATC_ACC_P_MAX: 3600, ATC_ACC_Y_MAX: 1200,
+    ACRO_RP_RATE: 670, ACRO_Y_RATE: 400, ATC_ANGLE_MAX: 55,
     // modes: AUX2 low ACRO, mid STABILIZE, high ALT_HOLD
     FLTMODE1: 1, FLTMODE2: 1, FLTMODE3: 0, FLTMODE4: 0, FLTMODE5: 2, FLTMODE6: 2,
-    RTL_ALT: 3000, WPNAV_SPEED: 1200, FS_THR_ENABLE: 1,
+    RTL_ALT_M: 30, WP_SPD: 12, FS_THR_ENABLE: 1,
   };
 }
 

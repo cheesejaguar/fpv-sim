@@ -101,7 +101,7 @@ export function apBuilderSection(spec: DroneSpec, build: DroneBuild | null, chan
   const own = spec.apParams ?? {};
   const ownText = Object.entries(own).map(([k, v]) => `${k} ${fmt(v)}`).join('\n');
   const status = el('div', { class: 'note' });
-  const ta = el('textarea', { class: 'ap-params', rows: 8, spellcheck: false, placeholder: 'One per line, e.g.\nRTL_ALTITUDE 60\nTRIM_ARSPD_CM 1600' }, ownText) as HTMLTextAreaElement;
+  const ta = el('textarea', { class: 'ap-params', rows: 8, spellcheck: false, placeholder: 'One per line, e.g.\nRTL_ALTITUDE 60\nAIRSPEED_CRUISE 16' }, ownText) as HTMLTextAreaElement;
   ta.addEventListener('input', () => {
     const { params, bad } = parseParamText(ta.value);
     spec.apParams = params;

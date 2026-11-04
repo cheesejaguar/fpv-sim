@@ -9,6 +9,7 @@ import { Betaflight } from '../bf/bfModule';
 import { decodeTable } from '../builder/bemtTables';
 import { setPropTableSource } from '../builder/derive';
 import { EnvOptions, FpvEnv } from './env';
+import { apModuleFile, nodeSpawn } from '../ap/apNode';
 import { registerMapFromDisk } from './mapFiles';
 
 export const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -75,5 +76,6 @@ export async function createNodeEnv(o: string | NodeEnvOptions = {}): Promise<Fp
   const root = opts.root ?? REPO_ROOT;
   installNodeHost(root);
   for (const path of opts.maps ?? []) opts.onMap?.({ ...(await registerMapFromDisk(path)), path });
-  return new FpvEnv({ firmware: await nodeFirmware(root) });
+  // ArduPilot builds run its firmware (public/ap) in a worker thread
+  return new FpvEnv({ firmware: await nodeFirmware(root), ardupilot: { spawn: nodeSpawn, moduleUrl: (v) => apModuleFile(v), waitMs: 2000 } });
 }

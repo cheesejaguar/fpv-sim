@@ -8,6 +8,7 @@ import type { V3 } from '../sim/math';
 import type { SimSettings, Telemetry } from '../worker/shared';
 import type { AppCtx } from './context';
 import type { LiveBackend } from './liveApi';
+import type { ApOp } from '../worker/shared';
 
 /** What the live backend may do to the app (main.ts provides it). */
 export interface LiveDeps {
@@ -29,6 +30,9 @@ export interface LiveDeps {
   setOps(config: OpsConfig | null): void;
   injectFaults(faults: FaultSpec[]): void;
   dropPayload(): void;
+  /** ArduPilot builds: a request to the simulator's ground station, and raw MAVLink into its pass-through port */
+  apRequest(op: ApOp): Promise<{ ok: boolean; message: string }>;
+  mavlinkWrite(bytes: Uint8Array): void;
 }
 
 /** Only relays on this computer: a page link must not send the sim's controls anywhere else. */
@@ -54,6 +58,8 @@ export class ApiHost {
   onTelemetry(tel: Telemetry) { this.loaded?.onTelemetry(tel); }
   onLog(text: string) { this.loaded?.onLog(text); }
   onOps(e: OpsEvent) { this.loaded?.onOps(e); }
+  /** ArduPilot's pass-through MAVLink, from the worker */
+  onMavlink(bytes: Uint8Array) { this.loaded?.onMavlink(bytes); }
   /** the pilot respawned / changed map: an API episode in progress starts over */
   onRespawn() { this.loaded?.onRespawn(); }
   /** the live task in progress (training drills), if the backend is loaded */
@@ -78,6 +84,8 @@ export class ApiHost {
       /** listen to events ('state' needs subscribe(hz) first); returns an unsubscribe function */
       on: async (event: string, cb: (e: unknown) => void) => (await this.backend()).listen(event, cb),
       subscribe: (hz = 60) => call('subscribe', { stream: 'state', hz }),
+      /** ArduPilot builds: parameters / a mission / mode / arming / a MAV_CMD (see docs/ARDUPILOT.md) */
+      ap: (op: Record<string, unknown>) => call('ap', { op }),
       unsubscribe: () => call('unsubscribe', { stream: 'state' }),
       /** connect to a local relay (npm run api -- --live) */
       connect: async (url = 'ws://127.0.0.1:8765') => (await this.backend()).connect(url),

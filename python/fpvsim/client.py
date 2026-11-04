@@ -76,12 +76,15 @@ class Client:
     # -- connection -------------------------------------------------------------------------------
 
     @classmethod
-    def launch(cls, realtime: bool = False, scenario: Any = None, node: str = "node", root: Path | str | None = None) -> "Client":
-        """Start a private headless simulation (node scripts/fpv-api.mjs --stdio) and connect to it."""
+    def launch(cls, realtime: bool = False, scenario: Any = None, node: str = "node", root: Path | str | None = None, mavlink_port: int | None = None) -> "Client":
+        """Start a private headless simulation (node scripts/fpv-api.mjs --stdio) and connect to it.
+        mavlink_port: also serve ArduPilot's MAVLink on that TCP port (ArduPilot builds)."""
         root = Path(root) if root else REPO_ROOT
         cmd = [node, str(root / "scripts" / "fpv-api.mjs"), "--stdio"]
         if realtime:
             cmd.append("--realtime")
+        if mavlink_port is not None:
+            cmd += ["--mavlink", str(mavlink_port)]
         if scenario is not None:
             import tempfile
             f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
@@ -285,3 +288,42 @@ class Client:
         """Headless: a planning map of the RC link margin (dB), jammed share of hops and GNSS
         satellites over a square, from the pilot's position with the current emitters."""
         return self.call("linkmap", centre=list(centre) if centre is not None else None, halfM=half_m, n=n, heightM=height_m)["map"]
+
+    # -- ArduPilot builds (planes, quads set to ArduPilot; docs/ARDUPILOT.md) ----------------------
+
+    def ap(self, op: dict) -> dict:
+        """A request to the simulator's own ground station: {"kind": "params" | "mission" | "mode" |
+        "arm" | "command", ...}."""
+        return self.call("ap", op=op)
+
+    def set_params(self, **params: float) -> dict:
+        """Set ArduPilot parameters, e.g. set_params(AIRSPEED_CRUISE=17, RTL_ALTITUDE=60)."""
+        return self.ap({"kind": "params", "params": params})
+
+    def set_mode(self, mode: int) -> dict:
+        """ArduPilot's flight mode by number (custom_mode): Plane 0 MANUAL, 5 FBWA, 10 AUTO, 11 RTL,
+        12 LOITER, 15 GUIDED; Copter 0 STABILIZE, 2 ALT_HOLD, 3 AUTO, 4 GUIDED, 5 LOITER, 6 RTL."""
+        return self.ap({"kind": "mode", "mode": mode})
+
+    def arm(self, on: bool = True, force: bool = False) -> dict:
+        """Arm or disarm through MAVLink (force: skip the checks / disarm in the air)."""
+        return self.ap({"kind": "arm", "on": on, "force": force})
+
+    def upload_mission(self, items: Iterable[dict]) -> dict:
+        """Upload a mission: items of {"command": MAV_CMD, "lat", "lon", "alt" (m above home),
+        "params": [4 numbers]?, "frame"?}; ArduPilot's home item 0 is added for you. Headless: the
+        simulation is stepped until ArduPilot accepts it."""
+        return self.ap({"kind": "mission", "items": list(items)})
+
+    def mavlink(self, data: bytes) -> None:
+        """Raw MAVLink bytes into ArduPilot's pass-through port (SERIAL1)."""
+        import base64
+        self.call("mavlink", data=base64.b64encode(data).decode("ascii"))
+
+    def subscribe_mavlink(self, handler: Callable[[bytes], None]) -> None:
+        """Receive ArduPilot's pass-through MAVLink as it comes (raw bytes: feed a pymavlink parser).
+        For a full ground station (pymavlink, MAVProxy, QGroundControl), start the server with
+        --mavlink 5760 instead and connect to tcp:127.0.0.1:5760."""
+        import base64
+        self.on("mavlink", lambda e: handler(base64.b64decode(e["data"])))
+        self.call("subscribe", stream="mavlink")

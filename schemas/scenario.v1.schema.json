@@ -138,6 +138,35 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 4294967295
+            },
+            "autopilot": {
+              "enum": [
+                "betaflight",
+                "ardupilot"
+              ],
+              "description": "The flight controller's firmware: Betaflight (quads' default) or ArduPilot (ArduCopter for a quad; planes always fly ArduPlane)."
+            },
+            "apParams": {
+              "type": "object",
+              "description": "ArduPilot parameters over the build's own (NAME: value).",
+              "propertyNames": {
+                "pattern": "^[A-Z][A-Z0-9_]{0,15}$"
+              },
+              "additionalProperties": {
+                "type": "number"
+              }
+            },
+            "apScripts": {
+              "type": "object",
+              "description": "ArduPilot Lua scripts by file name (run from APM/scripts).",
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9_-]{1,40}\\.lua$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 65536
+              },
+              "maxProperties": 16
             }
           },
           "additionalProperties": false

@@ -151,6 +151,7 @@ bridge.onMessage = (m) => {
     case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
     case 'opsEvent': ctx.log(opsEventText(m.e)); apiHost.onOps(m.e); break;
     case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
+    case 'mavlink': apiHost.onMavlink(m.data); break;
     case 'detect': if (m.on) ctx.log(`Detected by ${m.name}`); break; // (the HUD alert reads the shared flags)
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
     case 'runState': ctx.run = { active: m.active, seed: m.seed ?? ctx.run.seed, reason: m.reason }; if (!m.active && m.reason) ctx.log(`Reproducible run ended: ${m.reason}`); break;
@@ -183,6 +184,8 @@ const apiHost = new ApiHost({
   setOps: (config) => bridge.setOps(config),
   injectFaults: (faults) => bridge.opsFaults(faults),
   dropPayload: () => bridge.opsDrop(),
+  apRequest: (op) => bridge.apRequest(op),
+  mavlinkWrite: (bytes) => bridge.send({ type: 'mavlink', data: bytes }),
   hardwareCli: async (keepOsdLayout, propsOut) => (await import('./bf/defaults')).simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
   fly: () => { if (ctx.menuOpen) gameMenu.resume(); },
   pause: () => { if (!ctx.menuOpen) { gameMenu.inFlight = true; gameMenu.open('pause'); } },

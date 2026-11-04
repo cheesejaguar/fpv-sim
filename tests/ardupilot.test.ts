@@ -142,3 +142,86 @@ describe.skipIf(!HAVE)('ArduPilot in the loop', () => {
     } finally { core.stopArduPilot(); }
   }, 180_000);
 });
+
+describe.skipIf(!HAVE)('ArduPilot through the API', () => {
+  test('headless: a plane scenario boots ArduPlane; parameters over "ap"; raw MAVLink over the pass-through port', async () => {
+    const { createNodeEnv } = await import('../src/headless/node');
+    const { MavlinkParser, encode, mavChars, mavString } = await import('../src/sitl/mavlink');
+    const env = await createNodeEnv();
+    try {
+      const r = await env.reset({ scenario: { format: 'fpvsim-scenario', version: 1, map: { id: 'field' }, drone: { preset: 'Plane: AtomRC Penguin', spec: { apParams: { RTL_AUTOLAND: 0 } } }, sim: { physicsHz: 2000, wind: { speed: 0 } } }, seed: 3 });
+      expect(r.obs.ap?.inHand).toBe(true);
+      expect(r.obs.ap?.gpsFix).toBeGreaterThanOrEqual(3);
+      expect(r.obs.ap?.mode).toBe('ACRO'); // the scenario's start mode, acro by default: AUX2 low, ArduPlane's ACRO
+      // a parameter over the simulator's ground station
+      expect((await env.apRequest({ kind: 'params', params: { AIRSPEED_CRUISE: 17 } })).ok).toBe(true);
+      // a ground station of its own on the pass-through port: ask for the parameter, read the answer
+      const parser = new MavlinkParser();
+      expect(env.mavlinkWrite(encode({ name: 'HEARTBEAT', fields: { type: 6, autopilot: 8 } }, { sysid: 254, compid: 190, seq: 0 }))).toBe(true);
+      env.mavlinkWrite(encode({ name: 'PARAM_REQUEST_READ', fields: { target_system: 1, target_component: 1, param_id: mavChars('AIRSPEED_CRUISE', 16), param_index: -1 } }, { sysid: 254, compid: 190, seq: 1 }));
+      let value: number | null = null, heartbeats = 0;
+      for (let i = 0; i < 300 && value === null; i++) {
+        env.step({}, 20);
+        for (const m of parser.push(env.mavlinkRead())) {
+          if (m.name === 'HEARTBEAT') heartbeats++;
+          if (m.name === 'PARAM_VALUE' && mavString(m.fields.param_id) === 'AIRSPEED_CRUISE') value = m.fields.param_value;
+        }
+      }
+      expect(heartbeats).toBeGreaterThan(0);
+      expect(value).toBe(17);
+      expect(() => env.cli(['status'])).toThrow(/ArduPilot/);
+    } finally { env.core?.stopArduPilot(); }
+  }, 240_000);
+});
+
+describe.skipIf(!HAVE)('ArduPilot parameters', () => {
+  // ArduPilot ignores a parameter it doesn't know (4.7 renamed several): every one the builder sets
+  // must exist in the firmware and hold the value given
+  test.each([['plane', PLANE], ['copter', { ...DEFAULT_SPEC, autopilot: 'ardupilot' as const }]])('every starting parameter of the %s build exists in the firmware', async (_v, spec) => {
+    const { core, ap, run, boot } = rig(spec as DroneSpec, 2000, OPEN());
+    try {
+      await boot();
+      run(3);
+      const { apParams } = await import('../src/ap/apConfig');
+      const want = apParams(core.build);
+      const ids = Object.keys(want);
+      for (let i = 0; i < ids.length; i += 10) { for (const id of ids.slice(i, i + 10)) ap.hub.requestParam(id); run(0.3); }
+      run(1);
+      const missing = ids.filter((id) => !ap.hub.paramValues.has(id));
+      expect(missing, `not in the firmware: ${missing.join(', ')}`).toEqual([]);
+      const wrong = ids.filter((id) => Math.abs(ap.hub.paramValues.get(id)! - want[id]) > 1e-3 * Math.max(1, Math.abs(want[id])));
+      expect(wrong.map((id) => `${id} ${ap.hub.paramValues.get(id)} != ${want[id]}`)).toEqual([]);
+    } finally { core.stopArduPilot(); }
+  }, 240_000);
+});
+
+describe.skipIf(!HAVE)('ArduPilot over the API server', () => {
+  test('npm run api -- --mavlink: a ground station on the TCP MAVLink port talks to the simulation\'s ArduPilot', async () => {
+    const { serveHeadless } = await import('../src/api/nodeServer');
+    const { createConnection } = await import('node:net');
+    const { MavlinkParser, encode, mavChars, mavString } = await import('../src/sitl/mavlink');
+    const srv = await serveHeadless({ clock: 'lockstep', app: 'test', port: 0, mavlinkPort: 0 });
+    const api = createConnection(srv.port, '127.0.0.1');
+    const gcs = createConnection(srv.mavlinkPort!, '127.0.0.1');
+    try {
+      let buf = '', id = 0;
+      const waiting = new Map<number, (m: any) => void>();
+      api.on('data', (d) => { buf += d.toString(); let i: number; while ((i = buf.indexOf('\n')) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (waiting.has(m.id)) { waiting.get(m.id)!(m); waiting.delete(m.id); } } });
+      const call = (cmd: string, p: Record<string, unknown> = {}) => new Promise<any>((res) => { const k = ++id; waiting.set(k, res); api.write(JSON.stringify({ id: k, cmd, ...p }) + '\n'); });
+      const parser = new MavlinkParser();
+      let value: number | null = null, hb = 0;
+      gcs.on('data', (d: Buffer) => { for (const m of parser.push(new Uint8Array(d))) { if (m.name === 'HEARTBEAT') hb++; if (m.name === 'PARAM_VALUE' && mavString(m.fields.param_id) === 'SCALING_SPEED') value = m.fields.param_value; } });
+      const r = await call('reset', { scenario: { format: 'fpvsim-scenario', version: 1, map: { id: 'field' }, drone: { preset: 'Plane: HEEWING T1 Ranger' }, sim: { physicsHz: 2000 } }, seed: 1 });
+      expect(r.ok, r.error).toBe(true);
+      expect((await call('hello')).firmware).toMatch(/ArduPlane/);
+      gcs.write(encode({ name: 'PARAM_REQUEST_READ', fields: { target_system: 1, target_component: 1, param_id: mavChars('SCALING_SPEED', 16), param_index: -1 } }, { sysid: 255, compid: 190, seq: 0 }));
+      for (let i = 0; i < 40 && value === null; i++) { await call('step', { steps: 25 }); await new Promise((res) => setTimeout(res, 5)); }
+      expect(hb).toBeGreaterThan(0);
+      expect(value).toBe(15); // the T1's cruise speed, 55 km/h
+      // and the JSON way: a mode change through the simulator's ground station
+      expect((await call('ap', { op: { kind: 'mode', mode: 5 } })).ok).toBe(true);
+      for (let i = 0; i < 20; i++) await call('step', { steps: 25 });
+      expect((await call('state')).obs.ap.mode).toBe('FBWA');
+    } finally { api.destroy(); gcs.destroy(); await srv.close(); }
+  }, 240_000);
+});

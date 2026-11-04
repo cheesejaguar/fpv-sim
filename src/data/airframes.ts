@@ -60,8 +60,8 @@ export const PLANE_PARAMS_COMMON: Record<string, number> = {
   ARMING_SKIPCHK: -1, ARMING_RUDDER: 2, RC_OPTIONS: 0,
   THR_MIN: 0, THR_MAX: 100, THR_SLEWRATE: 100,
   // hand launch in AUTO / TAKEOFF: the motor starts 0.2 s after the throw is felt, at full power fast
-  // (a heavy wing leaves the hand near its stall speed)
-  TKOFF_THR_MINACC: 10, TKOFF_THR_DELAY: 2, TKOFF_THR_MINSPD: 0, TKOFF_THR_SLEW: 200,
+  // (127 %/s, the most it takes: a heavy wing leaves the hand near its stall speed)
+  TKOFF_THR_MINACC: 10, TKOFF_THR_DELAY: 2, TKOFF_THR_MINSPD: 0, TKOFF_THR_SLEW: 127,
   // small foam airframes answer faster than ArduPlane's 0.5 s default attitude time constant assumes
   RLL2SRV_TCONST: 0.35, PTCH2SRV_TCONST: 0.4,
   ARSPD_USE: 1, AIRSPEED_MIN: 10, AIRSPEED_MAX: 30,

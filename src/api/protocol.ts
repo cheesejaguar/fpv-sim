@@ -16,6 +16,7 @@ import type { Action, Observation, StepResult } from '../headless/env';
 import type { TaskMetrics } from '../scenario/tasks';
 import type { OpsConfig, OpsEvent } from '../worker/ops';
 import type { FaultSpec } from '../sim/faults';
+import type { ApOp } from '../worker/shared';
 import { checkFaults } from '../sim/faults';
 
 export const API_PROTOCOL = 'fpvsim-api';
@@ -43,9 +44,9 @@ export interface Commands {
   release: Record<string, never>;
   /** the newest state */
   state: { vector?: boolean };
-  /** stream events: "state" at hz (real time), "gate", "impact", "log", "episode" */
-  subscribe: { stream: 'state'; hz?: number };
-  unsubscribe: { stream: 'state' };
+  /** stream events: "state" at hz (real time), "gate", "impact", "log", "episode"; "mavlink": ArduPilot's pass-through bytes */
+  subscribe: { stream: 'state' | 'mavlink'; hz?: number };
+  unsubscribe: { stream: 'state' | 'mavlink' };
   /** Betaflight CLI lines (disarmed); returns the output */
   cli: { lines: string[] };
   /** back to the start, repaired (fullBattery: a fresh pack too) */
@@ -69,6 +70,13 @@ export interface Commands {
   ops: { config?: OpsConfig | null };
   /** headless: a planning map of the RC link margin and GNSS satellites over a square around a point, with the current emitters */
   linkmap: { centre?: [number, number]; halfM?: number; n?: number; heightM?: number };
+  /**
+   * ArduPilot builds: parameters, a mission, the flight mode, arming or any MAV_CMD through the
+   * simulator's ground station (docs/ARDUPILOT.md)
+   */
+  ap: { op: ApOp };
+  /** ArduPilot builds: raw MAVLink (base64) into its pass-through port; subscribe to stream "mavlink" for what it sends */
+  mavlink: { data: string };
   bye: Record<string, never>;
 }
 
@@ -102,9 +110,11 @@ export type ApiEvent =
   | { event: 'frame'; labels: unknown; classes: readonly string[]; rgb?: string; received?: string; depth?: string; segmentation?: string; instance?: string }
   /** the operational layer: a fault on / off, the payload released / landed, the fibre broke, the GNSS state changed */
   | ({ event: 'ops' } & OpsEvent)
+  /** ArduPilot's MAVLink from its pass-through port (base64), after subscribe "mavlink" */
+  | { event: 'mavlink'; data: string }
   | { event: 'bye'; reason?: string };
 
-export const COMMANDS: readonly Command[] = ['hello', 'reset', 'step', 'act', 'release', 'state', 'subscribe', 'unsubscribe', 'cli', 'respawn', 'teleport', 'pause', 'resume', 'metrics', 'capture', 'record', 'fault', 'drop', 'ops', 'linkmap', 'bye'];
+export const COMMANDS: readonly Command[] = ['hello', 'reset', 'step', 'act', 'release', 'state', 'subscribe', 'unsubscribe', 'cli', 'respawn', 'teleport', 'pause', 'resume', 'metrics', 'capture', 'record', 'fault', 'drop', 'ops', 'linkmap', 'ap', 'mavlink', 'bye'];
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const finite = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
@@ -121,6 +131,37 @@ export function checkAction(a: unknown): string[] {
     else out.push(`action.${k}: unknown key`);
   }
   return out;
+}
+
+/** An ArduPilot request's problem, or null. */
+export function checkApOp(op: unknown): string | null {
+  if (!isObj(op)) return 'op: expected an object with "kind"';
+  switch (op.kind) {
+    case 'params':
+      if (!isObj(op.params) || !Object.entries(op.params).every(([k, v]) => /^[A-Z][A-Z0-9_]{0,15}$/.test(k) && finite(v))) return 'op.params: { NAME: number } (ArduPilot parameter names)';
+      return null;
+    case 'mission':
+      if (!(Array.isArray(op.items) && op.items.length <= 700 && op.items.every((it) => isObj(it) && Number.isInteger(it.command) && finite(it.lat) && finite(it.lon) && finite(it.alt) && (it.params === undefined || (Array.isArray(it.params) && it.params.length === 4 && it.params.every((x) => typeof x === 'number'))) && (it.frame === undefined || Number.isInteger(it.frame)))))
+        return 'op.items: up to 700 of { command, lat, lon, alt, params?: [4 numbers], frame? }';
+      return null;
+    case 'mode': return Number.isInteger(op.mode) && (op.mode as number) >= 0 ? null : 'op.mode: ArduPilot\'s mode number (custom_mode)';
+    case 'arm': return typeof op.on === 'boolean' && (op.force === undefined || typeof op.force === 'boolean') ? null : 'op.on: true or false (op.force optional)';
+    case 'command': return Number.isInteger(op.command) && Array.isArray(op.params) && op.params.length <= 7 && op.params.every(finite) ? null : 'op: { command: MAV_CMD number, params: up to 7 numbers }';
+  }
+  return 'op.kind: params, mission, mode, arm or command';
+}
+
+/** Base64 to bytes and back (no Node or browser globals needed). */
+export function fromBase64(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+export function toBase64(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
 }
 
 /** Parse one incoming message: a request, or the reason it isn't one. */
@@ -140,7 +181,7 @@ export function parseRequest(text: string): { req: Request; error?: undefined } 
     }
     case 'act': { const e = checkAction(m.action); if (e.length) return bad(e.join('; ')); break; }
     case 'subscribe': case 'unsubscribe':
-      if (m.stream !== 'state') return bad('stream: "state"');
+      if (m.stream !== 'state' && m.stream !== 'mavlink') return bad('stream: "state" or "mavlink"');
       if (m.hz !== undefined && !(finite(m.hz) && (m.hz as number) > 0 && (m.hz as number) <= 1000)) return bad('hz: 0 .. 1000');
       break;
     case 'cli': if (!(Array.isArray(m.lines) && m.lines.length <= 2000 && m.lines.every((l) => typeof l === 'string' && l.length < 400))) return bad('lines: a list of CLI lines'); break;
@@ -156,6 +197,8 @@ export function parseRequest(text: string): { req: Request; error?: undefined } 
       break;
     case 'fault': { const e = checkFaults(m.faults); if (e.length) return bad(e.join('; ')); break; }
     case 'ops': if (m.config !== undefined && m.config !== null && !isObj(m.config)) return bad('config: an ops configuration or null'); break;
+    case 'ap': { const e = checkApOp(m.op); if (e) return bad(e); break; }
+    case 'mavlink': if (!(typeof m.data === 'string' && m.data.length <= 65536 && /^[A-Za-z0-9+/]*={0,2}$/.test(m.data))) return bad('data: base64 MAVLink bytes (48 kB at most)'); break;
     case 'linkmap':
       if (m.n !== undefined && !(Number.isInteger(m.n) && (m.n as number) >= 2 && (m.n as number) <= 101)) return bad('n: 2 .. 101');
       if (m.halfM !== undefined && !(finite(m.halfM) && (m.halfM as number) > 0)) return bad('halfM: metres > 0');

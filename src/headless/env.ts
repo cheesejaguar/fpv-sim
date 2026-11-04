@@ -15,7 +15,8 @@ import { subSeed, V3 } from '../sim/math';
 import { Action, applyAction, AUX, MODE_US, Observation, ObservedActors, probeDirections, rot, rotInv } from '../api/types';
 import { resolveEpisode, Episode, MapFacts, mapFacts, Scenario, defaultScenario, parseScenario } from '../scenario/scenario';
 import { TaskMetrics, TaskRunner } from '../scenario/tasks';
-import { FlightCore } from '../worker/flightCore';
+import { FlightCore, FlightCoreOptions } from '../worker/flightCore';
+import type { ApOp } from '../worker/shared';
 import { OpsConfig, OpsEvent } from '../worker/ops';
 import type { FaultSpec } from '../sim/faults';
 
@@ -36,6 +37,8 @@ export type EnvEvent = { type: 'gate'; gate: number; t: number } | { type: 'impa
 export interface EnvOptions {
   /** a fresh, un-booted flight controller (each reset boots a new one: no state carries over) */
   firmware: () => Promise<Betaflight>;
+  /** ArduPilot's thread (src/ap/apNode.ts in Node): needed for builds that fly ArduPilot */
+  ardupilot?: FlightCoreOptions['ardupilot'];
 }
 
 /** The derived numbers of the episode's build (the drone builder's panel). */
@@ -123,7 +126,7 @@ export class FpvEnv {
       gate: (gate, t) => { this.events.push({ type: 'gate', gate, t: t - this.t0 }); this.task?.onGate(gate, t - this.t0); },
       // (actor time is episode time: the actors start with the episode)
       detect: (e) => this.events.push({ type: 'detect', detector: e.id, on: e.on, t: e.t }),
-    }, { seed });
+    }, { seed, ardupilot: this.opts.ardupilot });
     core.gpsEpochMs = GPS_EPOCH_MS;
     core.settings = ep.settings;
     core.spec = spec;
@@ -132,31 +135,10 @@ export class FpvEnv {
     core.setMap(map);
     core.buildQuad();
 
-    // boot as the worker does on a first boot: 0.5 s on the pad, the defaults over the CLI (plant
-    // held), level accelerometer calibration, then the scenario's own configuration
-    const bf = core.bf = await this.opts.firmware();
     this.rc.fill(1500); this.rc[2] = 1000; this.rc[AUX.arm] = 1000; this.rc[AUX.mode] = MODE_US[ep.start.mode]; this.rc[AUX.turtle] = 1000; this.rc[AUX.beeper] = 1000;
-    core.powerOnFirmware();
-    const dt = 1 / ep.settings.physicsHz;
-    for (let i = 0; i < Math.round(0.5 / dt); i++) core.physicsStep(dt);
-    const errs = cliErr(core.cliBatch(defaultCli(core.build)));
-    if (errs.length) throw new Error(`Betaflight rejected the simulator defaults: ${errs.join('; ')}`);
-    if (!core.calibrateAccLevel()) throw new Error('accelerometer calibration did not finish');
     const cliErrors: string[] = [];
-    if (plan) {
-      const keepOsd = plan.apply.some((l) => /^set osd_\w+_pos\b/.test(l));
-      cliErrors.push(...cliErr(core.cliBatch([...plan.apply, ...simHardwareCli(core.build, { keepOsdLayout: keepOsd, propsOut: plan.propsOut }), 'save'])));
-      // (`save` reboots the FC: its gyro calibrates again below)
-    }
-    core.fwRunning = true;
-    // Betaflight's boot grace and gyro calibration, with the quad still on the pad, disarmed
-    const bootDeadline = core.simT + 8;
-    while (bf.armingDisableFlags() !== 0 && core.simT < bootDeadline) for (let i = 0; i < 80; i++) core.physicsStep(dt);
-    if (ep.start.armed) {
-      this.rc[AUX.arm] = 1900;
-      for (let i = 0; i < Math.round(0.3 / dt) && !core.armed; i++) core.physicsStep(dt);
-      if (!core.armed) throw new Error(`could not arm: ${armingFlagNames(bf.armingDisableFlags()).join(', ') || 'unknown reason'}`);
-    }
+    if (core.apVehicle) await this.bootArduPilot(ep.start.armed, plan !== null);
+    else await this.bootBetaflight(ep.start.armed, plan, cliErrors);
     const bootS = core.simT;
     // the start pose (after the boot: the quad calibrates on the pad, then is put where it starts)
     const sp = core.map.spawn;
@@ -181,6 +163,67 @@ export class FpvEnv {
     this.ended = false;
     this.events = [];
     return { obs: this.observe(), info: { seed, episode: this.episode, bootS, cliErrors, drone: droneFacts(core.build) } };
+  }
+
+  /**
+   * Betaflight's boot as the worker does it on a first boot: 0.5 s on the pad, the defaults over the
+   * CLI (plant held), level accelerometer calibration, the scenario's configuration, the boot grace;
+   * then armed if the scenario says so.
+   */
+  private async bootBetaflight(armed: boolean, plan: ReturnType<typeof planDiffImport> | null, cliErrors: string[]) {
+    const core = this.core, dt = 1 / core.settings.physicsHz;
+    const bf = core.bf = await this.opts.firmware();
+    core.powerOnFirmware();
+    for (let i = 0; i < Math.round(0.5 / dt); i++) core.physicsStep(dt);
+    const errs = cliErr(core.cliBatch(defaultCli(core.build)));
+    if (errs.length) throw new Error(`Betaflight rejected the simulator defaults: ${errs.join('; ')}`);
+    if (!core.calibrateAccLevel()) throw new Error('accelerometer calibration did not finish');
+    if (plan) {
+      const keepOsd = plan.apply.some((l) => /^set osd_\w+_pos\b/.test(l));
+      cliErrors.push(...cliErr(core.cliBatch([...plan.apply, ...simHardwareCli(core.build, { keepOsdLayout: keepOsd, propsOut: plan.propsOut }), 'save'])));
+      // (`save` reboots the FC: its gyro calibrates again below)
+    }
+    core.fwRunning = true;
+    // Betaflight's boot grace and gyro calibration, with the quad still on the pad, disarmed
+    const bootDeadline = core.simT + 8;
+    while (bf.armingDisableFlags() !== 0 && core.simT < bootDeadline) for (let i = 0; i < 80; i++) core.physicsStep(dt);
+    if (armed) {
+      this.rc[AUX.arm] = 1900;
+      for (let i = 0; i < Math.round(0.3 / dt) && !core.armed; i++) core.physicsStep(dt);
+      if (!core.armed) throw new Error(`could not arm: ${armingFlagNames(bf.armingDisableFlags()).join(', ') || 'unknown reason'}`);
+    }
+  }
+
+  /**
+   * ArduPilot's boot: its module and threads load (wall time), then it boots on the pad or in the hand
+   * (sim time) until it has a GPS fix and its EKF flies on GPS (at most 60 s), as a pilot waits for
+   * it; then armed if the scenario says so (AUX1).
+   */
+  private async bootArduPilot(armed: boolean, hadDiff: boolean) {
+    const core = this.core, dt = 1 / core.settings.physicsHz;
+    if (hadDiff) throw new Error('scenario drone.diff is Betaflight configuration: an ArduPilot build takes drone.apParams');
+    const ap = core.startArduPilot();
+    if (!ap) throw new Error('ArduPilot is not available here (build it: bash firmware/apwasm/build.sh)');
+    const chunk = Math.round(0.01 / dt);
+    for (let i = 0; i < 3000 && !ap.live; i++) {
+      for (let k = 0; k < chunk; k++) core.physicsStep(dt);
+      if (!ap.live) {
+        if (ap.status === 'failed' || ap.status === 'exited') throw new Error(`ArduPilot did not start: ${ap.failure || ap.status}`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    }
+    if (!ap.live) throw new Error('ArduPilot did not start within 30 s');
+    let ekfGps = false;
+    const seen = ap.hub.onMessage;
+    ap.hub.onMessage = (m) => { seen?.(m); if (m.name === 'STATUSTEXT' && /is using GPS/.test(String.fromCharCode(...m.fields.text))) ekfGps = true; };
+    const deadline = core.simT + 60;
+    while (core.simT < deadline && !(ekfGps && ap.hub.tel.gpsFix >= 3)) for (let i = 0; i < Math.round(0.1 / dt); i++) core.physicsStep(dt);
+    ap.hub.onMessage = seen;
+    if (armed) {
+      this.rc[AUX.arm] = 1900;
+      for (let i = 0; i < Math.round(3 / dt) && !core.armed; i++) core.physicsStep(dt);
+      if (!core.armed) throw new Error('could not arm ArduPilot');
+    }
   }
 
   /** Replace the operational configuration (null: none); its times count from the episode start. */
@@ -271,9 +314,40 @@ export class FpvEnv {
    * change (it reboots the FC, which recalibrates its gyro on the next steps).
    */
   cli(lines: string[]): string {
+    if (this.core.ap) throw new Error('cli: this build flies ArduPilot: set parameters with the "ap" command or over MAVLink');
     if (this.core.armed) throw new Error('Betaflight ignores the CLI while armed: disarm first');
     return this.core.cliBatch(lines);
   }
+
+  /**
+   * ArduPilot builds: a request to the simulator's ground station. Parameters, mode, arming and
+   * commands go out at once (they act over the next steps); a mission is uploaded with the
+   * simulation stepped until ArduPilot accepts it (at most 5 s of sim time, with the current sticks).
+   */
+  async apRequest(op: ApOp): Promise<{ ok: boolean; message: string; steppedS?: number }> {
+    const ap = this.core?.ap;
+    if (!ap) throw new Error('ap: this build flies Betaflight (drone.spec.autopilot: "ardupilot", or a plane)');
+    const hub = ap.hub;
+    if (op.kind === 'mission') {
+      let done: { ok: boolean; why: string } | null = null;
+      hub.uploadMission(op.items, (ok, why) => { done = { ok, why }; });
+      const t0 = this.core.simT, dt = 1 / this.core.settings.physicsHz;
+      while (!done && this.core.simT - t0 < 5) this.advance(Math.round(0.01 / dt));
+      const r = done as { ok: boolean; why: string } | null;
+      return { ok: !!r?.ok, message: r ? `mission of ${op.items.length} items ${r.why}` : 'no answer from ArduPilot', steppedS: this.core.simT - t0 };
+    }
+    if (op.kind === 'params') hub.setParams(op.params);
+    else if (op.kind === 'mode') hub.setMode(op.mode);
+    else if (op.kind === 'arm') hub.arm(op.on, op.force);
+    else hub.command(op.command, op.params);
+    return { ok: true, message: 'sent' };
+  }
+
+  /** ArduPilot builds: raw MAVLink to its pass-through port (SERIAL1); false if it is full or there is none. */
+  mavlinkWrite(bytes: Uint8Array): boolean { const ap = this.core?.ap; return !!ap && ap.write(1, bytes) === bytes.length; }
+
+  /** ArduPilot builds: raw MAVLink from its pass-through port since the last call. */
+  mavlinkRead(): Uint8Array { return this.core?.ap?.read(1) ?? new Uint8Array(0); }
 
   observe(): Observation {
     const core = this.core, quad = core.quad, s = quad.s, bf = core.bf;
@@ -313,6 +387,15 @@ export class FpvEnv {
       ...(this.episode.nav && core.ops ? { nav: core.ops.navSensors(core) } : {}),
       ...(core.ops && this.episode.ops ? { ops: core.ops.status(core) } : {}),
       ...(this.episode.observeActors && { actors: this.observeActors() }),
+      ...(core.ap ? { ap: this.observeAp() } : {}),
+    };
+  }
+
+  private observeAp(): NonNullable<Observation['ap']> {
+    const core = this.core, t = core.ap!.hub.tel;
+    return {
+      mode: t.modeName, armed: t.armed, airspeed: t.airspeed, groundspeed: t.groundspeed, relAlt: t.relAlt, climb: t.climb, throttle: t.throttle,
+      gpsFix: t.gpsFix, sats: t.sats, wpSeq: t.wpSeq, wpTotal: t.wpTotal, wpDist: t.wpDist, inHand: !!core.hand && !core.hand.released,
     };
   }
 

@@ -7,6 +7,7 @@
 import { parseSpec, validSim } from '../app/persist';
 import { DEFAULT_SPEC, DroneSpec, PRESETS } from '../builder/derive';
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO } from '../data/catalog';
+import { AIRFRAMES } from '../data/airframes';
 import { Rng, subSeed } from '../sim/math';
 import { DEFAULT_SETTINGS, SimSettings } from '../worker/shared';
 import type { MapDef } from '../maps/world';
@@ -113,7 +114,7 @@ export interface Episode {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const num = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
 const vec3 = (x: unknown): x is Vec3 => Array.isArray(x) && x.length === 3 && x.every(num);
-const COMPONENTS: Record<string, readonly { id: string }[]> = { frame: FRAMES, motor: MOTORS, prop: PROPS, battery: BATTERIES, esc: ESCS, fc: FCS, video: VIDEO };
+const COMPONENTS: Record<string, readonly { id: string }[]> = { frame: [...FRAMES, ...AIRFRAMES], motor: MOTORS, prop: PROPS, battery: BATTERIES, esc: ESCS, fc: FCS, video: VIDEO };
 const SIM_KEYS = ['physicsHz', 'damage', 'wind', 'propwash', 'rcLinkHz', 'rcTxPowerMw', 'ambientC', 'autoRate'] as const;
 
 /**
@@ -152,7 +153,16 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean, fa
       if (d.spec !== undefined) {
         if (!isObj(d.spec)) err('drone.spec: expected an object');
         else {
-          allow(d.spec, 'drone.spec.', [...Object.keys(DEFAULT_SPEC), 'unitSeed']);
+          allow(d.spec, 'drone.spec.', [...Object.keys(DEFAULT_SPEC), 'unitSeed', 'autopilot', 'apParams', 'apScripts']);
+          // ArduPilot: the firmware, its parameters (NAME: value) and Lua scripts (file.lua: text)
+          if (d.spec.autopilot !== undefined && d.spec.autopilot !== 'betaflight' && d.spec.autopilot !== 'ardupilot') err('drone.spec.autopilot: "betaflight" or "ardupilot"');
+          for (const k of ['apParams', 'apScripts'] as const) {
+            const v = d.spec[k];
+            if (v === undefined) continue;
+            const kept = parseSpec({ ...DEFAULT_SPEC, [k]: v })?.[k] ?? {};
+            if (!isObj(v)) err(`drone.spec.${k}: expected an object`);
+            else for (const name of Object.keys(v)) if (!(name in kept)) err(`drone.spec.${k}.${name}: ${k === 'apParams' ? 'a parameter name (A-Z, 0-9, _; at most 16) with a number' : 'a file name ending .lua with its text (64 kB at most)'}`);
+          }
           for (const [k, list] of Object.entries(COMPONENTS)) {
             const id = d.spec[k];
             if (id !== undefined && !(typeof id === 'string' && list.some((c) => c.id === id))) err(`drone.spec.${k}: unknown id "${String(id)}"`);

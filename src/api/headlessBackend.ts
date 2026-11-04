@@ -3,7 +3,7 @@
 // worker does), the client's `act` sets the sticks whenever it arrives, and state streams out at the
 // rate it subscribes to; a game engine draws the world from it.
 import { Action, FpvEnv, obsVector, obsVectorLabels } from '../headless/env';
-import { ApiBackend, ApiEvent, API_PROTOCOL, API_VERSION, Clock, COMMANDS, Hello, Request } from './protocol';
+import { ApiBackend, ApiEvent, API_PROTOCOL, API_VERSION, Clock, COMMANDS, fromBase64, Hello, Request, toBase64 } from './protocol';
 
 export interface HeadlessBackendOptions {
   clock: Clock;
@@ -20,6 +20,10 @@ const MAX_TICK_S = 0.03;
 
 export class HeadlessBackend implements ApiBackend {
   private action: Action = {};
+  /** stream ArduPilot's pass-through MAVLink as events (subscribe "mavlink") */
+  private mavSub = false;
+  /** ArduPilot's pass-through MAVLink as it comes (the server's TCP MAVLink port); set by the host */
+  onMavlink: ((bytes: Uint8Array) => void) | null = null;
   private stateHz = 0;
   private stateDue = 0;
   private running = false;
@@ -45,7 +49,7 @@ export class HeadlessBackend implements ApiBackend {
       case 'hello': {
         const h: Hello = {
           protocol: API_PROTOCOL, version: API_VERSION, backend: 'headless', clock: this.opts.clock, app: this.opts.app,
-          firmware: env.core?.bf?.version ?? 'Betaflight 4.5.5 (WASM)',
+          firmware: env.core?.ap ? `Ardu${env.core.ap.vehicle === 'plane' ? 'Plane' : 'Copter'} 4.7.2 (WASM)` : env.core?.bf?.version ?? 'Betaflight 4.5.5 (WASM)',
           commands: COMMANDS.filter((c) => c !== 'capture' && c !== 'record' && c !== 'release' && (this.realtime ? c !== 'step' : c !== 'pause' && c !== 'resume')),
           vectorLabels: env.episode ? obsVectorLabels(env.episode.probes, env.episode.observeActors) : undefined,
         };
@@ -72,6 +76,7 @@ export class HeadlessBackend implements ApiBackend {
           res = env.step(this.action);
           reward += res.reward; events.push(...res.info.events);
         }
+        this.pumpMavlink();
         return { ...res, reward, info: { ...res.info, events }, ...(req.vector ? { vec: obsVector(res.obs) } : {}) };
       }
       case 'act': {
@@ -87,11 +92,19 @@ export class HeadlessBackend implements ApiBackend {
         return { obs, metrics: env.metrics(), ...(req.vector ? { vec: obsVector(obs) } : {}) };
       }
       case 'subscribe': {
+        if (req.stream === 'mavlink') { this.mavSub = true; return {}; }
         if (!this.realtime) throw new Error('subscribe: in lock-step every step returns the state');
         this.stateHz = req.hz ?? 60; this.stateDue = 0;
         return { hz: this.stateHz };
       }
-      case 'unsubscribe': this.stateHz = 0; return {};
+      case 'unsubscribe': if (req.stream === 'mavlink') this.mavSub = false; else this.stateHz = 0; return {};
+      case 'ap': ready(); return await env.apRequest(req.op);
+      case 'mavlink': {
+        ready();
+        if (!env.core.ap) throw new Error('mavlink: this build flies Betaflight (drone.spec.autopilot: "ardupilot", or a plane)');
+        if (!env.mavlinkWrite(fromBase64(req.data))) throw new Error('mavlink: ArduPilot\'s input buffer is full');
+        return {};
+      }
       case 'cli': ready(); return { output: env.cli(req.lines) };
       case 'respawn': {
         ready();
@@ -118,6 +131,18 @@ export class HeadlessBackend implements ApiBackend {
     }
     throw new Error(`unknown command ${(req as { cmd: string }).cmd}`);
   }
+
+  /** Hand ArduPilot's pass-through bytes to the subscribers (events) and the host's MAVLink port. */
+  pumpMavlink() {
+    if (!this.env.core?.ap || (!this.mavSub && !this.onMavlink)) return;
+    const b = this.env.mavlinkRead();
+    if (!b.length) return;
+    this.onMavlink?.(b);
+    if (this.mavSub) this.opts.emit({ event: 'mavlink', data: toBase64(b) });
+  }
+
+  /** MAVLink from the host's TCP port to ArduPilot (dropped when there is no ArduPilot build). */
+  mavlinkIn(bytes: Uint8Array) { if (this.env.core?.ap) this.env.mavlinkWrite(bytes); }
 
   close() {
     this.closed = true;
@@ -157,6 +182,7 @@ export class HeadlessBackend implements ApiBackend {
     if (n > max) { n = max; this.resync(); }
     if (n > 0) {
       const res = env.step(this.action, n);
+      this.pumpMavlink();
       for (const e of res.info.events) {
         if (e.type === 'gate') this.opts.emit({ event: 'gate', gate: e.gate, t: e.t });
         else if (e.type === 'impact') this.opts.emit({ event: 'impact', speed: e.speed, t: e.t });
