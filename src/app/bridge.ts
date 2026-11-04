@@ -5,7 +5,7 @@
 // a second failure is surfaced as { type: 'fatal' }.
 import type { FaultSpec } from '../sim/faults';
 import type { OpsConfig } from '../worker/ops';
-import { createShared, newestTime, writeStick, type FromWorker, type Shared, type ToWorker } from '../worker/shared';
+import { createShared, newestTime, writeStick, type FromWorker, type Shared, type ToWorker, ApOp } from '../worker/shared';
 
 /** Stops the stick poller; wake() returns it to the full rate at once (see WorkerBridge.pollSticks). */
 export type StickPoller = (() => void) & { wake(): void };
@@ -28,6 +28,7 @@ export class WorkerBridge implements BfBridge {
   worker: Worker;
   private cliListeners = new Set<(t: string) => void>();
   private batchWaiters = new Map<number, (s: string) => void>();
+  private apWaiters = new Map<number, (r: { ok: boolean; message: string }) => void>();
   private bblWaiters = new Map<number, (m: { data: ArrayBuffer; sessions: number }) => void>();
   private runWaiters = new Map<number, (m: { data: ArrayBuffer; seconds: number; reason: string }) => void>();
   private syncWaiters = new Map<number, () => void>();
@@ -49,6 +50,7 @@ export class WorkerBridge implements BfBridge {
       const m = e.data;
       if (m.type === 'cliOut') { for (const l of this.cliListeners) l(m.text); return; }
       if (m.type === 'cliBatchDone') { this.batchWaiters.get(m.id)?.(m.output); this.batchWaiters.delete(m.id); return; }
+      if (m.type === 'apResult') { this.apWaiters.get(m.id)?.({ ok: m.ok, message: m.message }); this.apWaiters.delete(m.id); return; }
       if (m.type === 'bbl') { this.bblWaiters.get(m.id)?.({ data: m.data, sessions: m.sessions }); this.bblWaiters.delete(m.id); return; }
       if (m.type === 'synced') { this.syncWaiters.get(m.id)?.(); this.syncWaiters.delete(m.id); return; }
       if (m.type === 'run') { this.runWaiters.get(m.id)?.({ data: m.data, seconds: m.seconds, reason: m.reason }); this.runWaiters.delete(m.id); return; }
@@ -65,6 +67,8 @@ export class WorkerBridge implements BfBridge {
     this.worker.terminate();
     // nobody will answer the old worker's requests
     for (const r of this.batchWaiters.values()) r('');
+    for (const r of this.apWaiters.values()) r({ ok: false, message: 'the simulator restarted' });
+    this.apWaiters.clear();
     for (const r of this.bblWaiters.values()) r({ data: new ArrayBuffer(0), sessions: 0 });
     for (const r of this.runWaiters.values()) r({ data: new ArrayBuffer(0), seconds: 0, reason: 'the simulator stopped' });
     for (const r of this.syncWaiters.values()) r();
@@ -95,6 +99,11 @@ export class WorkerBridge implements BfBridge {
     const id = this.batchId++; this.batchWaiters.set(id, res); this.send({ type: 'cliBatch', lines, id });
   });
   cliSend = (text: string) => this.send({ type: 'cli', text });
+  /** ArduPilot builds: a request to the simulator's ground station (parameters, mission, mode, arming, a command). */
+  apRequest = (op: ApOp) => new Promise<{ ok: boolean; message: string }>((res) => {
+    if (this.failed) { res({ ok: false, message: 'the simulator stopped' }); return; }
+    const id = this.batchId++; this.apWaiters.set(id, res); this.send({ type: 'ap', id, op });
+  });
   onCliOut = (cb: (t: string) => void) => { this.cliListeners.add(cb); return () => { this.cliListeners.delete(cb); }; };
   /** Betaflight's native blackbox log (.bbl) recorded so far, one log per armed session. */
   getBbl = () => new Promise<{ data: ArrayBuffer; sessions: number }>((res) => {

@@ -52,9 +52,16 @@ class Mode {
   th = 0; w = 0;
   constructor(public m: FlexMode) {}
   step(tau: number, dt: number): number {
-    const wn = 2 * Math.PI * this.m.freqHz;
-    // semi-implicit (symplectic) Euler
-    this.w += (this.m.gain * tau - 2 * this.m.zeta * wn * this.w - wn * wn * this.th) * dt;
+    const wn = 2 * Math.PI * this.m.freqHz, h = wn * dt;
+    if (h <= 1) {
+      // semi-implicit (symplectic) Euler
+      this.w += (this.m.gain * tau - 2 * this.m.zeta * wn * this.w - wn * wn * this.th) * dt;
+    } else {
+      // a mode this fast for the step (a stiff frame's overtone at a 2 kHz physics rate) would grow
+      // without bound under the explicit update (stable only for wn dt < 2): implicit Euler, which
+      // stays bounded (and damps the mode a little, as the coarse step can't resolve it anyway)
+      this.w = (this.w + (this.m.gain * tau - wn * wn * this.th) * dt) / (1 + 2 * this.m.zeta * h + h * h);
+    }
     this.th += this.w * dt;
     return this.w;
   }

@@ -699,9 +699,34 @@ function pathFields(e: Editor, refs: Path[]): (HTMLElement | null)[] {
       row(one ? plainBtn('Insert point after', () => { const i = one[3] as number, a = p.points[i], b = p.points[i + 1] ?? a; e.ed.apply('Insert path point', [{ k: 'ins', path: ['paths', pi, 'points'], i: i + 1, v: [0, 1, 2].map((k) => Math.round(((a[k] + b[k]) / 2 + (b === a ? (k === 0 ? 3 : 0) : 0)) * 1000) / 1000) }]); e.select([['paths', pi, 'points', i + 1]]); }) : null,
         plainBtn('Select every point', () => e.select(p.points.map((_, i): Path => ['paths', pi, 'points', i]))),
         plainBtn('Continue drawing', () => e.setTool({ t: 'path', index: pi })),
-        plainBtn('Delete path', () => { e.select([]); e.ed.apply('Delete path', [{ k: 'del', path: ['paths'], i: pi }]); })),
-      (e.ed.doc.actors ?? []).some((a) => a.path === p.id) ? note(`Used by ${(e.ed.doc.actors ?? []).filter((a) => a.path === p.id).map((a) => a.name ?? a.id).join(', ')}.`) : null);
+        plainBtn('Delete path', () => { e.select([]); e.ed.apply('Delete path', [{ k: 'del', path: ['paths'], i: pi }, ...(e.ed.doc.mission?.path === p.id ? [{ k: 'set', path: ['mission'], v: undefined } as Op] : [])]); })),
+      (e.ed.doc.actors ?? []).some((a) => a.path === p.id) ? note(`Used by ${(e.ed.doc.actors ?? []).filter((a) => a.path === p.id).map((a) => a.name ?? a.id).join(', ')}.`) : null,
+      ...missionFields(e, p.id));
   }
+  return out;
+}
+
+/**
+ * A path as the autopilot's mission (ArduPilot builds: planes, quads set to it): ArduPilot takes off
+ * to the takeoff altitude, flies the points as waypoints at their heights above the spawn, then
+ * returns home, lands at the last point or flies the path again. AUX4 (CH8) switches to it.
+ */
+function missionFields(e: Editor, pathId: string): (HTMLElement | null)[] {
+  const m = e.ed.doc.mission, mine = m?.path === pathId;
+  const toggle = el('input', { type: 'checkbox', checked: mine }) as HTMLInputElement;
+  toggle.addEventListener('change', () => e.ed.apply(toggle.checked ? 'Fly path as the mission' : 'Remove the mission',
+    [{ k: 'set', path: ['mission'], v: toggle.checked ? { path: pathId, ...(m ? { end: m.end, takeoffAltM: m.takeoffAltM, speedMs: m.speedMs } : {}) } : undefined }]));
+  const out: (HTMLElement | null)[] = [el('h3', {}, 'Autopilot mission'), el('label', { class: 'check' }, toggle, el('span', {}, 'ArduPilot flies this path as its mission'))];
+  if (!mine) {
+    out.push(note(m ? `The mission flies ${m.path} now; ticking this moves it here.` : 'For planes and quads set to ArduPilot: their AUX4 switch (CH8, AUTO) flies it. Point heights are above the spawn’s ground.'));
+    return out;
+  }
+  out.push(
+    sel(e, 'After the last point', [['mission', 'end']], [{ value: 'rtl', label: 'Return home (RTL)' }, { value: 'land', label: 'Land at the last point' }, { value: 'loop', label: 'Fly the path again' }], { opt: 'Return home (default)' }),
+    num(e, 'Takeoff altitude', [['mission', 'takeoffAltM']], { min: 2, max: 500, step: 1, unit: 'm', opt: true, placeholder: '30' }),
+    num(e, 'Speed', [['mission', 'speedMs']], { min: 1, max: 60, step: 0.5, unit: 'm/s', opt: true, placeholder: 'vehicle cruise' }),
+    note('Heights: each point’s z above the spawn’s ground (planes fly at least 8 m). Upload: when ArduPilot first has a GPS fix.'),
+  );
   return out;
 }
 

@@ -6,7 +6,7 @@
 // window.fpvSim in the page.
 import type { OpsEvent } from '../worker/ops';
 import { Action, applyAction, AUX, MODE_US, Observation, obsVector, obsVectorLabels, probeDirections, rot, rotInv } from '../api/types';
-import { ApiBackend, ApiEvent, ApiSession, API_PROTOCOL, API_VERSION, COMMANDS, Hello, parseRequest, Request } from '../api/protocol';
+import { ApiBackend, ApiEvent, ApiSession, API_PROTOCOL, API_VERSION, COMMANDS, Hello, parseRequest, Request, fromBase64, toBase64 } from '../api/protocol';
 import { planDiffImport } from '../bf/diffImport';
 import { hasMap, MAPS, preloadMap } from '../maps/maps';
 import { mapFacts, MapFacts, parseScenario, resolveEpisode, Episode } from '../scenario/scenario';
@@ -137,6 +137,10 @@ export class LiveBackend implements ApiBackend {
 
   onRespawn() { if (this.task && !this.ended) this.endEpisode('respawn'); }
 
+  /** ArduPilot's pass-through MAVLink (subscribers of "mavlink" get it as base64) */
+  onMavlink(bytes: Uint8Array) { if (this.mavSub) this.emit({ event: 'mavlink', data: toBase64(bytes) }); }
+  private mavSub = false;
+
   // -------------------------------------------------------------------------------------------
   // commands
 
@@ -157,13 +161,26 @@ export class LiveBackend implements ApiBackend {
       case 'release': this.releaseSticks(); return {};
       case 'state': { const obs = this.observe(); return { obs, ...(this.task ? { metrics: this.task.metrics() } : {}), ...(req.vector ? { vec: obsVector(obs) } : {}) }; }
       case 'subscribe': {
+        if (req.stream === 'mavlink') { this.mavSub = true; return {}; }
         const hz = Math.min(req.hz ?? 60, 250);
         this.stopState();
         this.stateTimer = setInterval(() => this.emit({ event: 'state', obs: this.observe() }), 1000 / hz);
         return { hz };
       }
-      case 'unsubscribe': this.stopState(); return {};
+      case 'unsubscribe': if (req.stream === 'mavlink') this.mavSub = false; else this.stopState(); return {};
+      case 'ap': {
+        if (!ctx.tel?.ap) throw new Error('ap: this build flies Betaflight (pick a plane, or ArduCopter in the builder)');
+        const r = await this.deps.apRequest(req.op);
+        if (!r.ok) throw new Error(`ap: ${r.message}`);
+        return { message: r.message };
+      }
+      case 'mavlink': {
+        if (!ctx.tel?.ap) throw new Error('mavlink: this build flies Betaflight (pick a plane, or ArduCopter in the builder)');
+        this.deps.mavlinkWrite(fromBase64(req.data));
+        return {};
+      }
       case 'cli': {
+        if (ctx.tel?.ap) throw new Error('cli: this build flies ArduPilot: set parameters with the "ap" command or over MAVLink');
         if (Atomics.load(ctx.sh.ctrl, 5)) throw new Error('Betaflight ignores the CLI while armed: disarm first');
         return { output: await this.deps.cliBatch(req.lines) };
       }

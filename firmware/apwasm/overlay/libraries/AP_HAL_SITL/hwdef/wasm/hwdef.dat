@@ -1,0 +1,11 @@
+# SITL built with Emscripten for fpv-sim: the autopilot runs in a Web Worker (or a Node worker
+# thread) and exchanges servo outputs and vehicle state with the simulator through shared memory.
+include ../sitl/hwdef.dat
+
+env WASM 1
+
+# no sockets, CAN buses or external simulators in a browser
+define HAL_NUM_CAN_IFACES 0
+define AP_NETWORKING_ENABLED 0
+define AP_SIM_JSON_MASTER_ENABLED 0
+define HAL_SIM_JSON_ENABLED 1

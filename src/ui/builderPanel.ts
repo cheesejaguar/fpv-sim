@@ -1,7 +1,9 @@
 // Drone builder: component dropdowns + sliders for every physical parameter, with a live panel of
 // the derived flight model (mass budget, inertia, thrust, hover point, currents, flight time).
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO, byId } from '../data/catalog';
-import { buildDrone, DroneSpec, PRESETS, Overrides, preloadPropTable } from '../builder/derive';
+import { AIRFRAMES, isAirframe } from '../data/airframes';
+import { buildDrone, DroneBuild, DroneSpec, PRESETS, Overrides, preloadPropTable } from '../builder/derive';
+import { apBuilderSection } from './apBuilder';
 import { confirmDialog, el, kv, section, select, setLeaveGuard, slider } from './dom';
 
 export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => void): HTMLElement {
@@ -19,6 +21,30 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
       if (n !== seq) return; // changed again meanwhile: that refresh shows it
       const b = buildDrone(spec), i = b.info, p = b.params;
       const I = p.inertia;
+      lastBuild = b;
+      if (apHost.dataset.need === '1') { apHost.dataset.need = ''; renderAp(); }
+      const pl = i.plane;
+      if (pl) {
+        info.replaceChildren(
+          section('Derived flight model (plane)',
+            kv([
+              ['All-up weight', `${i.auwG.toFixed(0)} g`],
+              ['Wing: span / area / aspect ratio', `${(pl.spanM * 1000).toFixed(0)} mm / ${(pl.areaM2 * 100).toFixed(1)} dm² / ${pl.aspect.toFixed(1)}`],
+              ['Wing loading', `${pl.wingLoadingGdm2.toFixed(1)} g/dm²`],
+              ['Stall / cruise / top speed', `${pl.stallKmh.toFixed(0)} / ${pl.cruiseKmh.toFixed(0)} / ${pl.topKmh.toFixed(0)} km/h`],
+              ['Cruise throttle / current', `${(pl.cruiseThrottle * 100).toFixed(0)} % / ${pl.cruiseCurrentA.toFixed(1)} A`],
+              ['Endurance / range at cruise', `${pl.enduranceMin.toFixed(0)} min / ${pl.rangeKm.toFixed(0)} km`],
+              ['Best glide ratio', `${pl.glideRatio.toFixed(1)} : 1`],
+              ['Static margin / CG behind leading edge', `${pl.staticMarginPct.toFixed(1)} % / ${pl.cgAftOfLeMm.toFixed(0)} mm${pl.balanced ? '' : ' (battery at the end of its bay: not balanced)'}`],
+              ['Thrust-to-weight', `${i.thrustToWeight.toFixed(2)} : 1`],
+              ['Full-deflection roll / pitch rate', `${pl.rollRateMax.toFixed(0)} / ${pl.pitchRateMax.toFixed(0)} °/s`],
+              ['Inertia Ixx / Iyy / Izz', `${(I.xx * 1e3).toFixed(2)} / ${(I.yy * 1e3).toFixed(2)} / ${(I.zz * 1e3).toFixed(2)} g·m²`],
+            ])),
+          section('Mass budget', kv(i.massItems.map((m) => [m.name, `${(m.m * 1000).toFixed(1)} g`] as [string, string]))),
+          el('p', { class: 'note' }, `${pl.airframe.maker} ${pl.airframe.name}: published span, area, motors and weights; estimated: ${pl.airframe.est.join(', ')}.`),
+        );
+        return;
+      }
       info.replaceChildren(
         section('Derived flight model',
           kv([
@@ -40,6 +66,11 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
       );
     }, 120);
   };
+
+  // the ArduPilot page (shown for planes and quads set to it) and the build it reads its starting parameters from
+  let lastBuild: DroneBuild | null = null;
+  const apHost = el('div', {});
+  const renderAp = () => { apHost.replaceChildren(apBuilderSection(spec, lastBuild, () => updateDirty(), () => { apHost.dataset.need = '1'; refreshInfo(); renderAp(); })); };
 
   const nOverrides = () => Object.keys(spec.overrides).length;
   const unapplied = () => JSON.stringify(spec) !== JSON.stringify(getSpec());
@@ -94,10 +125,14 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
             select('Load preset', [{ value: '', label: '— choose —' }, ...PRESETS.map((p, i) => ({ value: String(i), label: p.name }))], '', loadPreset),
           ),
           section('Components',
-            comp('Frame', 'frame', FRAMES), comp('Motors', 'motor', MOTORS), comp('Propellers', 'prop', PROPS),
+            comp('Frame / airframe', 'frame', [...FRAMES, ...AIRFRAMES.map((a) => ({ id: a.id, name: `Plane: ${a.name}` }))]), comp('Motors', 'motor', MOTORS), comp('Propellers', 'prop', PROPS),
             comp('Battery', 'battery', BATTERIES), comp('ESC', 'esc', ESCS), comp('Flight controller / gyro', 'fc', FCS), comp('Video system', 'video', VIDEO),
           ),
-          section('Layout',
+          apHost,
+          isAirframe(spec.frame) ? section('Layout',
+            slider({ label: 'Camera uptilt', min: -10, max: 30, step: 1, value: spec.cameraUptiltDeg, unit: '°', onInput: (v) => { spec.cameraUptiltDeg = v; } }).row,
+            slider({ label: 'Extra mass (GPS, action cam, payload)', min: 0, max: 400, step: 1, value: spec.extraMassG, unit: 'g', onInput: (v) => { spec.extraMassG = v; refreshInfo(); } }).row,
+          ) : section('Layout',
             select('Battery mount', [{ value: 'top', label: 'Top mount' }, { value: 'bottom', label: 'Bottom mount' }], spec.batteryMount, (v) => { spec.batteryMount = v; refreshInfo(); }),
             select('Prop direction', [{ value: 'props-out', label: 'Props out (BF yaw_motors_reversed)' }, { value: 'props-in', label: 'Props in (BF default)' }], spec.propDirection, (v) => { spec.propDirection = v; refreshInfo(); }),
             slider({ label: 'Camera uptilt', min: 0, max: 60, step: 1, value: spec.cameraUptiltDeg, unit: '°', onInput: (v) => { spec.cameraUptiltDeg = v; } }).row,
@@ -121,6 +156,7 @@ export function builderPanel(getSpec: () => DroneSpec, apply: (s: DroneSpec) => 
         ),
       ),
     );
+    renderAp();
     refreshInfo();
     updateDirty();
   };

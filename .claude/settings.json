@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash firmware/apwasm/build.sh:*)",
+      "Bash(bash scripts/build-ardupilot.sh:*)",
+      "Bash(./waf:*)",
+      "Bash(python3 ./waf:*)",
+      "Bash(./emsdk:*)",
+      "Bash(emcc:*)",
+      "Bash(em++:*)",
+      "Bash(node scripts/ap-smoke.mjs:*)"
+    ]
+  }
+}

@@ -93,6 +93,14 @@ export type GeometryDoc =
 export interface SpawnDoc { id: string; name?: string; pos: Vec3; yawDeg?: number; groundZ?: number; pilot?: Vec3 }
 /** An alternative gate course on the same map, timed on its own; spawn names a spawns[] entry. */
 export interface CourseDoc { id: string; name: string; gates: GateDoc[]; spawn?: string }
+export const MISSION_ENDS = ['rtl', 'land', 'loop'] as const;
+/**
+ * An ArduPilot mission over one of the map's paths: take off (to takeoffAltM above the spawn), fly
+ * its points as waypoints (their heights above the spawn's ground), then RTL, land at the last
+ * point, or go round again. speedMs: the cruise speed asked for (none: the vehicle's own).
+ */
+export interface MissionDoc { path: string; end?: (typeof MISSION_ENDS)[number]; takeoffAltM?: number; speedMs?: number }
+
 /** A polyline that actors move along at speedMs (sim time): loop, back and forth, or once and stop. */
 export interface PathDoc { id: string; points: Vec3[]; speedMs: number; mode?: (typeof PATH_MODES)[number]; delayS?: number }
 interface ActorCommon { id: string; name?: string; pos?: Vec3; path?: string }
@@ -129,6 +137,8 @@ export interface MapDocV1 {
   courses?: CourseDoc[];
   paths?: PathDoc[];
   actors?: ActorDoc[];
+  /** The autopilot mission (ArduPilot builds): fly one of the paths, then return, land or go round again. */
+  mission?: MissionDoc;
   /** Bundled fpvsim-scenario files (package paths). */
   scenarios?: string[];
 }
@@ -235,7 +245,7 @@ const OBJ_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[] } {
   const c = new Checker();
   const R = 'map.json';
-  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'lights', 'geometry', 'spawns', 'courses', 'paths', 'actors', 'scenarios'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
+  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'lights', 'geometry', 'spawns', 'courses', 'paths', 'actors', 'mission', 'scenarios'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
   const d = raw;
   if (d.format !== undefined && d.format !== FORMAT) c.err(`${R}.format`, `must be "${FORMAT}" (got ${show(d.format)})`);
   if (d.formatVersion !== undefined && d.formatVersion !== FORMAT_VERSION) c.err(`${R}.formatVersion`, typeof d.formatVersion === 'number' && d.formatVersion > FORMAT_VERSION ? `${d.formatVersion} is newer than this simulator supports (${FORMAT_VERSION}); update the simulator` : `must be ${FORMAT_VERSION}`);
@@ -387,6 +397,12 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
     c.arr(v, 'points', P, BUDGETS.pathPoints, (pt, PP) => { if (!Array.isArray(pt) || pt.length !== 3) c.err(PP, `must be an array of 3 numbers (got ${show(pt)})`); else pt.forEach((x, k) => c.numV(x, `${PP}[${k}]`)); });
   });
   unique('paths');
+  if (d.mission !== undefined && c.obj(d.mission, `${R}.mission`, ['path', 'end', 'takeoffAltM', 'speedMs'], ['path'])) {
+    const P = `${R}.mission`, m = d.mission as Obj;
+    const pid = c.str(m, 'path', P, { req: true });
+    if (pid !== undefined && !pathIds.has(pid)) c.err(`${P}.path`, `"${pid}" is not the id of an entry in paths`);
+    c.str(m, 'end', P, { oneOf: MISSION_ENDS }); c.num(m, 'takeoffAltM', P, { min: 2, max: 500 }); c.num(m, 'speedMs', P, { gt: 0, max: 60 });
+  }
   c.arr(d, 'actors', R, BUDGETS.actors, (a, P) => {
     if (!isObj(a)) { c.err(P, `must be an object (got ${show(a)})`); return; }
     const common = ['type', 'id', 'name', 'pos', 'path'];

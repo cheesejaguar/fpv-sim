@@ -15,6 +15,11 @@ export const PRESET_CLASS: Readonly<Record<string, string>> = {
   'Beginner: 75 mm Whoop 1S': 'whoop75',
   'Beginner: 3" Cinewhoop 4S HD': 'cinewhoop3',
   '3" Toothpick 4S': 'toothpick3',
+  'Plane: HEEWING T1 Ranger': 'plane-t1',
+  'Plane: AtomRC Penguin': 'plane-penguin',
+  'Plane: SonicModell AR Wing Pro': 'plane-arwing',
+  'Plane: ZOHD Talon GT Rebel': 'plane-talon',
+  'Plane: Volantex Ranger 2000': 'plane-ranger2000',
 };
 
 /** Classes in menu order: each preset, then custom. */
@@ -24,7 +29,8 @@ export const className = (cls: string): string => CLASSES[cls]?.name ?? 'Custom'
 
 // Not part of the hardware: the build's name, the camera angle (pilot preference; older saves of a
 // preset carry an older default) and the prop direction (set to match the Betaflight motor config).
-const IGNORED = new Set<keyof DroneSpec>(['name', 'cameraUptiltDeg', 'propDirection']);
+// ArduPilot's parameters and scripts are the pilot's programming, not hardware either.
+const IGNORED = new Set<keyof DroneSpec>(['name', 'cameraUptiltDeg', 'propDirection', 'apParams', 'apScripts']);
 
 function sameHardware(a: DroneSpec, b: DroneSpec): boolean {
   for (const k of Object.keys(a) as (keyof DroneSpec)[]) {

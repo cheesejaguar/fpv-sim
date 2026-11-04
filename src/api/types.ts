@@ -69,6 +69,12 @@ export interface Observation {
    * jammers included).
    */
   actors?: ObservedActors;
+  /**
+   * ArduPilot builds (planes, quads set to it): what its ground station hears. mode: ArduPilot's
+   * flight mode name; wpSeq / wpTotal: the mission item flown and how many (home not counted);
+   * inHand: a plane still in the pilot's hand (thrown once the motor runs up).
+   */
+  ap?: { mode: string; armed: boolean; airspeed: number; groundspeed: number; relAlt: number; climb: number; throttle: number; gpsFix: number; sats: number; wpSeq: number; wpTotal: number; wpDist: number; inHand: boolean };
 }
 
 export interface ObservedActors {

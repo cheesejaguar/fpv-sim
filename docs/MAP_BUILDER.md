@@ -24,6 +24,14 @@ Drag a panel's edge to resize it; double-click the edge for its default size. Th
 buttons hide and show the docks. Sizes, folded sections, the Show menu, snapping and the camera
 settings are kept in this browser.
 
+## Missions
+
+Any path can be the map's autopilot mission. Select one of its points; the Details panel has an
+**Autopilot mission** section: tick it, then pick what follows the last point (return home, land,
+fly the path again), the takeoff altitude and the speed. Point heights are above the spawn's
+ground. Planes, and quads set to ArduPilot, fly it on AUX4 (AUTO); see
+[ARDUPILOT.md](ARDUPILOT.md). Renaming or deleting the path keeps the mission right.
+
 ## Camera
 
 | Input | Does |

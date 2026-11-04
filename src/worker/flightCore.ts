@@ -26,6 +26,10 @@ import { runCliBatch } from './fwCli';
 import { DEFAULT_SETTINGS, SimSettings } from './shared';
 import { GPS_ORIGIN, UbxReceiver } from './ubxGps';
 import { OpsConfig, OpsLayer } from './ops';
+import { apLaunch, apVehicle, ApVehicle } from '../ap/apConfig';
+import { AP_FRAME_DT, ApSpawn, ArduPilotLink } from '../ap/apLink';
+import { missionItems } from '../ap/apMission';
+import { stateJson } from '../sitl/ardupilotJson';
 
 /** What the host provides. Only `sticks` is required. */
 export interface FlightHooks {
@@ -57,7 +61,29 @@ export interface FlightCoreOptions {
    * loss, barometer noise. Unset: the fixed seeds the app has always used.
    */
   seed?: number;
+  /**
+   * Starts ArduPilot's thread (src/ap/apSpawn.ts in the browser, src/ap/apNode.ts in Node) and
+   * where its firmware module is: needed for builds that fly ArduPilot (planes, quads set to it).
+   */
+  ardupilot?: { spawn: ApSpawn; moduleUrl: (v: ApVehicle) => string | null; waitMs?: number };
 }
+
+/** A plane's hand launch: held at shoulder height until the pilot runs the motor up, then thrown. */
+export interface HandLaunch {
+  /** where the hand holds it (world) and its yaw */
+  pos: V3; yaw: number;
+  /** how long the release condition has held (s) */
+  hold: number;
+  /** the throw: how long the arm has been pushing (s; -1 before it starts) */
+  throwT: number;
+  released: boolean;
+}
+/**
+ * Hand-launch throw: the speed it leaves the hand with along its heading and upward (m/s), how long
+ * the arm pushes (s: the IMU feels the push, as the autopilot's estimator must), the nose-up
+ * attitude while held (rad).
+ */
+const THROW_MPS = 11, THROW_UP_MPS = 1.5, THROW_S = 0.4, HAND_PITCH = (8 * Math.PI) / 180, HAND_HEIGHT = 1.6;
 
 /** A crash worth flagging: ~4 m/s into something, or anything that actually damaged the quad. */
 export const CRASH_MIN_MPS = 4;
@@ -119,6 +145,17 @@ export class FlightCore {
    * instead of the firmware when there is no Betaflight (bf null).
    */
   external: Float32Array | null = null;
+  /** ArduPilot (planes, quads set to it): the lock-step link to its firmware thread, null for Betaflight */
+  ap: ArduPilotLink | null = null;
+  /** a plane waiting in the pilot's hand (respawn), until thrown */
+  hand: HandLaunch | null = null;
+  private apAcc = 0;
+  /** the map's mission went to this ArduPilot (uploaded once it has a GPS fix; again after a map change) */
+  private apMissionSent = false;
+  /** firmware time of the last RC packet that arrived (ArduPilot gets the sticks until 100 ms without one) */
+  private apRcT = -Infinity;
+  private readonly apOpts: FlightCoreOptions['ardupilot'];
+  private readonly windTmp: V3 = { x: 0, y: 0, z: 0 }; private readonly airTmp: V3 = { x: 0, y: 0, z: 0 };
   /** motor commands as the ESCs receive them (after motor faults) */
   readonly escCmd = new Uint16Array(4);
   private gpsCep0 = 0;
@@ -150,6 +187,7 @@ export class FlightCore {
 
   constructor(public hooks: FlightHooks, opts: FlightCoreOptions = {}) {
     this.seed = opts.seed;
+    this.apOpts = opts.ardupilot;
     this.rcLink = new RcLink(this.sub(0x5eed));
     this.baro = new BaroModel(this.sub(0xba50));
   }
@@ -214,6 +252,7 @@ export class FlightCore {
   /** Fly this map from now on (its collision world, wind, GPS origin and actors). */
   setMap(m: MapDef) {
     this.map = m;
+    this.apMissionSent = false;
     this.world = new PrimitiveWorld(m);
     this.env = this.makeEnv();
     this.gps.origin = { ...GPS_ORIGIN, altM: m.elevationM ?? 0 };
@@ -278,6 +317,9 @@ export class FlightCore {
     const sp = this.map.spawn;
     const z = spawnGroundZ(this.map) + 0.06 - Math.min(...this.build.params.colliders.map((c) => c.pos.z - c.radius));
     this.quad.reset({ x: sp.pos.x, y: sp.pos.y, z }, sp.yaw);
+    // a plane starts in the pilot's hand, ready to be thrown
+    this.hand = this.build.info.plane ? { pos: { x: sp.pos.x, y: sp.pos.y, z: spawnGroundZ(this.map) + HAND_HEIGHT }, yaw: sp.yaw, hold: 0, throwT: -1, released: false } : null;
+    if (this.hand) this.holdInHand();
     this.env.wake.reset(); this.wakeAcc = 0;
     this.lastPos = { ...this.quad.s.pos };
     this.nextGate = 0;
@@ -297,6 +339,7 @@ export class FlightCore {
 
   /** Put the quad somewhere specific, at rest (yaw in rad). */
   placeAt(pos: V3, yaw: number) {
+    this.hand = null;
     this.quad.reset({ x: pos.x, y: pos.y, z: pos.z }, yaw);
     this.env.wake.reset();
     this.lastPos = { ...this.quad.s.pos };
@@ -326,11 +369,18 @@ export class FlightCore {
    * Inputs to the FC that don't depend on whether the plant flies: RC link packets and link stats,
    * battery ADC, baro, GPS UART, blackbox UART. held: the plant is frozen (no current, no motion).
    */
-  fcInputs(dt: number, held: boolean) {
-    const bf = this.bf;
-    if (!bf) return;
-    const { quad, settings, rcLink, rcBuf, map } = this;
-    this.rcAcc += dt;
+  /** One RC packet slot: true when the link delivered it (the sticks are then in rcBuf). */
+  private rcPacket(): boolean {
+    if (!this.rcLink.packet()) return false;
+    const rcBuf = this.rcBuf;
+    this.hooks.sticks(rcBuf);
+    for (let i = 0; i < 16; i++) if (!(rcBuf[i] >= 800 && rcBuf[i] <= 2200)) rcBuf[i] = 1500;
+    return true;
+  }
+
+  /** The RC link's budget (range, walls, fading, interference), every 50 ms. */
+  private linkBudget(dt: number) {
+    const { quad, settings, rcLink, map } = this;
     this.linkAcc += dt;
     if (this.linkAcc >= 0.05) {
       // slowly varying uplink budget: range, walls, fading (pilot stands at the map's pilot spot)
@@ -348,14 +398,18 @@ export class FlightCore {
       this.linkAcc = 0;
       this.ops?.updateLinks(this);
     }
+  }
+
+  fcInputs(dt: number, held: boolean) {
+    const bf = this.bf;
+    if (!bf) return;
+    const { quad, settings, rcLink, rcBuf, map } = this;
+    this.rcAcc += dt;
+    this.linkBudget(dt);
     if (this.rcAcc >= 1 / settings.rcLinkHz) {
       this.rcAcc -= 1 / settings.rcLinkHz;
       // a lost packet is really lost: Betaflight sees no new frame (and fails safe if it persists)
-      if (rcLink.packet()) {
-        this.hooks.sticks(rcBuf);
-        for (let i = 0; i < 16; i++) if (!(rcBuf[i] >= 800 && rcBuf[i] <= 2200)) rcBuf[i] = 1500;
-        bf.setRc(rcBuf);
-      }
+      if (this.rcPacket()) bf.setRc(rcBuf);
       bf.setLinkStats(rcLink.lq, Math.round(rcLink.rssiDbm), rcLink.rfMode);
     }
     this.battAcc += dt;
@@ -469,13 +523,15 @@ export class FlightCore {
   physicsStep(dt: number) {
     const { bf, quad, brownout } = this;
     // 1S boards: the FC browns out when the pack sags too far, and boots again once it recovers
-    if (bf && quad.p.battery.cellsSeries === 1) {
+    if (bf && !this.ap && quad.p.battery.cellsSeries === 1) {
       const ev = brownout.update(quad.s.vbus, dt);
       if (ev === 'down') { this.log(`Flight controller brownout: the 1S pack sagged to ${quad.s.vbus.toFixed(2)} V (FC rebooting, motors off)`); this.hooks.brownout?.('down'); }
       if (ev === 'up') { bf.eepromSet(bf.eepromGet()); this.powerOnFirmware(); this.log('Flight controller rebooted after the brownout (arm switch must be cycled)'); this.hooks.brownout?.('up'); }
     }
-    // sensors -> FC
-    if (bf && !brownout.off) {
+    // sensors -> FC (ArduPilot when the build flies it: a Betaflight instance stays loaded, unused)
+    if (this.ap) {
+      this.apStep(dt);
+    } else if (bf && !brownout.off) {
       this.fcInputs(dt, false);
       for (let k = 0; k < 4; k++) this.erpm[k] = Math.abs(quad.motors[k].erpm());
       bf.setErpm(this.erpm);
@@ -500,7 +556,11 @@ export class FlightCore {
       quad.command(this.motorCmd, false);
     }
     this.hooks.afterFirmware?.(dt);
+    const hand = this.hand && !this.hand.released ? this.hand : null;
+    if (hand) this.handForce(+1, dt);
     quad.step(dt, this.env);
+    // (the hand keeps its grip on the attitude through the push, as a thrown plane leaves the hand level)
+    if (hand) { this.handForce(-1, dt); this.holdAttitude(); if (hand.throwT < 0) this.handRelease(dt); }
     this.noteImuSample(dt);
     // the prop-wash puffs drift with the mean wind: advanced once per ms with the time gathered, not
     // every 125 µs step (their motion is far slower than that; WakeField.step takes any dt)
@@ -551,6 +611,148 @@ export class FlightCore {
         this.crashMsg = `${this.impactMsg} · ${this.damageMsg}`;
       }
     }
+  }
+
+  // ---------- ArduPilot ----------
+
+  /** Which ArduPilot vehicle the current build flies (null: Betaflight). */
+  get apVehicle(): ApVehicle | null { return this.spec ? apVehicle(this.spec) : null; }
+
+  /**
+   * Start ArduPilot for the current build (any previous instance stops: a power cycle). Its home is
+   * the map's GPS origin; it boots facing the spawn's heading.
+   */
+  startArduPilot(): ArduPilotLink | null {
+    this.stopArduPilot();
+    const v = this.apVehicle, o = this.apOpts;
+    if (!v) return null;
+    const url = o?.moduleUrl(v);
+    if (!o || !url) { this.log(`ArduPilot is not available here (no firmware build: bash firmware/apwasm/build.sh)`); return null; }
+    const headingDeg = 90 - (this.map.spawn.yaw * 180) / Math.PI;
+    const launch = apLaunch(this.build, { ...this.gps.origin }, headingDeg);
+    this.ap = new ArduPilotLink(v, { moduleUrl: url, files: launch.files, args: launch.args, cwd: launch.cwd }, o.spawn, (t) => this.log(t));
+    this.apAcc = 0; this.apRcT = -Infinity; this.apMissionSent = false;
+    this.motorCmd.fill(0); this.armed = false;
+    this.log(`Ardu${v === 'plane' ? 'Plane' : 'Copter'} 4.7.2 starting (WebAssembly)`);
+    return this.ap;
+  }
+
+  stopArduPilot() { this.ap?.terminate(); this.ap = null; }
+
+  /** The plant's state for ArduPilot's SITL JSON backend (sensors are ArduPilot's own SITL models). */
+  private apStateLine(withRc: boolean): string {
+    const quad = this.quad, s = quad.s, ap = this.ap!;
+    // airspeed: the body-x component of the motion through the air (a pitot along the fuselage)
+    const wind = this.env.wind.at(s.pos, this.windTmp);
+    const air = this.airTmp; air.x = s.vel.x - wind.x; air.y = s.vel.y - wind.y; air.z = s.vel.z - wind.z;
+    const airB = rotateInv(this.airTmp, s.q, air);
+    let rc: number[] | undefined;
+    if (withRc) {
+      rc = Array.from(this.rcBuf.subarray(0, 12), Math.round);
+      rc[1] = 3000 - rc[1]; // ArduPilot: pitch forward = low PWM
+    }
+    return stateJson({
+      time: ap.apTime + AP_FRAME_DT,
+      pos: s.pos, vel: s.vel, q: s.q,
+      gyro: this.fcGyro = this.ops?.imuTouched ? this.ops.gyro(quad.imu.gyroOut) : quad.imu.gyroOut,
+      accel: this.fcAcc = this.ops?.imuTouched ? this.ops.acc(quad.imu.accOut) : quad.imu.accOut,
+      airspeed: Math.max(0, airB.x),
+      battery: { voltage: s.vbus, current: s.ibus },
+      rc,
+    });
+  }
+
+  /** One physics step's worth of ArduPilot: RC packets, the 1 kHz lock-step frame, outputs to the ESCs and servos. */
+  private apStep(dt: number) {
+    const ap = this.ap!, quad = this.quad;
+    this.linkBudget(dt);
+    this.rcAcc += dt;
+    if (this.rcAcc >= 1 / this.settings.rcLinkHz) {
+      this.rcAcc -= 1 / this.settings.rcLinkHz;
+      if (this.rcPacket()) this.apRcT = this.fcT;
+    }
+    this.apAcc += dt;
+    if (this.apAcc >= AP_FRAME_DT - 1e-9) {
+      this.apAcc -= AP_FRAME_DT;
+      // (SITL's RC input samples whichever frame its 50 Hz poll lands on: every frame carries the
+      // sticks while the link is up; a link silent for 100 ms sends none and ArduPilot fails safe)
+      if (ap.live || ap.status === 'running') ap.exchange(this.apStateLine(this.fcT - this.apRcT < 0.1), this.apOpts?.waitMs ?? 100);
+      ap.hub.pump(AP_FRAME_DT);
+      this.armed = ap.hub.tel.armed;
+      const ms = this.map.mission;
+      if (ms && !this.apMissionSent && ap.hub.tel.connected && ap.hub.tel.gpsFix >= 3) {
+        this.apMissionSent = true;
+        ap.hub.uploadMission(missionItems(ms, ap.vehicle, this.gps.origin, spawnGroundZ(this.map)), (ok, why) =>
+          this.log(ok ? `Mission loaded: ${ms.points.length} waypoints, then ${ms.end === 'rtl' ? 'home' : ms.end} (AUX4 flies it)` : `The map's mission was not loaded: ${why}`));
+      }
+      this.fcT += AP_FRAME_DT;
+    }
+    // outputs: PWM 1000..2000 to the ESCs (DShot 48..2047; at or below 1000 the motor stops), the rest to the servos
+    const pwm = ap.pwm, plane = this.build.info.plane;
+    const toEsc = (us: number) => (us > 1000 ? Math.round(48 + Math.min(1, (us - 1000) / 1000) * 1999) : 0);
+    if (plane) {
+      for (let k = 0; k < this.motorCmd.length; k++) this.motorCmd[k] = k < plane.motorChannels.length ? toEsc(pwm[plane.motorChannels[k]]) : 0;
+      quad.servos(pwm);
+    } else for (let k = 0; k < this.motorCmd.length; k++) this.motorCmd[k] = toEsc(pwm[k]);
+    if (this.ops?.motorsTouched) { this.escCmd.set(this.motorCmd); this.ops.motors(this.escCmd); quad.command(this.escCmd, false); }
+    else quad.command(this.motorCmd, false);
+  }
+
+  // ---------- a plane's hand launch ----------
+
+  /** The hand's grip: the plane at the hand, wings level, nose a little up, still. */
+  private holdInHand() {
+    const h = this.hand!, s = this.quad.s;
+    s.pos = { ...h.pos }; s.vel = { x: 0, y: 0, z: 0 }; s.w = { x: 0, y: 0, z: 0 };
+    this.holdAttitude();
+  }
+
+  private holdAttitude() {
+    const h = this.hand!, s = this.quad.s;
+    // yaw about z, then the nose up (a rotation about the body's -y)
+    const cy = Math.cos(h.yaw / 2), sy = Math.sin(h.yaw / 2), cp = Math.cos(HAND_PITCH / 2), sp = Math.sin(HAND_PITCH / 2);
+    s.q = { w: cy * cp, x: sy * sp, y: -cy * sp, z: sy * cp };
+    s.w.x = s.w.y = s.w.z = 0;
+  }
+
+  /**
+   * The hand's force on the plane, added to the plant's external force for one step (sign +1
+   * before, -1 after): holding, a stiff spring and damper on its position against gravity and
+   * thrust; throwing, gravity's support and the push along the heading that reaches the throw speed
+   * in THROW_S, then it lets go.
+   */
+  private handForce(sign: 1 | -1, dt: number) {
+    const h = this.hand!, s = this.quad.s, m = this.quad.p.mass, f = this.quad.extForce, F = this.handF;
+    if (sign > 0) {
+      if (h.throwT < 0) {
+        const k = m * 400, c = 2 * m * 20;
+        F.x = k * (h.pos.x - s.pos.x) - c * s.vel.x;
+        F.y = k * (h.pos.y - s.pos.y) - c * s.vel.y;
+        F.z = m * G0 + k * (h.pos.z - s.pos.z) - c * s.vel.z;
+      } else {
+        const a = THROW_MPS / THROW_S, fx = Math.cos(h.yaw), fy = Math.sin(h.yaw);
+        F.x = m * a * fx; F.y = m * a * fy; F.z = m * (G0 + THROW_UP_MPS / THROW_S);
+      }
+    }
+    f.x += sign * F.x; f.y += sign * F.y; f.z += sign * F.z;
+    if (sign < 0 && h.throwT >= 0) {
+      h.throwT += dt;
+      if (h.throwT >= THROW_S) { h.released = true; this.log('Hand launch'); }
+    }
+  }
+  private readonly handF: V3 = { x: 0, y: 0, z: 0 };
+
+  /**
+   * Throw when the pilot means it: the motor run up to launch power, past 65 % (ACRO, FBWA, MANUAL:
+   * a heavy wing thrown at part throttle sinks in), or, armed, the throttle stick past 80 % (AUTO's
+   * takeoff keeps the motor off until it feels the throw), for 0.3 s.
+   */
+  private handRelease(dt: number) {
+    const h = this.hand!;
+    const motor = this.motorCmd.reduce((a, c) => Math.max(a, c), 0);
+    const want = motor > 48 + 0.65 * 1999 || (this.armed && this.rcBuf[2] > 1800);
+    h.hold = want ? h.hold + dt : 0;
+    if (h.hold >= 0.3) h.throwT = 0;
   }
 
   /** What a detector's look needs to know about the quad and the map (rebuilt with the actors). */

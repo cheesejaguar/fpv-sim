@@ -39,6 +39,12 @@ ol { padding-left: 18px; } li { margin: 4px 0; }
 .diff-report p { margin: 4px 0; }
 .diff-report .warn { color: #ffcf6a; }
 .diff-skip { max-height: 220px; overflow: auto; background: #07090b; border: 1px solid var(--line); border-radius: 6px; padding: 6px; font: 13px/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+/* ArduPilot page of the builder: parameters and Lua scripts */
+.ap-params, .ap-lua { width: 100%; background: #07090b; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px; font: 13px/1.35 ui-monospace, Consolas, monospace; resize: vertical; tab-size: 2; }
+.ap-base { max-height: 220px; overflow: auto; font: 12px/1.35 ui-monospace, Consolas, monospace; color: var(--mut); }
+.ap-script { margin: 8px 0; }
+.ap-script-head, .ap-script-add { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.ap-script-head .spacer { flex: 1; }
 .builder-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.35); }
 .builder-bar .spacer { flex: 1; }
 .builder-dirty, .bf-dirty { color: var(--mut); font-size: 13px; }

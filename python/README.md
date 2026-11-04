@@ -42,6 +42,20 @@ grid = sim.linkmap(centre=[0, 0], half_m=250, n=21)       # RC link margin / GNS
 
 `python3 python/examples/ops_demo.py` shows each of them ([docs/OPERATIONS.md](../docs/OPERATIONS.md)).
 
+## ArduPilot: planes and ArduCopter
+
+Planes fly ArduPlane, and a quad with `"spec": {"autopilot": "ardupilot"}` flies ArduCopter, the
+real firmware compiled to WebAssembly ([docs/ARDUPILOT.md](../docs/ARDUPILOT.md)). The client then
+has `set_params(**params)`, `set_mode(n)`, `arm()`, `upload_mission(items)`, raw `mavlink(bytes)` and
+`subscribe_mavlink(handler)`. `Client.launch(mavlink_port=5760)` also serves ArduPilot's MAVLink on
+`tcp:127.0.0.1:5760` for pymavlink, MAVProxy or a ground station. In lock-step, it moves as you step.
+
+```python
+with Client.launch(mavlink_port=5760) as sim:
+    sim.reset({"format": "fpvsim-scenario", "version": 1, "map": {"id": "park"}, "drone": {"preset": "Plane: AtomRC Penguin"}})
+    gcs = mavutil.mavlink_connection("tcp:127.0.0.1:5760")   # pymavlink, as against any SITL
+```
+
 ## Gymnasium
 
 ```python
@@ -77,4 +91,5 @@ with Client() as sim:                 # tcp://127.0.0.1:7878 (FPVSIM_PORT to cha
 | `examples/gym_random.py` | the Gymnasium environment with a random policy; Gymnasium's env checker |
 | `examples/realtime_stream.py` | headless on the wall clock: 60 Hz state stream, sticks as they change |
 | `examples/live_autopilot.py` | flies the browser game in real time, then hands the sticks back |
+| `examples/ardupilot_mission.py` | ArduPlane, headless: parameters, a square mission, a hand launch in AUTO, the mission's progress (and pymavlink on tcp:5760 if installed) |
 | `examples/record_dataset.py` | streams a camera dataset (picture, depth, segmentation, labels) from the browser game to a folder |

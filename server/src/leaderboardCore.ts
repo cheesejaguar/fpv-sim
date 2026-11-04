@@ -56,6 +56,12 @@ export const CLASSES: Readonly<Record<string, { name: string; vmax: number; amax
   whoop75: { name: '75 mm Whoop 1S', vmax: 16, amax: 55 },
   cinewhoop3: { name: '3" Cinewhoop 4S HD', vmax: 35, amax: 80 },
   toothpick3: { name: '3" Toothpick 4S', vmax: 39, amax: 100 },
+  // planes: a dive runs well past the level top speed, so the caps are ~1.6x it
+  'plane-t1': { name: 'HEEWING T1 Ranger', vmax: 55, amax: 70 },
+  'plane-penguin': { name: 'AtomRC Penguin', vmax: 50, amax: 70 },
+  'plane-arwing': { name: 'SonicModell AR Wing Pro', vmax: 58, amax: 70 },
+  'plane-talon': { name: 'ZOHD Talon GT Rebel', vmax: 52, amax: 70 },
+  'plane-ranger2000': { name: 'Volantex Ranger 2000', vmax: 40, amax: 60 },
   custom: { name: 'Custom', vmax: 70, amax: 250 },
 });
 export const CUSTOM = 'custom';

@@ -1238,6 +1238,8 @@ export class Editor implements EditorView {
       const old = this.ed.doc.paths![path[1] as number].id;
       const ops: Op[] = [{ k: 'set', path, v }];
       (this.ed.doc.actors ?? []).forEach((a, i) => { if (a.path === old) ops.push({ k: 'set', path: ['actors', i, 'path'], v }); });
+      // and the autopilot mission flying it
+      if (this.ed.doc.mission?.path === old) ops.push({ k: 'set', path: ['mission', 'path'], v });
       this.ed.apply('Rename path', ops);
       return;
     }

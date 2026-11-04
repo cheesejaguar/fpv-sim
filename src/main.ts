@@ -29,7 +29,7 @@ import { isUserMapId } from './net/protocol';
 import { installUserMaps } from './app/userMapsHost';
 import { MotorAudio } from './render/audio';
 import { cameraMountQuat } from './render/coords';
-import { buildDroneMesh } from './render/droneMesh';
+import { buildDroneMesh, preloadDroneMesh, droneMeshReady } from './render/droneMesh';
 import { autoCubeSize, FpvCamera } from './render/fpvCamera';
 import { OsdRenderer } from './render/osdRenderer';
 import { RemoteQuads } from './render/remoteQuads';
@@ -59,6 +59,8 @@ addEventListener('pagehide', flushStore);
 document.addEventListener('visibilitychange', () => { if (document.hidden) flushStore(); });
 /** The physics rate the overload governor lowered to this session (not saved), and the pilot's own. */
 let governedHz: number | null = null, chosenHz = 0;
+/** the firmware the worker last reported running (the menu's status chip) */
+let fwName = 'Betaflight 4.5.5';
 /** Save simulation settings, with the pilot's own physics rate in place of a governed one. */
 const storeSim = (s: SimSettings) => store(KEYS.sim, governedHz !== null && s.physicsHz === governedHz ? { ...s, physicsHz: chosenHz } : s);
 
@@ -106,6 +108,7 @@ if (!hasMap(sim0.mapId)) sim0.mapId = 'field';
 await Promise.all([
   preloadMap(sim0.mapId).catch((e) => { console.warn(e); sim0.mapId = 'field'; }),
   preloadPropTable(spec0.prop),
+  preloadDroneMesh(spec0),
 ]);
 const map0 = withSpawn(withCourse(MAPS[sim0.mapId](), sim0.courseId), sim0.spawnId);
 const build0 = buildDrone(spec0);
@@ -132,7 +135,7 @@ void ctx.osd.setFont(ctx.view.osdFont);
 const sticks = new SticksView(), spectrum = new SpectrumView();
 bridge.onMessage = (m) => {
   switch (m.type) {
-    case 'ready': ctx.fwStatus = ''; ctx.log(`Firmware running: ${m.fw}`); break;
+    case 'ready': ctx.fwStatus = ''; fwName = /^Ardu/.test(m.fw) ? m.fw : 'Betaflight 4.5.5'; ctx.log(`Firmware running: ${m.fw}`); break;
     case 'fwMissing': ctx.fwStatus = m.reason; ctx.log(m.reason); break;
     case 'fatal': {
       // the bridge already restarted the worker once: a second failure needs a reload
@@ -149,6 +152,7 @@ bridge.onMessage = (m) => {
     case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
     case 'opsEvent': ctx.log(opsEventText(m.e)); apiHost.onOps(m.e); break;
     case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
+    case 'mavlink': apiHost.onMavlink(m.data); break;
     case 'detect': if (m.on) ctx.log(`Detected by ${m.name}`); break; // (the HUD alert reads the shared flags)
     case 'spectrum': spectrum.onSpectrum(m.spec); break;
     case 'runState': ctx.run = { active: m.active, seed: m.seed ?? ctx.run.seed, reason: m.reason }; if (!m.active && m.reason) ctx.log(`Reproducible run ended: ${m.reason}`); break;
@@ -181,6 +185,8 @@ const apiHost = new ApiHost({
   setOps: (config) => bridge.setOps(config),
   injectFaults: (faults) => bridge.opsFaults(faults),
   dropPayload: () => bridge.opsDrop(),
+  apRequest: (op) => bridge.apRequest(op),
+  mavlinkWrite: (bytes) => bridge.send({ type: 'mavlink', data: bytes }),
   hardwareCli: async (keepOsdLayout, propsOut) => (await import('./bf/defaults')).simHardwareCli(ctx.build, { keepOsdLayout, propsOut }),
   fly: () => { if (ctx.menuOpen) gameMenu.resume(); },
   pause: () => { if (!ctx.menuOpen) { gameMenu.inFlight = true; gameMenu.open('pause'); } },
@@ -196,8 +202,8 @@ function applySpec(s: DroneSpec) {
   // the rendered quad: a prop whose precomputed BEMT table isn't here yet waits for it (a short
   // download) instead of building it on the main thread (~1.2 s); the newest spec wins
   const n = ++specSeq;
-  if (hasPropTable(s.prop)) showBuild(s);
-  else void preloadPropTable(s.prop).then(() => { if (n === specSeq) showBuild(s); });
+  if (hasPropTable(s.prop) && droneMeshReady(s)) showBuild(s);
+  else void Promise.all([preloadPropTable(s.prop), preloadDroneMesh(s)]).then(() => { if (n === specSeq) showBuild(s); });
 }
 function showBuild(s: DroneSpec) {
   ctx.build = buildDrone(s);
@@ -442,6 +448,7 @@ const gameMenu = new GameMenu({
   sim: () => ctx.sim, applySim: (s) => applySim(s),
   build: () => ctx.build,
   fwStatus: () => ctx.fwStatus,
+  fwName: () => fwName,
   settingsTabs: [
     { id: 'sim', label: 'Simulation', icon: 'sliders', render: () => settingsPanel(ctx.sim, ctx.view, applySim, applyView, {
       video: () => ctx.build.info.components.video,

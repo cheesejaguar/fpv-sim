@@ -50,8 +50,8 @@
 //   CA_ROTOR geometry): controls[0] front-right CCW, [1] rear-left CCW, [2] front-left CW,
 //   [3] rear-right CW (seen from above; CA_ROTORn_KM > 0 = CCW).
 
-/** Element types of MAVLink fields (char arrays are not needed by these messages). */
-type Base = 'uint8_t' | 'int8_t' | 'uint16_t' | 'int16_t' | 'uint32_t' | 'int32_t' | 'uint64_t' | 'int64_t' | 'float' | 'double';
+/** Element types of MAVLink fields (char arrays travel as byte arrays: see mavString / mavChars). */
+type Base = 'char' | 'uint8_t' | 'int8_t' | 'uint16_t' | 'int16_t' | 'uint32_t' | 'int32_t' | 'uint64_t' | 'int64_t' | 'float' | 'double';
 type FieldSpec = readonly [Base | `${Base}[${number}]`, string];
 interface MessageSpec { readonly id: number; readonly fields: readonly FieldSpec[]; readonly ext: readonly FieldSpec[] }
 
@@ -106,6 +106,56 @@ const SPECS = {
       ['int32_t', 'lon'], ['int32_t', 'alt'], ['int16_t', 'vx'], ['int16_t', 'vy'], ['int16_t', 'vz'], ['uint16_t', 'ind_airspeed'], ['uint16_t', 'true_airspeed'],
       ['int16_t', 'xacc'], ['int16_t', 'yacc'], ['int16_t', 'zacc']],
   },
+  // ---- ground station messages (ArduPilot in the browser, src/ap/): common.xml ----
+  SYS_STATUS: {
+    id: 1,
+    fields: [['uint32_t', 'onboard_control_sensors_present'], ['uint32_t', 'onboard_control_sensors_enabled'], ['uint32_t', 'onboard_control_sensors_health'],
+      ['uint16_t', 'load'], ['uint16_t', 'voltage_battery'], ['int16_t', 'current_battery'], ['int8_t', 'battery_remaining'], ['uint16_t', 'drop_rate_comm'],
+      ['uint16_t', 'errors_comm'], ['uint16_t', 'errors_count1'], ['uint16_t', 'errors_count2'], ['uint16_t', 'errors_count3'], ['uint16_t', 'errors_count4']],
+    ext: [['uint32_t', 'onboard_control_sensors_present_extended'], ['uint32_t', 'onboard_control_sensors_enabled_extended'], ['uint32_t', 'onboard_control_sensors_health_extended']],
+  },
+  SET_MODE: { id: 11, ext: [], fields: [['uint8_t', 'target_system'], ['uint8_t', 'base_mode'], ['uint32_t', 'custom_mode']] },
+  PARAM_REQUEST_READ: { id: 20, ext: [], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['char[16]', 'param_id'], ['int16_t', 'param_index']] },
+  PARAM_REQUEST_LIST: { id: 21, ext: [], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component']] },
+  PARAM_VALUE: { id: 22, ext: [], fields: [['char[16]', 'param_id'], ['float', 'param_value'], ['uint8_t', 'param_type'], ['uint16_t', 'param_count'], ['uint16_t', 'param_index']] },
+  PARAM_SET: { id: 23, ext: [], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['char[16]', 'param_id'], ['float', 'param_value'], ['uint8_t', 'param_type']] },
+  GPS_RAW_INT: {
+    id: 24,
+    fields: [['uint64_t', 'time_usec'], ['uint8_t', 'fix_type'], ['int32_t', 'lat'], ['int32_t', 'lon'], ['int32_t', 'alt'], ['uint16_t', 'eph'], ['uint16_t', 'epv'],
+      ['uint16_t', 'vel'], ['uint16_t', 'cog'], ['uint8_t', 'satellites_visible']],
+    ext: [['int32_t', 'alt_ellipsoid'], ['uint32_t', 'h_acc'], ['uint32_t', 'v_acc'], ['uint32_t', 'vel_acc'], ['uint32_t', 'hdg_acc'], ['uint16_t', 'yaw']],
+  },
+  ATTITUDE: { id: 30, ext: [], fields: [['uint32_t', 'time_boot_ms'], ['float', 'roll'], ['float', 'pitch'], ['float', 'yaw'], ['float', 'rollspeed'], ['float', 'pitchspeed'], ['float', 'yawspeed']] },
+  GLOBAL_POSITION_INT: {
+    id: 33, ext: [],
+    fields: [['uint32_t', 'time_boot_ms'], ['int32_t', 'lat'], ['int32_t', 'lon'], ['int32_t', 'alt'], ['int32_t', 'relative_alt'], ['int16_t', 'vx'], ['int16_t', 'vy'],
+      ['int16_t', 'vz'], ['uint16_t', 'hdg']],
+  },
+  MISSION_REQUEST: { id: 40, ext: [['uint8_t', 'mission_type']], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['uint16_t', 'seq']] },
+  MISSION_CURRENT: { id: 42, ext: [['uint16_t', 'total'], ['uint8_t', 'mission_state'], ['uint8_t', 'mission_mode']], fields: [['uint16_t', 'seq']] },
+  MISSION_REQUEST_LIST: { id: 43, ext: [['uint8_t', 'mission_type']], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component']] },
+  MISSION_COUNT: { id: 44, ext: [['uint8_t', 'mission_type'], ['uint32_t', 'opaque_id']], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['uint16_t', 'count']] },
+  MISSION_CLEAR_ALL: { id: 45, ext: [['uint8_t', 'mission_type']], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component']] },
+  MISSION_ITEM_REACHED: { id: 46, ext: [], fields: [['uint16_t', 'seq']] },
+  MISSION_ACK: { id: 47, ext: [['uint8_t', 'mission_type'], ['uint32_t', 'opaque_id']], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['uint8_t', 'type']] },
+  MISSION_REQUEST_INT: { id: 51, ext: [['uint8_t', 'mission_type']], fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['uint16_t', 'seq']] },
+  NAV_CONTROLLER_OUTPUT: {
+    id: 62, ext: [],
+    fields: [['float', 'nav_roll'], ['float', 'nav_pitch'], ['int16_t', 'nav_bearing'], ['int16_t', 'target_bearing'], ['uint16_t', 'wp_dist'], ['float', 'alt_error'],
+      ['float', 'aspd_error'], ['float', 'xtrack_error']],
+  },
+  MISSION_ITEM_INT: {
+    id: 73, ext: [['uint8_t', 'mission_type']],
+    fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['uint16_t', 'seq'], ['uint8_t', 'frame'], ['uint16_t', 'command'], ['uint8_t', 'current'],
+      ['uint8_t', 'autocontinue'], ['float', 'param1'], ['float', 'param2'], ['float', 'param3'], ['float', 'param4'], ['int32_t', 'x'], ['int32_t', 'y'], ['float', 'z']],
+  },
+  VFR_HUD: { id: 74, ext: [], fields: [['float', 'airspeed'], ['float', 'groundspeed'], ['int16_t', 'heading'], ['uint16_t', 'throttle'], ['float', 'alt'], ['float', 'climb']] },
+  COMMAND_INT: {
+    id: 75, ext: [],
+    fields: [['uint8_t', 'target_system'], ['uint8_t', 'target_component'], ['uint8_t', 'frame'], ['uint16_t', 'command'], ['uint8_t', 'current'], ['uint8_t', 'autocontinue'],
+      ['float', 'param1'], ['float', 'param2'], ['float', 'param3'], ['float', 'param4'], ['int32_t', 'x'], ['int32_t', 'y'], ['float', 'z']],
+  },
+  STATUSTEXT: { id: 253, ext: [['uint16_t', 'id'], ['uint8_t', 'chunk_seq']], fields: [['uint8_t', 'severity'], ['char[50]', 'text']] },
   DISTANCE_SENSOR: {
     id: 132,
     fields: [['uint32_t', 'time_boot_ms'], ['uint16_t', 'min_distance'], ['uint16_t', 'max_distance'], ['uint16_t', 'current_distance'], ['uint8_t', 'type'],
@@ -129,7 +179,7 @@ export type MavMessage = KnownMessage | UnknownMessage;
 /** What encode() takes: missing fields encode as 0 (HEARTBEAT.mavlink_version as 3). */
 export type OutMessage = { [N in MsgName]: { name: N; fields: Partial<MsgFields<N>> } }[MsgName];
 
-const SIZE: Record<Base, number> = { uint8_t: 1, int8_t: 1, uint16_t: 2, int16_t: 2, uint32_t: 4, int32_t: 4, uint64_t: 8, int64_t: 8, float: 4, double: 8 };
+const SIZE: Record<Base, number> = { char: 1, uint8_t: 1, int8_t: 1, uint16_t: 2, int16_t: 2, uint32_t: 4, int32_t: 4, uint64_t: 8, int64_t: 8, float: 4, double: 8 };
 
 interface Field { name: string; base: Base; size: number; len: number; offset: number } // len 0 = scalar
 export interface MessageInfo {
@@ -197,7 +247,7 @@ export const MSG_ID = Object.fromEntries((Object.keys(SPECS) as MsgName[]).map((
 
 function put(dv: DataView, o: number, base: Base, v: number): void {
   switch (base) {
-    case 'uint8_t': dv.setUint8(o, v); break;
+    case 'char': case 'uint8_t': dv.setUint8(o, v); break;
     case 'int8_t': dv.setInt8(o, v); break;
     case 'uint16_t': dv.setUint16(o, v, true); break;
     case 'int16_t': dv.setInt16(o, v, true); break;
@@ -212,7 +262,7 @@ function put(dv: DataView, o: number, base: Base, v: number): void {
 
 function get(dv: DataView, o: number, base: Base): number {
   switch (base) {
-    case 'uint8_t': return dv.getUint8(o);
+    case 'char': case 'uint8_t': return dv.getUint8(o);
     case 'int8_t': return dv.getInt8(o);
     case 'uint16_t': return dv.getUint16(o, true);
     case 'int16_t': return dv.getInt16(o, true);
@@ -255,6 +305,18 @@ export function encodeFields<N extends MsgName>(name: N, fields: Partial<MsgFiel
     } else put(dv, f.offset, f.base, v as number);
   }
   return buf;
+}
+
+/** A char[] field as text (up to the first NUL). */
+export function mavString(chars: ArrayLike<number>): string {
+  let s = '';
+  for (let i = 0; i < chars.length && chars[i]; i++) s += String.fromCharCode(chars[i]);
+  return s;
+}
+
+/** Text as a char[n] field (truncated, NUL-padded). */
+export function mavChars(text: string, n: number): number[] {
+  return Array.from({ length: n }, (_, i) => (i < text.length ? text.charCodeAt(i) & 0xff : 0));
 }
 
 // ---- framing ----
@@ -301,6 +363,9 @@ export function encode(msg: OutMessage, h: FrameHeader): Uint8Array {
  * claims more bytes than have arrived holds back what follows until they do (no noise on PX4's
  * TCP link).
  */
+/** Bytes of extension fields newer than these specs a v2 frame may carry (MISSION_CURRENT has grown by 12). */
+const EXT_SLACK = 64;
+
 export class MavlinkParser {
   crcErrors = 0;
   droppedBytes = 0; // garbage + bytes of rejected frames
@@ -318,7 +383,9 @@ export class MavlinkParser {
       const len = b[i + 1], iflags = v2 ? b[i + 2] : 0;
       const msgid = v2 ? b[i + 7] | (b[i + 8] << 8) | (b[i + 9] << 16) : b[i + 5];
       const info = BY_ID.get(msgid);
-      if ((iflags & ~IFLAG_SIGNED) || (info && (len > info.maxLength || (!v2 && len < info.minLength)))) { i++; this.droppedBytes++; continue; }
+      // (a v2 payload a little longer than the spec carries a newer sender's extension fields, ignored
+      // on decode; far longer is no frame of this message)
+      if ((iflags & ~IFLAG_SIGNED) || (info && (len > info.maxLength + (v2 ? EXT_SLACK : 0) || (!v2 && len < info.minLength)))) { i++; this.droppedBytes++; continue; }
       const total = hl + len + 2 + (iflags & IFLAG_SIGNED ? SIGNATURE_LEN : 0);
       // an unknown id has no CRC to check, so it must at least be followed by a magic byte
       if (b.length - i < total + (info ? 0 : 1)) break;

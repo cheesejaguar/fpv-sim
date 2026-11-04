@@ -34,6 +34,8 @@ export interface PropSpec {
   chordFracs: number[]; hubFrac: number; washoutDeg: number;
   calib: { rpm: number; thrustN: number; torqueNm: number }; // static, sea level
   stiffness: number; // 0..1 (affects damage resistance)
+  /** folding blades (gliders): they fold flat when the motor stops */
+  folding?: boolean;
   est?: string[];
 }
 
@@ -81,6 +83,12 @@ export const MOTORS: MotorSpec[] = [
   { id: 'm0702-26000', name: '0702 26000KV (1S 65 mm whoop)', stator: '0702', kv: 26000, rmMohm: 320, i0A: 0.35, poles: 12, massG: 2.1, rotorInertia: 4e-9, bellDiaMm: 9, bellHeightMm: 6, thermalCap: 0.8, thermalRes: 45, maxCurrentA: 4.5, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
   { id: 'm0802-19000', name: '0802 19000KV (1S 75 mm whoop)', stator: '0802', kv: 19000, rmMohm: 300, i0A: 0.45, poles: 12, massG: 3.0, rotorInertia: 7e-9, bellDiaMm: 10, bellHeightMm: 7, thermalCap: 1.2, thermalRes: 35, maxCurrentA: 6, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
   { id: 'm1404-3800', name: '1404 3800KV (3")', stator: '1404', kv: 3800, rmMohm: 190, i0A: 0.6, poles: 12, massG: 9.5, rotorInertia: 1.2e-7, bellDiaMm: 18, bellHeightMm: 9, thermalCap: 5, thermalRes: 12, maxCurrentA: 18, est: ['rmMohm', 'rotorInertia', 'thermal'] },
+  // fixed-wing motors (src/data/airframes.ts): the planes' stock power systems
+  { id: 'm1404-3700', name: 'HEEWING FX-1404 3700KV (T1 Ranger)', stator: '1404', kv: 3700, rmMohm: 200, i0A: 0.6, poles: 12, massG: 10, rotorInertia: 1.2e-7, bellDiaMm: 18, bellHeightMm: 9, thermalCap: 5, thermalRes: 12, maxCurrentA: 14, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
+  { id: 'm2004-2400', name: 'AtomRC 2004 2400KV (Penguin)', stator: '2004', kv: 2400, rmMohm: 105, i0A: 0.7, poles: 12, massG: 22, rotorInertia: 2e-6, bellDiaMm: 24, bellHeightMm: 13, thermalCap: 10, thermalRes: 7, maxCurrentA: 20, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
+  { id: 'm2216-1400', name: '2216 1400KV (AR Wing Pro combo)', stator: '2216', kv: 1400, rmMohm: 75, i0A: 0.9, poles: 14, massG: 68, rotorInertia: 6e-6, bellDiaMm: 28, bellHeightMm: 26, thermalCap: 40, thermalRes: 3, maxCurrentA: 35, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
+  { id: 'm2216-1300', name: 'ZOHD 2216 1300KV (Talon GT Rebel)', stator: '2216', kv: 1300, rmMohm: 85, i0A: 0.8, poles: 14, massG: 69, rotorInertia: 6e-6, bellDiaMm: 28, bellHeightMm: 26, thermalCap: 40, thermalRes: 3, maxCurrentA: 32, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
+  { id: 'm2215-1400', name: 'Volantex 2215 1400KV (Ranger 2000)', stator: '2215', kv: 1400, rmMohm: 80, i0A: 0.9, poles: 14, massG: 62, rotorInertia: 5.5e-6, bellDiaMm: 28, bellHeightMm: 25, thermalCap: 36, thermalRes: 3.2, maxCurrentA: 30, est: ['rmMohm', 'i0A', 'rotorInertia', 'thermal'] },
 ];
 
 export const PROPS: PropSpec[] = [
@@ -92,6 +100,11 @@ export const PROPS: PropSpec[] = [
   { id: 'p-40mm3', name: '40 mm 3-blade whoop prop (Gemfan 1636 class)', diameterIn: 1.57, pitchIn: 1.1, blades: 3, massG: 0.33, chordFracs: [0.24, 0.29, 0.30, 0.28, 0.24, 0.18, 0.10], hubFrac: 0.18, washoutDeg: 0, calib: { rpm: 36000, thrustN: 0.30, torqueNm: 0.00143 }, stiffness: 0.3, est: ['calib', 'chord'] },
   { id: 'p-gf3018', name: 'Gemfan 3018 (2-blade)', diameterIn: 3, pitchIn: 1.8, blades: 2, massG: 1.4, chordFracs: [0.14, 0.18, 0.19, 0.17, 0.14, 0.10, 0.05], hubFrac: 0.16, washoutDeg: 0, calib: { rpm: 38000, thrustN: 3.7, torqueNm: 0.0377 }, stiffness: 0.4, est: ['calib'] },
   { id: 'p-hq3030', name: 'HQProp 3x3x3', diameterIn: 3, pitchIn: 3.0, blades: 3, massG: 1.6, chordFracs: C5, hubFrac: 0.16, washoutDeg: 0, calib: { rpm: 38000, thrustN: 4.4, torqueNm: 0.048 }, stiffness: 0.4, est: ['calib'] },
+  // fixed-wing props: two blades, thrust / torque calibrated from typical static C_T / C_P for their pitch (est)
+  { id: 'p-fx3830', name: 'HEEWING FX-3830 (3.8x3x2)', diameterIn: 3.8, pitchIn: 3.0, blades: 2, massG: 1.5, chordFracs: [0.13, 0.17, 0.18, 0.17, 0.14, 0.11, 0.06], hubFrac: 0.15, washoutDeg: 0, calib: { rpm: 25000, thrustN: 1.84, torqueNm: 0.0133 }, stiffness: 0.4, est: ['calib'] },
+  { id: 'p-6026', name: 'AtomRC 6026 (6x2.6x2)', diameterIn: 6, pitchIn: 2.6, blades: 2, massG: 3.2, chordFracs: [0.12, 0.15, 0.16, 0.15, 0.13, 0.10, 0.05], hubFrac: 0.12, washoutDeg: 0, calib: { rpm: 18000, thrustN: 5.35, torqueNm: 0.0498 }, stiffness: 0.45, est: ['calib'] },
+  { id: 'p-8x5', name: '8x5x2 (APC E class)', diameterIn: 8, pitchIn: 5, blades: 2, massG: 10, chordFracs: [0.11, 0.14, 0.15, 0.14, 0.12, 0.09, 0.05], hubFrac: 0.1, washoutDeg: 0, calib: { rpm: 11000, thrustN: 7.0, torqueNm: 0.0927 }, stiffness: 0.55, est: ['calib'] },
+  { id: 'p-8x4-fold', name: '8x4 folding (glider)', folding: true, diameterIn: 8, pitchIn: 4, blades: 2, massG: 12, chordFracs: [0.10, 0.13, 0.14, 0.13, 0.11, 0.08, 0.04], hubFrac: 0.12, washoutDeg: 0, calib: { rpm: 11000, thrustN: 6.7, torqueNm: 0.0785 }, stiffness: 0.5, est: ['calib'] },
 ];
 
 export const BATTERIES: BatterySpec[] = [
@@ -103,6 +116,11 @@ export const BATTERIES: BatterySpec[] = [
   { id: 'b1s300hv', name: '1S 300 mAh LiHV (BT2.0)', chemistry: 'LiHV', cells: 1, parallel: 1, capacityMah: 300, cRating: 30, irPerCellMohm: 45, massG: 7.8, dims: [55, 12, 7], wiringMohm: 10 },
   { id: 'b1s450hv', name: '1S 450 mAh LiHV (BT2.0)', chemistry: 'LiHV', cells: 1, parallel: 1, capacityMah: 450, cRating: 30, irPerCellMohm: 35, massG: 11.5, dims: [60, 17, 8], wiringMohm: 10 },
   { id: 'b4s650', name: '4S 650 mAh 95C LiPo', chemistry: 'LiPo', cells: 4, parallel: 1, capacityMah: 650, cRating: 95, irPerCellMohm: 6.5, massG: 78, dims: [58, 30, 22] },
+  { id: 'b3s1300', name: '3S 1300 mAh 75C LiPo', chemistry: 'LiPo', cells: 3, parallel: 1, capacityMah: 1300, cRating: 75, irPerCellMohm: 5, massG: 112, dims: [73, 35, 21] },
+  { id: 'b3s2200', name: '3S 2200 mAh 40C LiPo', chemistry: 'LiPo', cells: 3, parallel: 1, capacityMah: 2200, cRating: 40, irPerCellMohm: 6, massG: 185, dims: [105, 34, 24] },
+  { id: 'b4s2200', name: '4S 2200 mAh 50C LiPo', chemistry: 'LiPo', cells: 4, parallel: 1, capacityMah: 2200, cRating: 50, irPerCellMohm: 5, massG: 245, dims: [105, 34, 32] },
+  { id: 'b4s3300', name: '4S 3300 mAh 45C LiPo', chemistry: 'LiPo', cells: 4, parallel: 1, capacityMah: 3300, cRating: 45, irPerCellMohm: 5, massG: 355, dims: [138, 43, 29] },
+  { id: 'b4s2p-p45b', name: '4S2P 21700 Li-ion (Molicel P45B, 9000 mAh)', chemistry: 'LiIon', cells: 4, parallel: 2, capacityMah: 9000, cRating: 10, irPerCellMohm: 16, massG: 560, dims: [148, 44, 44] },
 ];
 
 export const ESCS: EscSpec[] = [
@@ -110,6 +128,8 @@ export const ESCS: EscSpec[] = [
   { id: 'e60', name: '60 A 4-in-1 (AM32)', continuousA: 60, burstA: 70, efficiency: 0.97, equivOhm: 0.045, massG: 18, firmware: 'AM32' },
   { id: 'e5aio', name: '5 A whoop AIO (FC + ESC + ELRS RX, Bluejay)', continuousA: 5, burstA: 6, efficiency: 0.93, equivOhm: 0.12, massG: 2.6, firmware: 'Bluejay' },
   { id: 'e20aio', name: '20 A AIO (Bluejay)', continuousA: 20, burstA: 25, efficiency: 0.95, equivOhm: 0.09, massG: 6, firmware: 'Bluejay' },
+  { id: 'e20s', name: '20 A single (BLHeli_S, plane)', continuousA: 20, burstA: 25, efficiency: 0.95, equivOhm: 0.09, massG: 7, firmware: 'BLHeli_S' },
+  { id: 'e40s', name: '40 A single with 5 V BEC (plane)', continuousA: 40, burstA: 50, efficiency: 0.965, equivOhm: 0.06, massG: 32, firmware: 'BLHeli_S' },
 ];
 
 export const FCS: FcSpec[] = [
@@ -117,6 +137,7 @@ export const FCS: FcSpec[] = [
   { id: 'fc-bmi270', name: 'F4 FC, BMI270', gyro: 'BMI270', massG: 7, softMount: 0.8 },
   { id: 'fc-whoop-aio', name: 'Whoop AIO F4, BMI270 (mass counted in the AIO ESC)', gyro: 'BMI270', massG: 0, softMount: 1.0 },
   { id: 'fc-mpu6000', name: 'F4 FC, MPU-6000 (legacy)', gyro: 'MPU6000', massG: 8, softMount: 1.0 },
+  { id: 'fc-wing', name: 'F405 wing FC (ArduPilot), ICM-42688-P + baro + GPS', gyro: 'ICM42688P', massG: 22, softMount: 1.0 },
 ];
 
 export const VIDEO: VideoSpec[] = [

@@ -1,5 +1,9 @@
 # External autopilots: PX4 and ArduPilot
 
+ArduPilot also runs **inside** the simulator, compiled to WebAssembly, with no SITL of your own:
+planes fly ArduPlane and any quad can fly ArduCopter ([ARDUPILOT.md](ARDUPILOT.md)). This page is
+about connecting an external SITL build instead.
+
 `npm run sitl` makes FPV Sim the physics plant of a PX4 or ArduPilot SITL build. You get the same:
 - rotors, motors, ESCs and battery;
 - wind, contacts and crash damage;

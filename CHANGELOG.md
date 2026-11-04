@@ -6,6 +6,34 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Fixed-wing planes and ArduPilot in the browser (docs/FIXED_WING.md, docs/ARDUPILOT.md)
+- Five FPV planes as presets: HEEWING T1 Ranger, AtomRC Penguin, SonicModell AR Wing Pro, ZOHD
+  Talon GT Rebel, Volantex Ranger 2000. Each has the power system it ships with, and any of them
+  can be rebuilt in the drone builder.
+- A per-surface flight model:
+  - each wing half, tail panel and fin with its own airflow;
+  - stall into a flat plate;
+  - control surfaces with servo slew;
+  - downwash and prop slipstream;
+  - folding props.
+- The plane builder balances each build at its static margin, trims it for hands-off cruise and
+  derives stall, cruise, top speed, endurance and glide.
+- Planes start in the pilot's hand and are thrown when the motor runs up, in any mode, AUTO
+  included.
+- **ArduPlane and ArduCopter 4.7.2, compiled to WebAssembly**, run in the browser and in Node in
+  lock-step with the physics. Quads can switch from Betaflight to ArduCopter in the builder.
+- The builder's ArduPilot page: the starting parameters, your own parameters, and Lua scripts with
+  examples, all saved with the build. An ArduPilot-style OSD.
+- Missions: any path in the map builder can be the map's mission (map format: `mission`). It is
+  uploaded once ArduPilot has GPS and flown on AUX4 (AUTO).
+- The API:
+  - `ap` sends parameters, missions, modes, arming and commands;
+  - `mavlink` passes raw MAVLink, with a `mavlink` event stream;
+  - `npm run api -- --mavlink 5760` serves pymavlink, MAVProxy, QGroundControl and Mission Planner.
+- The Python client gains `set_params`, `upload_mission` and the rest, with a mission example.
+- Fix: a stiff airframe's vibration overtones could make the IMU model blow up at a 2 kHz physics
+  rate, the rate the overload governor lowers to.
+
 ### Map builder: an editor like Unity's and Unreal's (docs/MAP_BUILDER.md)
 - Docked, resizable panels:
   - **Place**: rendered 3D thumbnails of every gate, primitive and prefab; search; drag a tile

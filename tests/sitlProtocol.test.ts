@@ -44,6 +44,11 @@ describe('MAVLink codec', () => {
     const known: Record<MsgName, number> = {
       HEARTBEAT: 50, SYSTEM_TIME: 137, RC_CHANNELS: 118, COMMAND_LONG: 152, COMMAND_ACK: 143, HIL_RC_INPUTS_RAW: 54,
       HIL_ACTUATOR_CONTROLS: 47, HIL_SENSOR: 108, HIL_GPS: 124, HIL_OPTICAL_FLOW: 237, HIL_STATE_QUATERNION: 4, DISTANCE_SENSOR: 85,
+      // the ground station messages (ArduPilot in the browser)
+      SYS_STATUS: 124, SET_MODE: 89, PARAM_REQUEST_READ: 214, PARAM_REQUEST_LIST: 159, PARAM_VALUE: 220, PARAM_SET: 168, GPS_RAW_INT: 24,
+      ATTITUDE: 39, GLOBAL_POSITION_INT: 104, MISSION_REQUEST: 230, MISSION_CURRENT: 28, MISSION_REQUEST_LIST: 132, MISSION_COUNT: 221,
+      MISSION_CLEAR_ALL: 232, MISSION_ITEM_REACHED: 11, MISSION_ACK: 153, MISSION_REQUEST_INT: 196, NAV_CONTROLLER_OUTPUT: 183,
+      MISSION_ITEM_INT: 38, VFR_HUD: 20, COMMAND_INT: 158, STATUSTEXT: 83,
     };
     for (const n of Object.keys(known) as MsgName[]) expect([n, MESSAGES[n].crcExtra]).toEqual([n, known[n]]);
     // the CRC itself: CRC-16/MCRF4XX check value
@@ -54,11 +59,13 @@ describe('MAVLink codec', () => {
 
   test('payload lengths and wire order match the generated C library', () => {
     // MAVLINK_MSG_ID_<id>_MIN_LEN / _LEN
-    const lens: Record<MsgName, [number, number]> = {
+    const lens: Partial<Record<MsgName, [number, number]>> = {
       HEARTBEAT: [9, 9], SYSTEM_TIME: [12, 12], RC_CHANNELS: [42, 42], COMMAND_LONG: [33, 33], COMMAND_ACK: [3, 10], HIL_RC_INPUTS_RAW: [33, 33],
       HIL_ACTUATOR_CONTROLS: [81, 81], HIL_SENSOR: [64, 65], HIL_GPS: [36, 39], HIL_OPTICAL_FLOW: [44, 44], HIL_STATE_QUATERNION: [64, 64], DISTANCE_SENSOR: [14, 39],
+      SYS_STATUS: [31, 43], PARAM_VALUE: [25, 25], PARAM_SET: [23, 23], ATTITUDE: [28, 28], GLOBAL_POSITION_INT: [28, 28], MISSION_ITEM_INT: [37, 38],
+      VFR_HUD: [20, 20], STATUSTEXT: [51, 54], MISSION_ACK: [3, 8], MISSION_COUNT: [4, 9], GPS_RAW_INT: [30, 52], NAV_CONTROLLER_OUTPUT: [26, 26], COMMAND_INT: [35, 35],
     };
-    for (const n of Object.keys(lens) as MsgName[]) expect([n, MESSAGES[n].minLength, MESSAGES[n].maxLength]).toEqual([n, ...lens[n]]);
+    for (const n of Object.keys(lens) as MsgName[]) expect([n, MESSAGES[n].minLength, MESSAGES[n].maxLength]).toEqual([n, ...lens[n]!]);
     const order = (n: MsgName) => MESSAGES[n].fields.map((f) => `${f.name}@${f.offset}`);
     expect(order('HEARTBEAT')).toEqual(['custom_mode@0', 'type@4', 'autopilot@5', 'base_mode@6', 'system_status@7', 'mavlink_version@8']);
     expect(order('HIL_ACTUATOR_CONTROLS')).toEqual(['time_usec@0', 'flags@8', 'controls@16', 'mode@80']);
