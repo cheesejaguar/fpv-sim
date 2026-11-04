@@ -1,0 +1,276 @@
+diff --git a/Tools/ardupilotwaf/boards.py b/Tools/ardupilotwaf/boards.py
+index b1d6681..24b53a0 100644
+--- a/Tools/ardupilotwaf/boards.py
++++ b/Tools/ardupilotwaf/boards.py
+@@ -829,7 +829,7 @@ class SITLBoard(Board):
+                 pass
+             env.CXXFLAGS += ['-DHAL_NAVEKF2_AVAILABLE=1']
+ 
+-        if self.with_can:
++        if self.with_can and not cfg.env.WASM:
+             cfg.define('HAL_NUM_CAN_IFACES', 2)
+             env.DEFINES.update(CANARD_MULTI_IFACE=1,
+                                CANARD_IFACE_ALL = 0x3,
+@@ -889,6 +889,22 @@ class SITLBoard(Board):
+ 
+         env.LINKFLAGS += ['-pthread',]
+ 
++        if cfg.env.WASM:
++            # fpv-sim: Emscripten. Every object is built for shared memory (pthreads); the link
++            # makes an ES module factory (bin/arduplane.mjs + .wasm) that fpv-sim's worker starts.
++            env.CFLAGS += ['-pthread', '-fno-fast-math', '-ffp-contract=off']
++            env.CXXFLAGS += ['-pthread', '-fno-fast-math', '-ffp-contract=off']
++            env.LINKFLAGS += [
++                '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sENVIRONMENT=worker,node',
++                '-sEXPORT_NAME=createArduPilot', '-sINVOKE_RUN=0', '-sEXIT_RUNTIME=0',
++                '-sALLOW_MEMORY_GROWTH=0', '-sINITIAL_MEMORY=268435456', '-sSTACK_SIZE=1048576',
++                '-sDEFAULT_PTHREAD_STACK_SIZE=262144', '-sPTHREAD_POOL_SIZE=12',
++                '-sFORCE_FILESYSTEM=1', '-sEXPORTED_RUNTIME_METHODS=FS,callMain,HEAPU8,HEAPF64,HEAP32',
++                '-sASSERTIONS=0', '-O2',
++            ]
++            env.cprogram_PATTERN = '%s.mjs'
++            env.cxxprogram_PATTERN = '%s.mjs'
++
+         if cfg.env.DEBUG and 'clang++' in cfg.env.COMPILER_CXX and cfg.options.asan:
+              env.LINKFLAGS += ['-fsanitize=address']
+ 
+diff --git a/Tools/ardupilotwaf/build_summary.py b/Tools/ardupilotwaf/build_summary.py
+index 8d892ba..faaa6c5 100644
+--- a/Tools/ardupilotwaf/build_summary.py
++++ b/Tools/ardupilotwaf/build_summary.py
+@@ -235,7 +235,7 @@ def size_summary(bld, nodes):
+         l.append(dict(binary_path=path))
+ 
+     for d in l:
+-        if bld.env.SIZE:
++        if bld.env.SIZE and not bld.env.WASM:
+             if bld.env.get_flat('SIZE').endswith("xtensa-esp32-elf-size"):
+                 cmd = [bld.env.get_flat('SIZE')] + ["-t"] + [d['binary_path']]
+             else:
+diff --git a/libraries/AP_Common/missing/fenv.h b/libraries/AP_Common/missing/fenv.h
+index 6c9b2ef..886df21 100644
+--- a/libraries/AP_Common/missing/fenv.h
++++ b/libraries/AP_Common/missing/fenv.h
+@@ -2,7 +2,26 @@
+ 
+ #include_next <fenv.h>
+ 
+-#ifndef HAVE_FEENABLEEXCEPT
++#if defined(__EMSCRIPTEN__)
++// WebAssembly has no floating-point exception traps (fpv-sim's build): the SITL checks are no-ops
++#ifndef FE_INVALID
++#define FE_INVALID 0
++#endif
++#ifndef FE_DIVBYZERO
++#define FE_DIVBYZERO 0
++#endif
++#ifndef FE_OVERFLOW
++#define FE_OVERFLOW 0
++#endif
++#ifndef FE_UNDERFLOW
++#define FE_UNDERFLOW 0
++#endif
++#ifndef FE_INEXACT
++#define FE_INEXACT 0
++#endif
++inline int feenableexcept(unsigned int) { return 0; }
++inline int fedisableexcept(unsigned int) { return 0; }
++#elif !defined(HAVE_FEENABLEEXCEPT)
+ #if defined(__APPLE__) && defined(__MACH__)
+ #if defined __i386__ || defined __x86_64__
+ 
+diff --git a/libraries/AP_HAL_SITL/SITL_State.cpp b/libraries/AP_HAL_SITL/SITL_State.cpp
+index 08e78f3..cab99fb 100644
+--- a/libraries/AP_HAL_SITL/SITL_State.cpp
++++ b/libraries/AP_HAL_SITL/SITL_State.cpp
+@@ -87,10 +87,12 @@ void SITL_State::_fdm_input_step(void)
+ {
+     _fdm_input_local();
+ 
++#if !defined(__EMSCRIPTEN__)
+     /* make sure we die if our parent dies */
+     if (kill(_parent_pid, 0) != 0) {
+         exit(1);
+     }
++#endif
+ 
+     if (_scheduler->interrupts_are_blocked() || _sitl == nullptr) {
+         return;
+diff --git a/libraries/AP_HAL_SITL/SITL_State_common.cpp b/libraries/AP_HAL_SITL/SITL_State_common.cpp
+index bc6ef9e..5d8e871 100644
+--- a/libraries/AP_HAL_SITL/SITL_State_common.cpp
++++ b/libraries/AP_HAL_SITL/SITL_State_common.cpp
+@@ -96,6 +96,13 @@ SITL::SerialDevice *SITL_State_Common::create_serial_sim(const char *name, const
+ 
+     if (false) {
+         // this is an empty clause to ease else-if syntax
++    } else if (streq(name, "js")) {
++        // fpv-sim: a port to JavaScript (MAVLink to the app and its API)
++        if (num_js_ports >= ARRAY_SIZE(js_ports)) {
++            AP_HAL::panic("Too many JavaScript serial ports");
++        }
++        js_ports[num_js_ports] = NEW_NOTHROW SITL::JSPort(arg ? atoi(arg) : 0);
++        return js_ports[num_js_ports++];
+ #if !defined(HAL_BUILD_AP_PERIPH)
+     } else if (streq(name, "vicon")) {
+         if (vicon != nullptr) {
+@@ -380,6 +387,9 @@ void SITL_State_Common::create_net_serial_sim(const char *spec)
+  */
+ void SITL_State_Common::sim_update(void)
+ {
++    for (uint8_t i=0; i<num_js_ports; i++) {
++        js_ports[i]->update();
++    }
+ #if AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+     // move data between the autopilot and any device attached via TCP;
+     // for serially-attached devices the SITL UART driver does this:
+diff --git a/libraries/AP_HAL_SITL/SITL_State_common.h b/libraries/AP_HAL_SITL/SITL_State_common.h
+index cbf6225..b2bac2d 100644
+--- a/libraries/AP_HAL_SITL/SITL_State_common.h
++++ b/libraries/AP_HAL_SITL/SITL_State_common.h
+@@ -44,6 +44,7 @@
+ #include <SITL/SIM_FETtecOneWireESC.h>
+ 
+ #include <SITL/SIM_ELRS.h>
++#include <SITL/SIM_JSPort.h>
+ 
+ #include "AP_HAL_SITL.h"
+ #include "AP_HAL_SITL_Namespace.h"
+@@ -215,6 +216,10 @@ public:
+     // via a simulated serial port:
+     SITL::SerialDevice *net_serial_sims[4];
+     uint8_t num_net_serial_sims;
++
++    // fpv-sim: serial ports whose other end is JavaScript ("sim:js:<channel>")
++    SITL::JSPort *js_ports[8];
++    uint8_t num_js_ports;
+ #endif  // AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+ 
+     // returns a voltage between 0V to 5V which should appear as the
+diff --git a/libraries/AP_HAL_SITL/Scheduler.cpp b/libraries/AP_HAL_SITL/Scheduler.cpp
+index 329617d..312884c 100644
+--- a/libraries/AP_HAL_SITL/Scheduler.cpp
++++ b/libraries/AP_HAL_SITL/Scheduler.cpp
+@@ -385,7 +385,7 @@ bool Scheduler::thread_create(AP_HAL::MemberProc proc, const char *name, uint32_
+         goto failed;
+     }
+ 
+-#if !defined(__APPLE__) && !defined(__OpenBSD__)
++#if !defined(__APPLE__) && !defined(__OpenBSD__) && !defined(__EMSCRIPTEN__)
+     pthread_setname_np(thread, name);
+ #endif
+ 
+diff --git a/libraries/AP_HAL_SITL/UART_utils.cpp b/libraries/AP_HAL_SITL/UART_utils.cpp
+index 33ca14c..ff17b66 100644
+--- a/libraries/AP_HAL_SITL/UART_utils.cpp
++++ b/libraries/AP_HAL_SITL/UART_utils.cpp
+@@ -19,7 +19,7 @@
+ 
+ #include "UARTDriver.h"
+ 
+-#if defined(__CYGWIN__) || defined(__CYGWIN64__) || defined(__APPLE__) || defined(__OpenBSD__)
++#if defined(__CYGWIN__) || defined(__CYGWIN64__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__EMSCRIPTEN__)
+ #define USE_TERMIOS
+ #endif
+ 
+diff --git a/libraries/SITL/SIM_JSON.cpp b/libraries/SITL/SIM_JSON.cpp
+index dfa9223..d1557a5 100644
+--- a/libraries/SITL/SIM_JSON.cpp
++++ b/libraries/SITL/SIM_JSON.cpp
+@@ -83,6 +83,45 @@ JSON::JSON(const char *frame_str) :
+     }
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++#include <emscripten.h>
++#include <emscripten/proxying.h>
++// fpv-sim: the physics runs in JavaScript (a Web Worker or a Node worker thread). Module.fpvsim
++// copies the servo packet out and blocks on shared memory until the next state line comes back.
++EM_JS(int, fpvsim_servo_out, (const void *pkt, int len), {
++    return Module['fpvsim'].servoOut(HEAPU8, pkt, len);
++});
++EM_JS(int, fpvsim_state_in, (void *buf, int max, int timeout_ms), {
++    return Module['fpvsim'].stateIn(HEAPU8, buf, max, timeout_ms);
++});
++#endif
++
++ssize_t JSON::send_packet(const void *pkt, size_t len)
++{
++#if defined(__EMSCRIPTEN__)
++    return fpvsim_servo_out(pkt, int(len));
++#else
++    return sock.sendto(pkt, len, target_ip, control_port);
++#endif
++}
++
++ssize_t JSON::recv_packet(void *buf, size_t len, uint32_t timeout_ms)
++{
++#if defined(__EMSCRIPTEN__)
++    // the other threads' file-system calls run on this thread (Emscripten proxies them here):
++    // serve them while waiting for the physics, a millisecond at a time
++    for (uint32_t waited = 0; ; waited++) {
++        emscripten_proxy_execute_queue(emscripten_proxy_get_system_queue());
++        const int n = fpvsim_state_in(buf, int(len), 1);
++        if (n > 0 || waited >= timeout_ms) {
++            return n;
++        }
++    }
++#else
++    return sock.recv(buf, len, timeout_ms);
++#endif
++}
++
+ /*
+     Create & set in/out socket
+ */
+@@ -114,7 +153,7 @@ void JSON::output_servos(const struct sitl_input &input)
+           pkt.pwm[i] = input.servos[i];
+       }
+       pkt_size = sizeof(pkt);
+-      send_ret = sock.sendto(&pkt, pkt_size, target_ip, control_port);
++      send_ret = send_packet(&pkt, pkt_size);
+     } else {
+       servo_packet_16 pkt;
+       pkt.frame_rate = rate_hz;
+@@ -123,7 +162,7 @@ void JSON::output_servos(const struct sitl_input &input)
+           pkt.pwm[i] = input.servos[i];
+       }
+       pkt_size = sizeof(pkt);
+-      send_ret = sock.sendto(&pkt, pkt_size, target_ip, control_port);
++      send_ret = send_packet(&pkt, pkt_size);
+     }
+ 
+     if ((size_t)send_ret != pkt_size) {
+@@ -303,7 +342,7 @@ uint64_t JSON::parse_sensors(const char *json)
+ void JSON::recv_fdm(const struct sitl_input &input)
+ {
+     // Receive sensor packet
+-    ssize_t ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
++    ssize_t ret = recv_packet(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
+     uint32_t wait_ms = UDP_TIMEOUT_MS;
+ 
+     if (state.no_lockstep && ret <= 0) {
+@@ -320,7 +359,7 @@ void JSON::recv_fdm(const struct sitl_input &input)
+ 
+     while (ret <= 0) {
+         //printf("No JSON sensor message received - %s\n", strerror(errno));
+-        ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
++        ret = recv_packet(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
+         wait_ms += UDP_TIMEOUT_MS;
+         // if no sensor message is received after 10 second resend servos, this help cope with SITL and the physics getting out of sync
+         if (wait_ms > 1000) {
+diff --git a/libraries/SITL/SIM_JSON.h b/libraries/SITL/SIM_JSON.h
+index 48af85f..c91845e 100644
+--- a/libraries/SITL/SIM_JSON.h
++++ b/libraries/SITL/SIM_JSON.h
+@@ -73,6 +73,10 @@ private:
+     double last_timestamp_s;
+ 
+     void output_servos(const struct sitl_input &input);
++
++    // the packet transport: UDP, or fpv-sim's shared memory in the WebAssembly build
++    ssize_t send_packet(const void *pkt, size_t len);
++    ssize_t recv_packet(void *buf, size_t len, uint32_t timeout_ms);
+     void recv_fdm(const struct sitl_input &input);
+ 
+     uint64_t parse_sensors(const char *json);
