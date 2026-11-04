@@ -3,7 +3,8 @@ dist
 firmware/betaflight
 firmware/build
 *.log
-.claude/
+.claude/*
+!.claude/settings.json
 .vercel
 .wrangler/
 server/.wrangler/
