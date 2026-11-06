@@ -8,7 +8,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { gateIdOf, isFlagBanner } from '../maps/gates';
 import { BoxPrim, MapDef, Prim } from '../maps/world';
 import { buildCrowd } from './crowd';
-import { buildClutter, groundMaterial, terrainTiles } from './ground';
+import { buildClutter, groundMaterial, terrainGrid, terrainTiles } from './ground';
 import { addQuakeLevel } from './quakeScene';
 import { buildLights, buildSky, courseCentre, Environment, environment, skyDir, TimeOfDay } from './sky';
 import { flowDir, makeWorldUniforms, NO_LOD, windStrength } from './sway';
@@ -189,16 +189,17 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   for (const o of night.objects) { o.userData.gt ??= 'object'; scene.add(o); }
 
   // ---- terrain: tiles (each cube face culls what it doesn't see), anti-repeat ground ----
+  const tiles: THREE.Mesh[] = [];
   if (map.ground !== false) {
     const builtin = !map.groundTexture, grass = map.groundMat === 'grass';
     const groundTex = track(builtin ? (grass ? grassTexture() : dirtTexture()) : imageTexture(map.groundTexture!));
     // the stadium's painted pitch is part of the ground's own shading (no second lit pass over it)
     const pitch = map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch ? { tex: track(pitchTexture(120, 73)), w: 120, h: 73 } : undefined;
     const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass, pitch));
-    for (const g of terrainTiles(map)) {
+    for (const g of terrainTiles(map, terrainGrid(map))) {
       const tile = new THREE.Mesh(track(g), mat);
       tile.receiveShadow = true; tile.name = 'terrain';
-      scene.add(tile);
+      scene.add(tile); tiles.push(tile);
     }
   }
   if (map.quake) for (const d of addQuakeLevel(scene, map)) track(d);
@@ -452,6 +453,8 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
       for (const d of disposables) d.dispose(); // incl. every InstancedMesh (frees its instance buffers)
     },
   };
+  // aerial-photo drape and open water: fetched only for maps that have them
+  if (map.drape || map.water) void import('./coast').then((c) => { if (!disposed) c.addCoast(scene, map, tiles, env.fogColor, u, track); }, (e) => console.warn('coast renderer failed to load', e));
   // the map's actors: their renderer is only fetched for maps that have some
   if (map.actors?.length) void import('./actors').then(({ ActorsView }) => {
     if (disposed) return;

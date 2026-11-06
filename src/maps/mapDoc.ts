@@ -12,13 +12,13 @@ export const FORMAT_VERSION = 1;
 
 /** Size / complexity budgets: keep the web build fast. Enforced by the loader and the validator CLI. */
 export const BUDGETS = {
-  mapJsonBytes: 1 << 20,          // map.json
+  mapJsonBytes: 2 << 20,          // map.json
   packageBytes: 16 << 20,         // all files of a package
   fileBytes: 8 << 20,             // any single file
   halfExtentM: 2000,              // size
   primitives: 5000,               // primitives + generated gate parts
   gates: 64,
-  trees: 3000,
+  trees: 20000,                   // (a forest: the far ones are a few crossed cards each)
   wakeZones: 32,
   indoor: 32,                     // indoor wind volumes
   lights: 8,                      // point lights (fixtures, floodlights) = MAX_MAP_LIGHTS (world.ts)
@@ -29,6 +29,8 @@ export const BUDGETS = {
   texturePx: 1024,                // max texture width / height
   textureBytes: 1 << 20,
   heightfieldPx: 1025,            // max heightfield width / height
+  drapePx: 2048,                  // max ground drape (aerial photo) width / height
+  drapeBytes: 3 << 20,
   previewBytes: 512 << 10,
   spawns: 32,                     // named spawn variants
   courses: 16,                    // alternative gate courses
@@ -67,7 +69,17 @@ export const FORBIDDEN_EXT = /\.(wad|pak|pk3|bsp|mdl|vpk|exe|dll|js|mjs|html?|sv
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
 export interface NoiseLayer { noise?: 'fbm'; scale: number; octaves?: number; seed?: number; amplitude: number; mask?: { shape: 'square' | 'circle'; center?: Vec2; from: number; to: number; invert?: boolean } }
-interface GroundCommon { material?: 'grass' | 'dirt' | 'concrete'; visible?: boolean; texture?: string }
+/**
+ * An image laid over the terrain (an aerial photo): it covers extent (east-west, north-south, m)
+ * around center, pixel (0, 0) at the north-west corner. Default extent / center: the heightfield's.
+ * detail: how much of the ground texture shows through up close (0..1, default 0.5).
+ */
+export interface DrapeDoc { image: string; extent?: Vec2; center?: Vec2; detail?: number }
+interface GroundCommon { material?: 'grass' | 'dirt' | 'concrete'; visible?: boolean; texture?: string; drape?: DrapeDoc }
+/** Open water (sea, lake) at z = level wherever the ground is below it: a surface you fly over and crash into. */
+export interface WaterDoc { level: number; color?: string }
+/** Where x = y = 0 is on Earth (WGS84 degrees): GPS and ArduPilot report positions there. */
+export interface GeoDoc { lat: number; lon: number }
 export type GroundDoc =
   | GroundCommon & { type: 'flat'; z?: number }
   | GroundCommon & { type: 'heightfield'; image: string; extent: Vec2; center?: Vec2; zMin: number; zMax: number }
@@ -141,6 +153,8 @@ export interface MapDocV1 {
   mission?: MissionDoc;
   /** Bundled fpvsim-scenario files (package paths). */
   scenarios?: string[];
+  water?: WaterDoc;
+  geo?: GeoDoc;
 }
 
 
@@ -245,7 +259,7 @@ const OBJ_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[] } {
   const c = new Checker();
   const R = 'map.json';
-  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'lights', 'geometry', 'spawns', 'courses', 'paths', 'actors', 'mission', 'scenarios'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
+  if (!c.obj(raw, R, ['format', 'formatVersion', 'meta', 'units', 'frame', 'size', 'elevationM', 'spawn', 'pilot', 'environment', 'ground', 'primitives', 'gates', 'trees', 'wakeZones', 'indoor', 'lights', 'geometry', 'spawns', 'courses', 'paths', 'actors', 'mission', 'scenarios', 'water', 'geo'], ['format', 'formatVersion', 'meta', 'size'])) throw new MapFormatError(c.errors);
   const d = raw;
   if (d.format !== undefined && d.format !== FORMAT) c.err(`${R}.format`, `must be "${FORMAT}" (got ${show(d.format)})`);
   if (d.formatVersion !== undefined && d.formatVersion !== FORMAT_VERSION) c.err(`${R}.formatVersion`, typeof d.formatVersion === 'number' && d.formatVersion > FORMAT_VERSION ? `${d.formatVersion} is newer than this simulator supports (${FORMAT_VERSION}); update the simulator` : `must be ${FORMAT_VERSION}`);
@@ -253,6 +267,12 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
   c.str(d, 'frame', R, { oneOf: ['ENU'] });
   c.num(d, 'size', R, { gt: 0, max: BUDGETS.halfExtentM });
   c.num(d, 'elevationM', R, { min: -500, max: 9000 });
+  if (d.water !== undefined && c.obj(d.water, `${R}.water`, ['level', 'color'], ['level'])) {
+    c.num(d.water, 'level', `${R}.water`, { min: -1000, max: 9000 }); c.str(d.water, 'color', `${R}.water`, { re: COLOR, hint: 'must be a colour like "#1d4e5c"' });
+  }
+  if (d.geo !== undefined && c.obj(d.geo, `${R}.geo`, ['lat', 'lon'], ['lat', 'lon'])) {
+    c.num(d.geo, 'lat', `${R}.geo`, { min: -85, max: 85 }); c.num(d.geo, 'lon', `${R}.geo`, { min: -180, max: 180 });
+  }
 
   const M = `${R}.meta`;
   if (c.obj(d.meta, M, ['id', 'name', 'author', 'license', 'version', 'description', 'preview', 'tags', 'homepage'], ['id', 'name', 'author', 'license', 'version'])) {
@@ -295,7 +315,7 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
 
   const G = `${R}.ground`;
   if (d.ground !== undefined && isObj(d.ground)) {
-    const g = d.ground, common = ['type', 'material', 'visible', 'texture'];
+    const g = d.ground, common = ['type', 'material', 'visible', 'texture', 'drape'];
     const type = c.str(g, 'type', G, { req: true, oneOf: ['flat', 'heightfield', 'noise'] });
     if (type === 'flat' && c.obj(g, G, [...common, 'z'])) c.num(g, 'z', G);
     if (type === 'heightfield' && c.obj(g, G, [...common, 'image', 'extent', 'center', 'zMin', 'zMax'], ['image', 'extent', 'zMin', 'zMax'])) {
@@ -319,6 +339,11 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
       });
     }
     if (type) { c.str(g, 'material', G, { oneOf: ['grass', 'dirt', 'concrete'] }); c.bool(g, 'visible', G); c.path(g, 'texture', G, false, IMG); }
+    if (type && g.drape !== undefined && c.obj(g.drape, `${G}.drape`, ['image', 'extent', 'center', 'detail'], ['image'])) {
+      const D = `${G}.drape`;
+      c.path(g.drape, 'image', D, true, IMG); c.vec(g.drape, 'extent', D, 2, { gt: 0 }); c.vec(g.drape, 'center', D, 2); c.num(g.drape, 'detail', D, { min: 0, max: 1 });
+      if (type !== 'heightfield' && g.drape.extent === undefined) c.err(`${D}.extent`, 'is required unless the ground is a heightfield (whose extent it then covers)');
+    }
   } else if (d.ground !== undefined) c.err(G, `must be an object (got ${show(d.ground)})`);
 
   const common = ['type', 'pos', 'material', 'color', 'tag'];

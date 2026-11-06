@@ -3,8 +3,6 @@
 // from their GPL'd .map sources (see public/maps/quake/ATTRIBUTION.md), and a Freedoom level
 // (BSD-3-Clause; see public/maps/freedoom/ATTRIBUTION.md).
 import communityIndex from '../../public/maps/community/index.json';
-import freedoomTextures from '../../public/maps/freedoom/textures/manifest.json';
-import { doomMapDef } from './doomMap';
 import type { PackageSource } from './mapFormat';
 import { quakeMapDef } from './quakeMap';
 import { BoxPrim, fbm, MapDef, Prim, seededRandom } from './world';
@@ -135,6 +133,8 @@ export interface MapEntry {
   credit: string;                         // source + license, shown in the map selector and README
   source?: string;                        // file under public/ (fetched by preloadMap)
   build: (src?: string) => MapDef;
+  /** A builder in its own chunk (big loaders): preloadMap fetches it, then build is not used. */
+  lib?: () => Promise<(src: string) => MapDef>;
   /** Map packages (mapFormat.ts): async load + validate, then a synchronous builder. */
   prepare?: () => Promise<() => MapDef>;
   /** user: a published user map ("u-…"): made by a player, not reviewed, kept apart from the official maps */
@@ -165,7 +165,12 @@ export const MAP_LIST: Record<string, MapEntry> = {
     name: 'Freedoom MAP01 — Hydroelectric Plant',
     credit: 'Freedoom Phase 2 MAP01 and its textures, © 2001-2024 Contributors to the Freedoom project (BSD-3-Clause). Not affiliated with or endorsed by the Freedoom project.',
     source: 'maps/freedoom/map01.json',
-    build: (src) => doomMapDef(src!, { id: 'freedoom-map01', name: 'Freedoom MAP01 — Hydroelectric Plant', textures: freedoomTextures, textureBase: 'maps/freedoom/textures/' }),
+    build: () => { throw new Error('map freedoom-map01 not loaded: await preloadMap first'); },
+    // the Doom loader and its texture list are fetched with the map (not part of the startup code)
+    lib: async () => {
+      const [{ doomMapDef }, { default: textures }] = await Promise.all([import('./doomMap'), import('../../public/maps/freedoom/textures/manifest.json')]);
+      return (src) => doomMapDef(src, { id: 'freedoom-map01', name: 'Freedoom MAP01 — Hydroelectric Plant', textures, textureBase: 'maps/freedoom/textures/' });
+    },
   },
 };
 // Map ids arrive from other pilots (room map changes) and from storage: with no prototype, ids such
@@ -183,11 +188,13 @@ for (const m of communityIndex.maps as { id: string; name: string; author: strin
 const sources = new Map<string, string>();
 const built = new Map<string, MapDef>();
 const prepared = new Map<string, () => MapDef>();
+const libs = new Map<string, (src: string) => MapDef>();
 
 /** Fetch a map's data files (no-op for procedural maps). Must resolve before MAPS[id]() is called. */
 export async function preloadMap(id: string): Promise<void> {
   const e = MAP_LIST[id];
   if (e?.prepare) { if (!prepared.has(id)) prepared.set(id, await e.prepare()); return; }
+  if (e?.lib && !libs.has(id)) libs.set(id, await e.lib());
   if (!e?.source || sources.has(id)) return;
   const base = publicBase();
   const res = await fetch(base + e.source);
@@ -201,7 +208,7 @@ export function provideMapSource(id: string, text: string) { sources.set(id, tex
 /** Add or replace a map at runtime (maps loaded from disk). Its cached data is dropped. */
 export function registerMap(id: string, e: MapEntry) {
   MAP_LIST[id] = e; MAPS[id] = () => buildMap(id);
-  sources.delete(id); built.delete(id); prepared.delete(id);
+  sources.delete(id); built.delete(id); prepared.delete(id); libs.delete(id);
 }
 
 function buildMap(id: string): MapDef {
@@ -218,7 +225,9 @@ function buildMap(id: string): MapDef {
   if (!m) {
     const src = sources.get(id);
     if (src === undefined) throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`);
-    built.set(id, (m = e.build(src)));
+    const lib = e.lib && libs.get(id);
+    if (e.lib && !lib) throw new Error(`map ${id} not loaded: await preloadMap('${id}') first`);
+    built.set(id, (m = lib ? lib(src) : e.build(src)));
   }
   return m;
 }

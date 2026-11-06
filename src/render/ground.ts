@@ -13,6 +13,8 @@ export const TERRAIN_N = 320, TERRAIN_TILES = 4, TERRAIN_BLOCK = 20;
 /** Height error (m) a coarser block may show against the full grid: flat blocks use 2x / 4x bigger quads. */
 export const TERRAIN_LOD_ERR = 0.05;
 const SKIRT = 0.4;
+/** Grid size for a map: as fine as its heightfield's samples (map.terrainRes), 320 .. 800 quads per side. */
+export const terrainGrid = (m: MapDef) => (m.terrainRes ? Math.min(800, Math.max(TERRAIN_N, Math.ceil((m.size * 2.2) / m.terrainRes / 80) * 80)) : TERRAIN_N);
 
 /** Coarsest quad step (4, 2 or 1 grid cells) whose triangles stay within TERRAIN_LOD_ERR of every grid height in the block. */
 export function blockStep(h: (i: number, j: number) => number, i0: number, j0: number, B: number): number {

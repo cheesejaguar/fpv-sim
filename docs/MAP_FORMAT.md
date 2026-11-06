@@ -14,6 +14,10 @@ can contribute it to the repository with a pull request. After it is merged it a
 - Example package: [`public/maps/community/quarry-loop/`](../public/maps/community/quarry-loop/)
   (CC0). It uses a heightfield, gates, primitives, a texture, a glTF mesh with collision, trees,
   fog and a wake zone. Copy it to start your own map.
+- Real-world example: [`public/maps/community/cascadia/`](../public/maps/community/cascadia/)
+  (CC BY 4.0) is a 1.6 km square of the Oregon coast built from open data: a lidar heightfield,
+  an aerial-photo `drape`, a `water` sea, a forest of 9 600 trees, a bridge made of primitives and
+  a real `geo` origin. See [REAL_WORLD_MAPS.md](REAL_WORLD_MAPS.md).
 - Reference port: [`public/maps/bando/`](../public/maps/bando/) is the built-in Bando map in this
   format. The test suite checks that it matches the original procedural TypeScript map.
 
@@ -84,7 +88,9 @@ public/maps/community/<id>/
     "windScale": 1,                      // optional: multiplies the configured wind (indoor: 0.1-0.3)
     "wind": { "speed": 4, "directionDeg": 250, "turbulence": 1, "gusts": 2 } // optional: the wind this map suggests
   },
+  "geo": { "lat": 47.3977, "lon": 8.5456 }, // optional: where x = y = 0 is on Earth
   "ground": { … },
+  "water": { "level": 0 },               // optional: a sea or lake
   "primitives": [ … ],
   "gates": [ … ],
   "trees": [ … ],
@@ -145,6 +151,50 @@ the mask (hills in the middle). This is how you keep a flat flying field in the 
 layers, octaves 1 to 8, default 4.
 
 Without a `ground`, the terrain is flat at z = 0, or it comes from the Quake / Doom geometry.
+
+A heightfield is drawn as finely as its samples are spaced, between the default grid (320 quads
+across the drawn terrain) and 800 quads, so a lidar terrain keeps its cliffs. Make the
+heightfield's extent at least `2.2 × size` so that the drawn terrain stays on your data.
+
+**drape** (any ground type): an image laid over the terrain, usually an aerial photo.
+
+```json
+"ground": { "type": "heightfield", "image": "heightfield.png", "extent": [1600, 1600], "zMin": -15, "zMax": 234,
+            "material": "dirt", "drape": { "image": "drape.jpg", "detail": 0.55 } }
+```
+
+- It covers `extent` (`[east-west, north-south]`, m) around `center`, with pixel (0, 0) at the
+  north-west corner, like a heightfield. On a heightfield both default to the heightfield's, so
+  the photo lies exactly over it. On other ground types `extent` is required.
+- Up close, the ground texture (the `material`'s, or `texture`) modulates the photo by up to
+  `detail` (0 to 1, default 0.5), so the ground keeps some grain where a photo pixel is a metre
+  wide. Outside the drape, the ground texture shows on its own.
+- On steep faces (over ~40°), weathered rock replaces the photo, because a photo taken from
+  above smears down a cliff.
+- PNG, JPEG or WebP, up to 2048 × 2048 px and 3 MiB.
+
+### water
+
+```json
+"water": { "level": 0.5, "color": "#0d3a45" }
+```
+
+Open water (a sea or a lake) at z = `level`, wherever the ground is below it. It is drawn as a
+moving water surface: its colour follows the depth of the ground under it, from clear shallows to
+`color` in deep water. Surf breaks along the shore. A ring of open sea runs out to the horizon
+beyond the terrain. The water's surface is solid to the drone: a crash into it stops the quad
+with no bounce, and a prop strike there damages the props nearly as much as concrete does. Rangefinders
+and height above ground measure to the surface. Model the ground under the water (a sea floor)
+so the shallows show.
+
+### geo
+
+```json
+"geo": { "lat": 42.17, "lon": -124.3625 }
+```
+
+Where x = y = 0 is on Earth, in WGS84 degrees. GPS, ArduPilot, missions and the control API then
+report real positions. The default is 47.3977 N, 8.5456 E. Heights stay relative to `elevationM`.
 
 ### primitives
 
@@ -209,7 +259,8 @@ With a 2-element `pos` the gate stands on the terrain.
 ```
 
 Trees are drawn instanced and collide as a trunk cylinder plus a solid core; the rest of the
-canopy is a porous drag volume (a quad slows down inside it and its props get nicked).
+canopy is a porous drag volume (a quad slows down inside it and its props get nicked). A map
+can hold a forest (up to 20 000 trees): beyond ~80 m each tree is a few crossed cards.
 A wake zone is an obstacle (building, silo, tree line): centre `pos`, footprint `radius` and
 `height`. The wake is laid out downwind of it for the live wind direction: sheltered, more
 turbulent air behind it (eddies about half the obstacle height), a downdraft on the lee side and
@@ -368,18 +419,19 @@ the numbers.
 
 | | limit |
 |---|---|
-| `map.json` | 1 MiB |
+| `map.json` | 2 MiB |
 | whole package | 16 MiB |
 | any single file | 8 MiB |
 | `size` (half-extent) | 2000 m |
 | primitives (including the 3-8 parts each gate generates) | 5 000 |
-| gates / trees / wake zones / indoor boxes / lights / geometry entries | 64 / 3 000 / 32 / 32 / 8 / 16 |
+| gates / trees / wake zones / indoor boxes / lights / geometry entries | 64 / 20 000 / 32 / 32 / 8 / 16 |
 | spawns / courses / paths (points each) / actors / scenarios | 32 / 16 / 32 (256) / 64 / 16 |
 | convex brushes (Quake / Doom geometry + mesh collision) | 20 000 |
 | glTF triangles drawn, all meshes | 150 000 |
 | glTF triangles with `collision: "mesh"` | 20 000 |
 | texture images (`texture` fields, glTF images): size, file | 1024 × 1024 px, 1 MiB |
 | heightfield | 2 to 1025 px per side |
+| ground drape: size, file | 2048 × 2048 px, 3 MiB |
 | preview image | 512 KiB |
 
 Tips: power-of-two textures (256, 512, 1024) mipmap best. JPEG suits photos and PNG suits sharp

@@ -4,6 +4,21 @@
   "formatVersion": 1,
   "maps": [
     {
+      "id": "cascadia",
+      "name": "Cascadia Coast: Thomas Creek",
+      "author": "fpv-sim contributors (data: USGS, USDA, OpenStreetMap contributors)",
+      "license": "CC-BY-4.0",
+      "version": "1.0.0",
+      "description": "The southern Oregon coast at Thomas Point, Samuel H. Boardman State Scenic Corridor: 1 m lidar terrain under a 0.8 m aerial photo, 60 m headland cliffs and sea stacks to dive, Sitka spruce forest, and the Thomas Creek Bridge (291 m long, 105 m over the creek) to fly under.",
+      "preview": "maps/community/cascadia/preview.jpg",
+      "tags": [
+        "freestyle",
+        "long-range",
+        "coast",
+        "real-world"
+      ]
+    },
+    {
       "id": "quarry-loop",
       "name": "Quarry Loop",
       "author": "fpv-sim contributors",

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { buildDrone, DEFAULT_SPEC } from '../src/builder/derive';
 import { DoomLevelData, openDoors, parseDoomLevel, sectorPolygons, triangulate } from '../src/maps/doomMap';
-import { MAPS, provideMapSource } from '../src/maps/maps';
+import { MAPS, preloadMap, provideMapSource } from '../src/maps/maps';
 import { brushContains, BrushPrim, PrimitiveWorld, spawnGroundZ } from '../src/maps/world';
 import { ContactHit, MATERIALS } from '../src/sim/contact';
 import { QuadSim } from '../src/sim/quad';
@@ -54,9 +54,11 @@ test('opens doors to their lowest neighbouring ceiling', () => {
   expect(d.sectors[1].ceil).toBe(124);
 });
 
+provideMapSource('freedoom-map01', read('map01.json'));
+await preloadMap('freedoom-map01'); // (fetches the Doom loader's chunk, not the level: the source is provided)
+
 describe('freedoom-map01', () => {
   const src = read('map01.json');
-  provideMapSource('freedoom-map01', src);
   const t0 = performance.now();
   const map = MAPS['freedoom-map01']();
   const buildMs = performance.now() - t0;

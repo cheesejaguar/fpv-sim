@@ -255,7 +255,7 @@ export class FlightCore {
     this.apMissionSent = false;
     this.world = new PrimitiveWorld(m);
     this.env = this.makeEnv();
-    this.gps.origin = { ...GPS_ORIGIN, altM: m.elevationM ?? 0 };
+    this.gps.origin = { lat: m.geo?.lat ?? GPS_ORIGIN.lat, lon: m.geo?.lon ?? GPS_ORIGIN.lon, altM: m.elevationM ?? 0 };
     // actors draw from their own stream: a map without them changes nothing else
     this.actors = m.actors?.length ? new ActorSim(m, this.sub(0xac70)) : null;
     this.resetActors();

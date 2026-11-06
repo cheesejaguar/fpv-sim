@@ -79,6 +79,12 @@ export interface MapDef {
   mission?: MissionDef;               // the autopilot's mission (ArduPilot builds; src/ap/apMission.ts)
   scenarios?: { path: string; url: string }[]; // bundled fpvsim-scenario files
   collisionCell?: number;             // collision grid cell size (m), default 8; dense interiors use a finer grid
+  /** An image over the terrain (aerial photo): ENU rectangle x0..x0 + w, y0..y0 + h; detail: ground texture shown through up close (0..1). */
+  drape?: { url: string; x0: number; y0: number; w: number; h: number; detail: number };
+  terrainRes?: number;                // terrain sample spacing (m): the ground mesh is drawn this fine (within limits)
+  /** Open water at z = level wherever the terrain is below it: collision surface + rendered sea. */
+  water?: { level: number; color?: number };
+  geo?: { lat: number; lon: number }; // real-world position of x = y = 0 (WGS84 degrees), for GPS
 }
 
 /** A named start: the quad's pose, and optionally where the pilot / video receiver stands for it. */
@@ -143,7 +149,7 @@ const K_BOX = 0, K_CYL = 1, K_SPHERE = 2;
 /** Terrain under the sphere queries: tangent planes (height + normal from 5 terrain samples), each
  *  used within PLANE_REUSE m (per axis) of where it was taken; a few kept so that all of a quad's
  *  collider spheres find one. */
-const PLANE_REUSE = 0.15, PLANES = 8, PL = 8; // per plane: x, y, h, gx, gy, nx, ny, nz
+const PLANE_REUSE = 0.15, PLANES = 8, PL = 9; // per plane: x, y, h, gx, gy, nx, ny, nz, water (1 / 0)
 
 export class PrimitiveWorld implements CollisionWorld {
   private cell: number;
@@ -153,6 +159,8 @@ export class PrimitiveWorld implements CollisionWorld {
   private packed = new Map<number, Float64Array>();
   private mats: SurfaceMaterial[] = [];
   private groundMat: SurfaceMaterial;
+  /** The surface: the terrain, or the water over it (map.water) */
+  private surf: (x: number, y: number) => number;
   private planes = new Float64Array(PLANES * PL).fill(Infinity); // (no plane anywhere yet)
   private nPlanes = 0; private lastPlane = 0; private nextPlane = 0;
   private cand = new Float64Array(64 * REC); private nCand = 0; // near(): records within reach
@@ -163,6 +171,8 @@ export class PrimitiveWorld implements CollisionWorld {
   constructor(public map: MapDef) {
     this.cell = map.collisionCell ?? 8;
     this.groundMat = MATERIALS[map.groundMat];
+    const t = map.terrain, wl = map.water?.level;
+    this.surf = wl === undefined ? t : (x, y) => Math.max(t(x, y), wl);
     for (const p of map.prims) {
       // foliage spheres and thick foliage boxes are volumes; thin ones (safety nets, flags) stay solid
       if (p.mat === 'foliage' && (p.kind === 'sphere' || (p.kind === 'box' && Math.min(p.half.x, p.half.y, p.half.z) > 0.25))) this.insertCanopy(p);
@@ -246,7 +256,7 @@ export class PrimitiveWorld implements CollisionWorld {
     }
   }
 
-  groundHeight(x: number, y: number): number { return this.map.terrain(x, y); }
+  groundHeight(x: number, y: number): number { return this.surf(x, y); }
 
   /** Index (into this.planes) of a terrain tangent plane usable at (x, y); takes a new one if none is. */
   private plane(x: number, y: number): number {
@@ -261,7 +271,8 @@ export class PrimitiveWorld implements CollisionWorld {
     o = this.nextPlane * PL;
     this.nextPlane = (this.nextPlane + 1) % PLANES;
     if (this.nPlanes < PLANES) this.nPlanes++;
-    const t = this.map.terrain, e = 0.05;
+    const t = this.surf, e = 0.05;
+    P[o + 8] = +(this.map.terrain(x, y) < t(x, y));
     const gx = (t(x + e, y) - t(x - e, y)) / (2 * e), gy = (t(x, y + e) - t(x, y - e)) / (2 * e);
     const nl = Math.sqrt(gx * gx + gy * gy + 1);
     P[o] = x; P[o + 1] = y; P[o + 2] = t(x, y); P[o + 3] = gx; P[o + 4] = gy; P[o + 5] = -gx / nl; P[o + 6] = -gy / nl; P[o + 7] = 1 / nl;
@@ -276,7 +287,7 @@ export class PrimitiveWorld implements CollisionWorld {
     if (pz - radius >= h + 0.5) return 0;
     const nz = P[o + 7], d = radius - (pz - h) * nz;
     if (d <= 0) return 0;
-    out.depth = d; out.nx = P[o + 5]; out.ny = P[o + 6]; out.nz = nz; out.material = this.groundMat;
+    out.depth = d; out.nx = P[o + 5]; out.ny = P[o + 6]; out.nz = nz; out.material = P[o + 8] ? MATERIALS.water : this.groundMat;
     return d;
   }
 
@@ -386,11 +397,11 @@ export class PrimitiveWorld implements CollisionWorld {
     // terrain by marching (short rays only: ground effect / LOS)
     const n = Math.min(Math.ceil(maxDist / 0.05), 400);
     // a vertical ray (the height above ground) sees one terrain height
-    const hv = dir.x === 0 && dir.y === 0 ? this.map.terrain(p.x, p.y) : NaN;
+    const hv = dir.x === 0 && dir.y === 0 ? this.surf(p.x, p.y) : NaN;
     for (let i = 1; i <= n; i++) {
       const t = (i / n) * maxDist;
       const z = p.z + dir.z * t;
-      if (z <= (hv === hv ? hv : this.map.terrain(p.x + dir.x * t, p.y + dir.y * t))) { best = t; break; }
+      if (z <= (hv === hv ? hv : this.surf(p.x + dir.x * t, p.y + dir.y * t))) { best = t; break; }
     }
     // boxes in the start cell and end cell
     const k0 = this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell));

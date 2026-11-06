@@ -286,6 +286,46 @@
               "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
               "maxLength": 128,
               "description": "Ground texture (repeats every 3 m); default from material."
+            },
+            "drape": {
+              "type": "object",
+              "description": "An image laid over the terrain (an aerial photo), pixel (0, 0) at the north-west corner. Up close the ground texture modulates it (detail). PNG, JPEG or WebP, at most 2048 x 2048 px and 3 MiB.",
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "pattern": "\\.(png|jpe?g|webp)$"
+                },
+                "extent": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[east-west, north-south] metres covered (default: the heightfield's extent; required for other ground types)."
+                },
+                "center": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y] of its centre (default: the heightfield's, else [0, 0])."
+                },
+                "detail": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.5,
+                  "description": "How much the ground texture shows through up close."
+                }
+              },
+              "required": [
+                "image"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -354,6 +394,46 @@
               "pattern": "^(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(png|jpe?g|webp)$",
               "maxLength": 128,
               "description": "Ground texture (repeats every 3 m); default from material."
+            },
+            "drape": {
+              "type": "object",
+              "description": "An image laid over the terrain (an aerial photo), pixel (0, 0) at the north-west corner. Up close the ground texture modulates it (detail). PNG, JPEG or WebP, at most 2048 x 2048 px and 3 MiB.",
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "pattern": "\\.(png|jpe?g|webp)$"
+                },
+                "extent": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[east-west, north-south] metres covered (default: the heightfield's extent; required for other ground types)."
+                },
+                "center": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y] of its centre (default: the heightfield's, else [0, 0])."
+                },
+                "detail": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.5,
+                  "description": "How much the ground texture shows through up close."
+                }
+              },
+              "required": [
+                "image"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -477,6 +557,46 @@
                   "^\\$comment$": {}
                 }
               }
+            },
+            "drape": {
+              "type": "object",
+              "description": "An image laid over the terrain (an aerial photo), pixel (0, 0) at the north-west corner. Up close the ground texture modulates it (detail). PNG, JPEG or WebP, at most 2048 x 2048 px and 3 MiB.",
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "pattern": "\\.(png|jpe?g|webp)$"
+                },
+                "extent": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[east-west, north-south] metres covered (default: the heightfield's extent; required for other ground types)."
+                },
+                "center": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y] of its centre (default: the heightfield's, else [0, 0])."
+                },
+                "detail": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.5,
+                  "description": "How much the ground texture shows through up close."
+                }
+              },
+              "required": [
+                "image"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -793,7 +913,7 @@
     },
     "trees": {
       "type": "array",
-      "maxItems": 3000,
+      "maxItems": 20000,
       "items": {
         "type": "object",
         "properties": {
@@ -922,7 +1042,7 @@
     "lights": {
       "type": "array",
       "maxItems": 8,
-      "description": "Point lights (interior fixtures, floodlights), at most 8. The illuminance at distance d is about intensity / d\u00b2 (the sun is about 4.5).",
+      "description": "Point lights (interior fixtures, floodlights), at most 8. The illuminance at distance d is about intensity / d² (the sun is about 4.5).",
       "items": {
         "type": "object",
         "properties": {
@@ -1872,6 +1992,47 @@
         "type": "string",
         "pattern": "^[A-Za-z0-9._/-]+\\.json$"
       }
+    },
+    "water": {
+      "type": "object",
+      "description": "Open water (sea, lake) at z = level wherever the ground is below it: drawn as a water surface, and a surface the drone crashes into.",
+      "properties": {
+        "level": {
+          "type": "number",
+          "minimum": -1000,
+          "maximum": 9000
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "description": "Colour of deep water."
+        }
+      },
+      "required": [
+        "level"
+      ],
+      "additionalProperties": false
+    },
+    "geo": {
+      "type": "object",
+      "description": "Where x = y = 0 is on Earth (WGS84 degrees): GPS and ArduPilot report positions there (default 47.3977 N, 8.5456 E).",
+      "properties": {
+        "lat": {
+          "type": "number",
+          "minimum": -85,
+          "maximum": 85
+        },
+        "lon": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
