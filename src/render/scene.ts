@@ -8,7 +8,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { gateIdOf, isFlagBanner } from '../maps/gates';
 import { BoxPrim, MapDef, Prim } from '../maps/world';
 import { buildCrowd } from './crowd';
-import { buildClutter, groundMaterial, terrainGrid, terrainTiles } from './ground';
+import { buildClutter, groundMaterial, terrainGrid, terrainLevels, terrainTileLevels, tileLevel } from './ground';
 import { addQuakeLevel } from './quakeScene';
 import { buildLights, buildSky, courseCentre, Environment, environment, skyDir, TimeOfDay } from './sky';
 import { flowDir, makeWorldUniforms, NO_LOD, windStrength } from './sway';
@@ -196,9 +196,12 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
     // the stadium's painted pitch is part of the ground's own shading (no second lit pass over it)
     const pitch = map.id === 'field' || (map as unknown as { pitch?: boolean }).pitch ? { tex: track(pitchTexture(120, 73)), w: 120, h: 73 } : undefined;
     const mat = track(groundMaterial(groundTex, track(macroNoiseTexture()), builtin, grass, pitch));
-    for (const g of terrainTiles(map, terrainGrid(map))) {
-      const tile = new THREE.Mesh(track(g), mat);
+    const N = terrainGrid(map), { tiles: per, levels } = terrainLevels(map, N);
+    for (const lv of terrainTileLevels(map, N, per, levels)) {
+      const tile = new THREE.Mesh(track(lv[0]), mat);
+      for (let k = 1; k < lv.length; k++) track(lv[k]);
       tile.receiveShadow = true; tile.name = 'terrain';
+      if (lv.length > 1) tile.userData.levels = lv;
       scene.add(tile); tiles.push(tile);
     }
   }
@@ -396,6 +399,11 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
   scene.onBeforeRender = (_r, _s, camera) => {
     if (camera.userData[NO_LOD]) return;
     u.uLod.value.setFromMatrixPosition(camera.matrixWorld); trees?.update(u.uLod.value); clutter?.update(u.uLod.value);
+    // big terrains: far tiles from their coarser levels (cam: three.js coordinates)
+    for (const t of tiles) {
+      const lv = t.userData.levels as THREE.BufferGeometry[] | undefined;
+      if (lv) t.geometry = lv[tileLevel(lv[0].boundingBox!.distanceToPoint(u.uLod.value), lv)];
+    }
   };
 
   // ---- glTF meshes (map packages); they load asynchronously, like the Quake textures ----
@@ -442,6 +450,9 @@ export function buildScene(map: MapDef, opts: SceneOptions = {}): SceneBundle {
     if (flow.lengthSq() < 1e-6) flow.copy(want);
     const n = flow.length();
     u.uWind.value.set(flow.x / n, flow.y / n, windStrength(speed), t % 2048);
+    // the clouds drift (Sky.js's own cloud motion runs on its time uniform)
+    const su = (sky.material as THREE.ShaderMaterial).uniforms?.time;
+    if (su) su.value = t;
     sock?.update(flow.x / n, flow.y / n, speed, t);
   };
 

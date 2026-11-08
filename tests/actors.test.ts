@@ -203,8 +203,9 @@ describe('detectors', () => {
     const w = new PrimitiveWorld(m), o = { x: 0, y: 0, z: 2 };
     const wall = w.losLoss(o, { x: 20, y: 0, z: 2 }), tree = w.losLoss(o, { x: -20, y: 0, z: 2 }), open = w.losLoss(o, { x: 0, y: 20, z: 2 });
     expect(wall.db).toBe(w.obstructionDb(o, { x: 20, y: 0, z: 2 }));
-    expect(wall.hardDb).toBe(14); expect(wall.foliageDb).toBe(0);
-    expect(tree).toEqual({ db: 4, hardDb: 0, foliageDb: 4 });
+    // by path length: 1 m of concrete is 3x a 0.3 m wall's 14 dB (the cap); 4 m of canopy at 0.8 dB/m
+    expect(wall.hardDb).toBeCloseTo(42, 9); expect(wall.foliageDb).toBe(0);
+    expect(tree.db).toBeCloseTo(3.2, 9); expect(tree.hardDb).toBe(0); expect(tree.foliageDb).toBeCloseTo(3.2, 9);
     expect(open).toEqual({ db: 0, hardDb: 0, foliageDb: 0 });
     expect(w.losLoss(o, { x: 0, y: 20, z: -5 }).hardDb).toBeGreaterThan(0); // through the ground
   });

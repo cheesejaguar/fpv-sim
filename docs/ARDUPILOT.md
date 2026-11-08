@@ -64,8 +64,13 @@ firmware for every one of them back, since ArduPilot silently ignores a name it 
 `TRIM_ARSPD_CM` → `AIRSPEED_CRUISE`, `ANGLE_MAX` → `ATC_ANGLE_MAX`, `RTL_ALT` → `RTL_ALT_M`,
 `WPNAV_SPEED` → `WP_SPD`.
 
-Applying a build restarts ArduPilot with it, like a power cycle. Parameters set over MAVLink while
-flying last until then.
+Applying a build restarts ArduPilot with it, like a power cycle, and starts its stored state afresh.
+A respawn, a teleport, a map change and a firmware hang power-cycle it too, as a pilot re-plugs the
+pack (its EKF cannot follow a jump). Those keep what the API stored on it, as its EEPROM would:
+parameters set with `ap` `params` and the last mission uploaded with `ap` `mission`. Changes a
+ground station makes over the raw MAVLink pass-through last until the next power cycle. In the
+headless environment the quad is held where it is while ArduPilot boots again, and the boot does not
+count as episode time.
 
 ## Lua scripts
 

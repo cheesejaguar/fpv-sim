@@ -65,10 +65,23 @@ function spawnsOf(id: string): { id: string; name: string }[] {
   try { return (MAPS[id]?.().spawns ?? []).map((x) => ({ id: x.id, name: x.name })); } catch { return []; } // not preloaded yet
 }
 
-export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void, latency?: LatencySource): HTMLElement {
+/**
+ * `current`: the settings as they are now. The panel's copy dates from when it opened, and the room
+ * (a map change), the overload governor or a map fallback may have changed them since: a change made
+ * here then goes on top of the current settings, field by field, instead of sending its whole old
+ * copy back (which flipped a room back to the map it had left).
+ */
+export function settingsPanel(sim: SimSettings, view: ViewSettings, onSim: (s: SimSettings) => void, onView: (v: ViewSettings) => void, latency?: LatencySource, current: () => SimSettings = () => sim): HTMLElement {
   const s = structuredClone(sim), v = structuredClone(view);
+  let base = structuredClone(sim);
   const lat = latencyReadout(v, latency);
-  const pushS = () => onSim(structuredClone(s)), pushV = () => { onView(structuredClone(v)); lat.update(); };
+  const pushS = () => {
+    const patch: Partial<SimSettings> = {};
+    for (const k of Object.keys(s) as (keyof SimSettings)[]) if (JSON.stringify(s[k]) !== JSON.stringify(base[k])) (patch as Record<string, unknown>)[k] = structuredClone(s[k]);
+    base = structuredClone(s);
+    onSim({ ...structuredClone(current()), ...patch });
+  };
+  const pushV = () => { onView(structuredClone(v)); lat.update(); };
   const credit = el('p', { class: 'note' }, MAP_LIST[s.mapId]?.credit ?? '');
   const mapLabel = (m: MapEntry) => (m.community ? `${m.name} — ${m.community.local ? 'from disk' : `${m.community.author}, ${m.community.license}`}` : m.name);
   // a map with drill courses (the practice field): which one is timed; the default course is its own gates

@@ -116,7 +116,8 @@ runs, for example the miss distance of drops that happened.
 
 ### Failure cases
 
-Up to `saveFailures` failed runs per variant are kept in `cases/`:
+Up to `saveFailures` failed runs per variant are kept in `cases/`, the ones with the lowest run
+numbers (so the same campaign keeps the same cases, however many workers ran it):
 - a case file (scenario, seed, pilot, outcome, events);
 - a 20 Hz CSV trace (position, velocity, attitude, height, throttle, cell voltage, link quality,
   satellites).

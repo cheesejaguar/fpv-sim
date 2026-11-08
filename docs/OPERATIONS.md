@@ -54,8 +54,11 @@ ground** in metres.
 
 **Propagation** to each receiver:
 - free-space path loss;
-- obstruction by the map's buildings, terrain and foliage (the video link's 5.8 GHz ray march,
-  scaled down for lower frequencies: about 0.7 at 2.4 GHz and 0.45 at 900 MHz);
+- obstruction by the map's buildings, terrain and foliage, as the video link computes it at 5.8 GHz
+  and scaled down for lower frequencies (about 0.7 at 2.4 GHz and 0.45 at 900 MHz): terrain by
+  knife-edge diffraction over the worst ridge on the path (ITU-R P.526), so a quad just behind a
+  crest loses a few dB, not the whole link; walls by material (concrete and metal block most) and
+  thickness; foliage about 0.8 dB per metre of canopy, at most 40 dB; at most 60 dB in all;
 - diffraction past the 4/3-earth radio horizon, which is about 10 dB at the horizon and rises to
   40 dB at twice its range.
 

@@ -12,6 +12,38 @@ function canvasTex(size: number, draw: (ctx: CanvasRenderingContext2D, s: number
   return t;
 }
 
+/**
+ * An alpha cut-out drawn on a canvas, as a texture whose transparent texels carry the colour of the
+ * nearest opaque one. A canvas stores premultiplied colour, so every clear texel came out black and
+ * the mipmaps blended that black into each leaf and blade edge: dark fringes on every tree beyond a
+ * few metres. Rows are flipped here as a CanvasTexture's flipY would (v up).
+ */
+function cutoutTex(size: number, draw: (ctx: CanvasRenderingContext2D, s: number, rnd: () => number) => void, seed: number): THREE.DataTexture {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  draw(ctx, size, seededRandom(seed));
+  const px = ctx.getImageData(0, 0, size, size).data, n = size * size;
+  // breadth-first from the opaque texels: each clear one takes the colour of the texel that reached it
+  const q = new Int32Array(n), done = new Uint8Array(n);
+  let qe = 0;
+  for (let i = 0; i < n; i++) if (px[i * 4 + 3] >= 128) { done[i] = 1; q[qe++] = i; }
+  for (let qh = 0; qh < qe; qh++) {
+    const i = q[qh], x = i % size;
+    for (const j of [x > 0 ? i - 1 : -1, x < size - 1 ? i + 1 : -1, i - size, i + size]) {
+      if (j < 0 || j >= n || done[j]) continue;
+      done[j] = 1; px[j * 4] = px[i * 4]; px[j * 4 + 1] = px[i * 4 + 1]; px[j * 4 + 2] = px[i * 4 + 2];
+      q[qe++] = j;
+    }
+  }
+  const out = new Uint8Array(n * 4), row = size * 4;
+  for (let y = 0; y < size; y++) out.set(px.subarray(y * row, (y + 1) * row), (size - 1 - y) * row);
+  const t = new THREE.DataTexture(out, size, size, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
+  return t;
+}
+
 function speckle(ctx: CanvasRenderingContext2D, s: number, rnd: () => number, n: number, colors: string[], rmax: number) {
   for (let i = 0; i < n; i++) {
     ctx.fillStyle = colors[Math.floor(rnd() * colors.length)];
@@ -104,7 +136,7 @@ export const ATLAS = {
   oak: [0, 0, 256, 256], needles: [256, 0, 256, 256], farOak: [0, 256, 256, 256], farPine: [256, 256, 256, 160], bark: [256, 416, 256, 96],
 } as const;
 export type AtlasCell = keyof typeof ATLAS;
-/** UV rectangle (u0, v0, du, dv) of an atlas cell (CanvasTexture flips y: v up). */
+/** UV rectangle (u0, v0, du, dv) of an atlas cell (the texture's rows run bottom-up: v up). */
 export function atlasUV(cell: AtlasCell): [number, number, number, number] {
   const [x, y, w, h] = ATLAS[cell], S = ATLAS_SIZE;
   return [x / S, 1 - (y + h) / S, w / S, h / S];
@@ -124,7 +156,7 @@ function leafShape(ctx: CanvasRenderingContext2D, x: number, y: number, len: num
 const shade = (rgb: number[], k: number) => `rgb(${Math.min(255, rgb[0] * k) | 0},${Math.min(255, rgb[1] * k) | 0},${Math.min(255, rgb[2] * k) | 0})`;
 
 export function foliageAtlas() {
-  return canvasTex(ATLAS_SIZE, (ctx, S, rnd) => {
+  return cutoutTex(ATLAS_SIZE, (ctx, S, rnd) => {
     ctx.clearRect(0, 0, S, S);
     const oakCols = [[63, 107, 42], [77, 122, 49], [90, 138, 58], [53, 92, 36], [104, 150, 66]];
     // --- oak leaf cluster: a forked twig carrying ~30 leaves, back leaves darker ---
@@ -195,12 +227,12 @@ export function foliageAtlas() {
       for (let i = 0; i < 1500; i++) { ctx.fillStyle = rnd() < 0.5 ? 'rgba(90,110,60,0.35)' : 'rgba(20,15,10,0.3)'; ctx.fillRect(x0 + rnd() * w, y0 + rnd() * h, 1 + rnd() * 2, 1 + rnd() * 2); }
       ctx.restore();
     }
-  }, 21, 1);
+  }, 21);
 }
 
 /** Grass tuft card: blades rising from the bottom edge (alpha). */
 export function grassTuftTexture() {
-  return canvasTex(128, (ctx, s, rnd) => {
+  return cutoutTex(128, (ctx, s, rnd) => {
     ctx.clearRect(0, 0, s, s);
     for (let i = 0; i < 34; i++) {
       const x = 14 + rnd() * (s - 28), h = 50 + rnd() * 74, lean = (rnd() - 0.5) * 40, w = 2.5 + rnd() * 3;
@@ -208,7 +240,7 @@ export function grassTuftTexture() {
       ctx.fillStyle = yellow ? `rgb(${(g * 1.05) | 0},${(g * 0.95) | 0},${(g * 0.45) | 0})` : `rgb(${(g * 0.55) | 0},${g | 0},${(g * 0.35) | 0})`;
       ctx.beginPath(); ctx.moveTo(x - w, s); ctx.quadraticCurveTo(x + lean * 0.3, s - h * 0.6, x + lean, s - h); ctx.quadraticCurveTo(x + lean * 0.3 + w * 0.3, s - h * 0.6, x + w, s); ctx.fill();
     }
-  }, 23, 1);
+  }, 23);
 }
 
 /**

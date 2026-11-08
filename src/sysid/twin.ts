@@ -112,6 +112,8 @@ function grid(ts: Float64Array, ys: Float64Array, t0: number, n: number, dt = 0.
 
 /** Betaflight's min_check (µs): the throttle below it is the bottom of the stick (default 1050). */
 const MIN_CHECK = 1050;
+/** Shortest segment replayed and compared (s): compareLogs skips the first 0.5 s and the last 0.1 s. */
+const MIN_SEGMENT_S = 1;
 
 export interface ReplayOptions {
   spec: DroneSpec;
@@ -131,12 +133,15 @@ export async function replayLog(env: FpvEnv, real: BblLog, o: ReplayOptions): Pr
   if (!s.rcCommand) throw new Error('the log has no rcCommand fields (needed to replay its sticks)');
   const seg = o.segment ?? autoSegment(s);
   const dur = seg.toS - seg.fromS;
-  if (!(dur > 0.5)) throw new Error('the log has no stretch of flight to replay');
+  if (!(dur >= MIN_SEGMENT_S)) throw new Error(`the log has no stretch of flight to replay (at least ${MIN_SEGMENT_S} s)`);
   const sc: Scenario = {
     format: 'fpvsim-scenario', version: 1, seed: o.seed ?? 1,
     map: { id: 'field' }, drone: { spec: o.spec },
     sim: { wind: { speed: 0, direction: 0, turbulence: 0, gusts: 0 }, damage: false },
-    firmware: { cli: o.cli ?? tuneFromLog(real.headers) },
+    // the logged rcCommand throttle has already been through the throttle curve (rcLookupThrottle:
+    // thr_mid / thr_expo): replayed through the same curve again, any expo counted twice. With no
+    // expo the curve is the identity, whatever thr_mid is
+    firmware: { cli: [...(o.cli ?? tuneFromLog(real.headers)), 'set thr_expo = 0'] },
     start: { armed: true, mode: 'acro', pos: [0, 0, 150 + (o.heightM ?? 0)] },
     episode: { maxSeconds: dur + 0.5, controlHz: 1000, endOnCrash: false, endOutOfBounds: false },
   };
@@ -263,6 +268,7 @@ export function compareLogs(real: BblLog, sim: BblLog, seg: Segment): GapReport 
   const R = bblSeries(real), S = bblSeries(sim);
   if (!R.gyro || !S.gyro || !R.setpoint || !S.setpoint) throw new Error('both logs need gyro and setpoint fields');
   // the simulated log starts at its arming; find its offset on the real clock from the setpoints (same sticks, same rates)
+  if (!(seg.toS - seg.fromS >= MIN_SEGMENT_S)) throw new Error(`the segment is too short to compare (at least ${MIN_SEGMENT_S} s)`);
   const n = Math.floor((seg.toS - seg.fromS - 0.6) * 1000);
   const t0 = seg.fromS + 0.5; // skip the first half second (the replay's start transient)
   const rSp = [0, 1, 2].map((a) => grid(R.t, R.setpoint![a], t0, n));

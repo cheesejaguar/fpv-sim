@@ -13,8 +13,8 @@ import type { WorldUniforms } from './sway';
 
 type Track = <T extends { dispose(): void }>(x: T) => T;
 
-/** Water grid quads per side over the terrain (2.2 × map.size), and the open-sea ring's outer half-width (m). */
-const WATER_N = 320, SEA_HALF = 6000;
+/** Water grid quads per side over the terrain (2.2 × map.size), its tiles per side, and the open-sea ring's outer half-width (m). */
+const WATER_N = 320, WATER_TILES = 8, SEA_HALF = 6000;
 
 export function addCoast(scene: THREE.Scene, map: MapDef, tiles: THREE.Mesh[], skyColor: number, u: WorldUniforms, track: Track) {
   if (map.drape && tiles.length) {
@@ -106,7 +106,10 @@ diffuseColor.a = mix(0.45, 0.97, smoothstep(0.0, 4.0, sD));
 float sFoam = smoothstep(1.6, 0.1, sD + 0.5 * sin(sT * 0.9 + vSeaW.x * 0.05 + vSeaW.y * 0.03));
 sFoam *= smoothstep(0.35, 0.75, sNoise(vSeaW * 0.6 + vec2(sT * 0.3, 0.0)) * 0.6 + sNoise(vSeaW * 2.3 - sT * 0.2) * 0.4 + sFoam * 0.3);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.88, 0.88), sFoam);
-diffuseColor.a = max(diffuseColor.a, sFoam);`;
+diffuseColor.a = max(diffuseColor.a, sFoam);
+// the last few centimetres fade out: the depth buffer can't tell the water from a beach this close to
+// it a few hundred metres away, and the opaque surf flickered along the shore
+diffuseColor.a *= smoothstep(0.0, 0.15, sD);`;
 const SEA_NORMAL = /* glsl */ `
 #include <normal_fragment_maps>
 {
@@ -154,18 +157,31 @@ export function seaGeometries(map: MapDef, N = WATER_N): THREE.BufferGeometry[] 
     pos.set([x, L, z], k * 3);
     depth[k] = L - map.terrain(x, -z);
   }
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const p = j * W + i;
-    // skip quads with dry land under all four corners (the terrain hides them anyway)
-    if (depth[p] < -2 && depth[p + 1] < -2 && depth[p + W] < -2 && depth[p + W + 1] < -2) continue;
-    idx.push(p, p + W, p + 1, p + W, p + W + 1, p + 1);
+  // in tiles (each face of the FPV cube capture culls the water it can't see: one mesh made every
+  // face draw all of it), sharing the vertex arrays; tiles over dry land are left out
+  const posA = new THREE.BufferAttribute(pos, 3), depthA = new THREE.BufferAttribute(depth, 1);
+  const nrmA = new THREE.BufferAttribute(new Float32Array(W * W * 3).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3);
+  const tiles: THREE.BufferGeometry[] = [], T = Math.max(1, Math.min(WATER_TILES, N)), per = Math.ceil(N / T);
+  for (let tj = 0; tj < T; tj++) for (let ti = 0; ti < T; ti++) {
+    const idx: number[] = [];
+    let lo = Infinity, hi = -Infinity;
+    for (let j = tj * per; j < Math.min(N, (tj + 1) * per); j++) for (let i = ti * per; i < Math.min(N, (ti + 1) * per); i++) {
+      const p = j * W + i;
+      // skip quads with dry land under all four corners (the terrain hides them anyway)
+      if (depth[p] < -2 && depth[p + 1] < -2 && depth[p + W] < -2 && depth[p + W + 1] < -2) continue;
+      idx.push(p, p + W, p + 1, p + W, p + W + 1, p + 1);
+      lo = Math.min(lo, p); hi = Math.max(hi, p + W + 1);
+    }
+    if (!idx.length) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', posA); g.setAttribute('aDepth', depthA); g.setAttribute('normal', nrmA);
+    g.setIndex(idx);
+    // bounds of this tile's quads only (the shared arrays span the whole grid)
+    const x0 = -S / 2 + ti * per * step, x1 = -S / 2 + Math.min(N, (ti + 1) * per) * step, z0 = -S / 2 + tj * per * step, z1 = -S / 2 + Math.min(N, (tj + 1) * per) * step;
+    g.boundingBox = new THREE.Box3(new THREE.Vector3(x0 - 0.01, L - 1, z0 - 0.01), new THREE.Vector3(x1 + 0.01, L + 1, z1 + 0.01));
+    g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
+    tiles.push(g);
   }
-  const grid = new THREE.BufferGeometry();
-  grid.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  grid.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1));
-  grid.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(W * W * 3).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
-  grid.setIndex(idx);
-  grid.computeBoundingSphere();
   // ring: inner square = the grid's edge, outer square far beyond the camera's far plane; edge depth carried out
   const a = S / 2, b = SEA_HALF, edge = (x: number, z: number) => Math.max(20, L - map.terrain(x, -z));
   const rp = [-a, -a, a, -a, a, a, -a, a, -b, -b, b, -b, b, b, -b, b].flatMap((v, i, arr) => (i % 2 ? [] : [v, L, arr[i + 1]]));
@@ -176,7 +192,7 @@ export function seaGeometries(map: MapDef, N = WATER_N): THREE.BufferGeometry[] 
   ring.setAttribute('normal', new THREE.Float32BufferAttribute(rp.map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
   ring.setIndex([0, 4, 1, 1, 4, 5, 1, 5, 2, 2, 5, 6, 2, 6, 3, 3, 6, 7, 3, 7, 0, 0, 7, 4]);
   ring.computeBoundingSphere();
-  return [grid, ring];
+  return [...tiles, ring];
 }
 
 function seaMeshes(map: MapDef, skyColor: number, u: WorldUniforms, track: Track): THREE.Mesh[] {

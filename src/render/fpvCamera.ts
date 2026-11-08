@@ -1077,7 +1077,9 @@ export class FpvCamera {
     if (oh > 1 - 2 * m) { oh = 1 - 2 * m; ow = (oh * osdAspect) / frameAspect; }
     u.osdRect.value.set(0.5 - ow / 2, 0.5 - oh / 2, 0.5 + ow / 2, 0.5 + oh / 2); ou.osdRect.value.copy(u.osdRect.value);
     // same rectangles in CSS pixels for the HUD layout
-    const cw = r.domElement.clientWidth || size.x, ch = r.domElement.clientHeight || size.y;
+    // (the renderer's CSS size: reading the canvas's clientWidth here, after the HUD wrote to the
+    // DOM, forced a layout every presented frame)
+    const cw = size.x, ch = size.y;
     const fw = ou.screenFit.value.x * cw, fh = ou.screenFit.value.y * ch;
     const f = this.layout.frame; f.x = (cw - fw) / 2; f.y = (ch - fh) / 2; f.w = fw; f.h = fh;
     const o = this.layout.osd; o.w = ow * fw; o.h = oh * fh; o.x = f.x + (0.5 - ow / 2) * fw; o.y = f.y + (0.5 - oh / 2) * fh;

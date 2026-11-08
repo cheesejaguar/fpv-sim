@@ -113,6 +113,8 @@ export class GroundTruthCamera {
   private quadScene = new THREE.Scene();
   private quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private mats = new Map<string, THREE.ShaderMaterial>();
+  /** label versions of shader-patched / alpha-cut materials, per original material and label */
+  private derived = new Map<THREE.Material, Map<string, THREE.Material>>();
 
   constructor(private renderer: THREE.WebGLRenderer, cubeSize = 768) {
     this.cubeRT = new THREE.WebGLCubeRenderTarget(cubeSize, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false });
@@ -131,6 +133,40 @@ export class GroundTruthCamera {
     if (!m) {
       m = new THREE.ShaderMaterial({ vertexShader: gtVS, fragmentShader: gtFS, uniforms: { cls: { value: cls }, inst: { value: inst } }, side: THREE.DoubleSide });
       this.mats.set(key, m);
+    }
+    return m;
+  }
+
+  /**
+   * The label material for a mesh drawn with `orig`. Trees, grass, flags and the crowd move their
+   * vertices in their own shader (wind sway, trunks stretched to the ground, the near/far tree
+   * dissolve: sway.ts) and leaf cards are alpha-cut: a plain label material drew static, solid
+   * cards the picture never showed. Those keep their own program, with the output replaced.
+   */
+  private matFor(orig: THREE.Material, cls: number, inst: number): THREE.Material {
+    const std = orig as THREE.MeshStandardMaterial;
+    const patched = orig.onBeforeCompile !== THREE.Material.prototype.onBeforeCompile;
+    if (!std.isMeshStandardMaterial || !(patched || (orig.alphaTest > 0 && std.map))) return this.mat(cls, inst);
+    let per = this.derived.get(orig);
+    if (!per) {
+      per = new Map();
+      this.derived.set(orig, per);
+      orig.addEventListener('dispose', () => { for (const m of this.derived.get(orig)?.values() ?? []) m.dispose(); this.derived.delete(orig); });
+    }
+    const key = `${cls}:${inst}`;
+    let m = per.get(key);
+    if (!m) {
+      const g = std.clone();
+      const base = orig.onBeforeCompile.bind(orig), baseKey = orig.customProgramCacheKey();
+      g.transparent = false; g.blending = THREE.NoBlending; g.toneMapped = false; g.alphaToCoverage = false;
+      g.onBeforeCompile = (sh, r) => {
+        base(sh, r);
+        sh.uniforms.gtCls = { value: cls }; sh.uniforms.gtInst = { value: inst };
+        sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float gtCls, gtInst;')
+          .replace('#include <dithering_fragment>', '#include <dithering_fragment>\n  gl_FragColor = vec4(length(vViewPosition), gtCls, gtInst, 1.0);');
+      };
+      g.customProgramCacheKey = () => `gt:${baseKey}`;
+      per.set(key, (m = g));
     }
     return m;
   }
@@ -155,7 +191,7 @@ export class GroundTruthCamera {
       const cls = tag === null ? GT.structure : typeof tag === 'string' ? GT[tag] : GT[tag.cls];
       const id = tag && typeof tag === 'object' && tag.id !== undefined ? tag.id + 1 : 0;
       swapped.push([m, m.material]);
-      m.material = this.mat(cls, id);
+      m.material = mat ? this.matFor(mat, cls, id) : this.mat(cls, id);
     });
     for (const o of hidden) o.visible = false;
     const bg = scene.background, fog = scene.fog, prevRT = r.getRenderTarget(), cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha();
@@ -197,5 +233,7 @@ export class GroundTruthCamera {
   dispose() {
     this.cubeRT.dispose(); this.outRT?.dispose(); this.lensMat.dispose();
     for (const m of this.mats.values()) m.dispose();
+    for (const per of this.derived.values()) for (const m of per.values()) m.dispose();
+    this.derived.clear();
   }
 }

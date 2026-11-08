@@ -176,7 +176,8 @@ const FIBER_DEFAULTS: Required<FiberSpec> = { lengthM: 10000, massGPerKm: 60, sp
 export class OpsLayer {
   readonly config: OpsConfig;
   /** ops time 0 on the core's clock */
-  readonly t0: number;
+  /** episode start (sim s); moved on by a headless ArduPilot reboot, which the episode clock skips */
+  t0: number;
   /** the emitters, in the world (their spec heights are above the ground: placed on the first attach) */
   readonly emitters: Emitter[];
   private placed = false;

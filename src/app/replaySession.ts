@@ -60,5 +60,6 @@ export function enterReplay(ctx: AppCtx, track: ReplayTrack, w: Awaited<ReturnTy
     osd.texture.dispose();
     Object.assign(ctx, live);
     ctx.fpv.setVideo(live.build.info.components.video, ctx.view.renderScale);
+    const after = ctx.afterReplay; ctx.afterReplay = undefined; after?.();
   };
 }

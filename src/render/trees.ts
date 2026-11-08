@@ -201,20 +201,30 @@ export function farTemplate(kind: 'oak' | 'pine'): THREE.BufferGeometry {
 // ---------------------------------------------------------------------------------------------
 
 interface TreeInst { x: number; y: number; z: number; h: number; r: number; yaw: number; species: 0 | 1; variant: number }
-interface Group { im: THREE.InstancedMesh; trees: TreeInst[]; iTree: THREE.InstancedBufferAttribute }
+/** One mesh of a group: its own instance buffers over the group's shared template attributes. */
+interface Part { im: THREE.InstancedMesh; iTree: THREE.InstancedBufferAttribute; n: number; box: THREE.Box3; list: TreeInst[] }
 
 export interface TreeSet {
   meshes: THREE.InstancedMesh[];
-  /** Re-bin trees into near / far sets around the camera (cheap; only after it moved a few metres). */
+  /** Re-bin the near trees around the camera (cheap; only after it moved a few metres). */
   update(cam: THREE.Vector3): void;
   dispose(): void;
 }
 
 const VARIANTS = 2;
+/**
+ * Near trees (within the dissolve band + a margin, re-binned every 4 m of camera travel) are split
+ * into an inner disc and NEAR_SECTORS sectors of the ring around it, none of which contains the
+ * camera: each face of the FPV cube capture culls the sectors it can't see. Far stand-ins are static
+ * world-grid chunks (FAR_CHUNKS² over the forest) with no re-binning at all; inside the dissolve band
+ * their vertex shader collapses them (sway.ts).
+ */
+export const NEAR_SECTORS = 12, NEAR_INNER = 24, FAR_CHUNKS = 8;
+const NEAR_REACH = TREE_FADE[1] + 6;
 
 /**
- * Instanced trees of a map: per species and variant one near mesh (bark + leaves, one material),
- * per species one far mesh. `atlas`: foliageAtlas() (owned by the caller).
+ * Instanced trees of a map: per species and variant the near meshes (bark + leaves, one material),
+ * per species the far chunks. `atlas`: foliageAtlas() (owned by the caller).
  */
 export function buildTrees(map: MapDef, u: WorldUniforms, atlas: THREE.Texture): TreeSet | null {
   if (!map.trees.length) return null;
@@ -229,50 +239,99 @@ export function buildTrees(map: MapDef, u: WorldUniforms, atlas: THREE.Texture):
   const near = T(patchMaterial(new THREE.MeshStandardMaterial({ ...card, roughness: 0.85 }), u, 'tree', { fade: 'near', alphaMips: ATLAS_SIZE, noNormalFlip: true }));
   const far = T(patchMaterial(new THREE.MeshStandardMaterial({ ...card, roughness: 0.9 }), u, 'tree', { fade: 'far', alphaMips: ATLAS_SIZE, noNormalFlip: true }));
   const depth = T(patchMaterial(new THREE.MeshDepthMaterial(card), u, 'tree', { depth: true, alphaMips: ATLAS_SIZE }));
-  const nearG: Group[] = [], farG: Group[] = [];
-  const makeGroup = (geo: THREE.BufferGeometry, mat: THREE.Material, shadows: boolean, members: TreeInst[], into: Group[]) => {
-    T(geo);
-    const iTree = new THREE.InstancedBufferAttribute(new Float32Array(members.length * 4), 4);
-    iTree.setUsage(THREE.DynamicDrawUsage);
-    geo.setAttribute('iTree', iTree);
-    const im = T(new THREE.InstancedMesh(geo, mat, members.length));
-    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0);
+  /** A mesh of `cap` instances of the template (whose attributes it shares: uploaded once). */
+  const part = (geo: THREE.BufferGeometry, mat: THREE.Material, shadows: boolean, cap: number): Part => {
+    const g = new THREE.BufferGeometry();
+    for (const [name, a] of Object.entries(geo.attributes)) g.setAttribute(name, a);
+    g.setIndex(geo.index);
+    const iTree = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+    g.setAttribute('iTree', iTree);
+    const im = T(new THREE.InstancedMesh(T(g), mat, cap));
     im.count = 0; im.visible = false;
     if (shadows) { im.customDepthMaterial = depth; im.castShadow = true; im.receiveShadow = true; }
-    into.push({ im, trees: members, iTree });
+    return { im, iTree, n: 0, box: new THREE.Box3(), list: [] };
   };
+  /** Write a part's list into its instance buffers (only the used range is uploaded). */
+  const commit = (pt: Part) => {
+    const im = pt.im, n = (pt.n = pt.list.length);
+    pt.box.makeEmpty();
+    for (let k = 0; k < n; k++) {
+      const t = pt.list[k];
+      im.setMatrixAt(k, m4.compose(p.set(t.x, t.y + 0.62 * t.h, t.z), q.setFromAxisAngle(Y, t.yaw), s.setScalar(t.r)));
+      pt.iTree.setXYZW(k, t.x, t.y, t.z, t.h);
+      pt.box.expandByPoint(p.set(t.x - t.r, t.y - 0.5, t.z - t.r)).expandByPoint(p.set(t.x + t.r, t.y + 0.62 * t.h + t.r, t.z + t.r));
+    }
+    im.count = n; im.visible = n > 0;
+    if (!n) { im.boundingSphere = null; return; }
+    // a sphere round the trees themselves (centre of their box, radius to the farthest crown): much
+    // tighter than the box's own sphere for a sector of tall trees on a slope
+    const sph = (im.boundingSphere ??= new THREE.Sphere());
+    pt.box.getCenter(sph.center);
+    let rad = 0;
+    for (const t of pt.list) {
+      const top = 0.62 * t.h + t.r, hy = (top + 0.5) / 2;
+      rad = Math.max(rad, Math.hypot(t.x - sph.center.x, t.y - 0.5 + hy - sph.center.y, t.z - sph.center.z) + Math.hypot(t.r, hy));
+    }
+    sph.radius = rad;
+    im.instanceMatrix.clearUpdateRanges(); im.instanceMatrix.addUpdateRange(0, n * 16); im.instanceMatrix.needsUpdate = true;
+    pt.iTree.clearUpdateRanges(); pt.iTree.addUpdateRange(0, n * 4); pt.iTree.needsUpdate = true;
+  };
+
+  // ---- far: static chunks of a world grid over the forest ----
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const t of trees) { x0 = Math.min(x0, t.x); x1 = Math.max(x1, t.x); z0 = Math.min(z0, t.z); z1 = Math.max(z1, t.z); }
+  const K = trees.length > 256 ? FAR_CHUNKS : 1, cw = (x1 - x0) / K + 1e-6, ch = (z1 - z0) / K + 1e-6;
+  const farParts: Part[] = [];
   for (const species of [0, 1] as const) {
     const all = trees.filter((t) => t.species === species);
     if (!all.length) continue;
-    for (let v = 0; v < VARIANTS; v++) {
-      const members = all.filter((t) => t.variant === v);
-      if (members.length) makeGroup(species ? pineTemplate(101 + v * 17) : oakTemplate(7 + v * 31), near, true, members, nearG);
-    }
-    makeGroup(farTemplate(species ? 'pine' : 'oak'), far, false, all, farG);
+    const geo = T(farTemplate(species ? 'pine' : 'oak'));
+    const cells = new Map<number, TreeInst[]>();
+    for (const t of all) { const k = Math.min(K - 1, Math.floor((t.x - x0) / cw)) * K + Math.min(K - 1, Math.floor((t.z - z0) / ch)); let l = cells.get(k); if (!l) cells.set(k, (l = [])); l.push(t); }
+    for (const list of cells.values()) { const pt = part(geo, far, false, list.length); pt.list = list; commit(pt); farParts.push(pt); }
   }
-  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0);
-  const box = new THREE.Box3(), last = new THREE.Vector3(Infinity, 0, 0);
-  const fill = (g: Group, keep: (t: TreeInst) => boolean) => {
+
+  // ---- near: per species and variant, an inner disc and the sectors of the ring, re-binned ----
+  // capacity: the most trees any near disc can hold (a 32 m grid count over the disc's reach)
+  const C = 32, cnt = new Map<number, number>();
+  for (const t of trees) { const k = (Math.floor(t.x / C) + 4096) * 8192 + Math.floor(t.z / C) + 4096; cnt.set(k, (cnt.get(k) ?? 0) + 1); }
+  const reachCells = Math.ceil(NEAR_REACH / C) + 1;
+  let capNear = 0;
+  for (const k of cnt.keys()) {
+    const ix = Math.floor(k / 8192), iz = k % 8192;
     let n = 0;
-    box.makeEmpty();
-    for (const t of g.trees) {
-      if (!keep(t)) continue;
-      g.im.setMatrixAt(n, m4.compose(p.set(t.x, t.y + 0.62 * t.h, t.z), q.setFromAxisAngle(Y, t.yaw), s.setScalar(t.r)));
-      g.iTree.setXYZW(n, t.x, t.y, t.z, t.h);
-      box.expandByPoint(p.set(t.x - t.r, t.y - 0.5, t.z - t.r)).expandByPoint(p.set(t.x + t.r, t.y + 0.62 * t.h + t.r, t.z + t.r));
-      n++;
-    }
-    g.im.count = n; g.im.visible = n > 0;
-    g.im.instanceMatrix.needsUpdate = true; g.iTree.needsUpdate = true;
-    g.im.boundingSphere = n ? box.getBoundingSphere(g.im.boundingSphere ?? new THREE.Sphere()) : null;
-  };
+    for (let a = -reachCells; a <= reachCells; a++) for (let b = -reachCells; b <= reachCells; b++) n += cnt.get((ix + a) * 8192 + iz + b) ?? 0;
+    capNear = Math.max(capNear, n);
+  }
+  const nearGroups: { parts: Part[]; trees: TreeInst[] }[] = [];
+  for (const species of [0, 1] as const) for (let v = 0; v < VARIANTS; v++) {
+    const members = trees.filter((t) => t.species === species && t.variant === v);
+    if (!members.length) continue;
+    const geo = T(species ? pineTemplate(101 + v * 17) : oakTemplate(7 + v * 31));
+    const nParts = members.length > 64 ? NEAR_SECTORS + 1 : 1, cap = Math.min(members.length, capNear);
+    nearGroups.push({ parts: Array.from({ length: nParts }, () => part(geo, near, true, cap)), trees: members });
+  }
+  const last = new THREE.Vector3(Infinity, 0, 0);
   const dist = (t: TreeInst, c: THREE.Vector3) => Math.hypot(t.x - c.x, t.y + 0.5 * t.h - c.y, t.z - c.z);
   // bins reach 6 m past the dissolve band: they stay valid until the camera has moved 4 m
   const update = (cam: THREE.Vector3) => {
     if (last.distanceToSquared(cam) < 16) return;
     last.copy(cam);
-    for (const g of nearG) fill(g, (t) => dist(t, cam) < TREE_FADE[1] + 6);
-    for (const g of farG) fill(g, (t) => dist(t, cam) > TREE_FADE[0] - 6);
+    for (const g of nearGroups) {
+      const P = g.parts;
+      for (const pt of P) pt.list.length = 0;
+      for (const t of g.trees) {
+        const d = dist(t, cam);
+        if (d >= NEAR_REACH) continue;
+        const horiz = Math.hypot(t.x - cam.x, t.z - cam.z);
+        const k = P.length === 1 || horiz < NEAR_INNER ? 0 : 1 + Math.min(NEAR_SECTORS - 1, Math.floor(((Math.atan2(t.z - cam.z, t.x - cam.x) + Math.PI) / (2 * Math.PI)) * NEAR_SECTORS));
+        (t as TreeInst & { d?: number }).d = d;
+        P[k].list.push(t);
+      }
+      // front to back: alpha-tested foliage overdraws heavily, nearer crowns hide what is behind them
+      for (const pt of P) { pt.list.sort((a, b) => (a as TreeInst & { d: number }).d - (b as TreeInst & { d: number }).d); commit(pt); }
+    }
   };
-  return { meshes: [...nearG, ...farG].map((g) => g.im), update, dispose() { for (const d of disp) d.dispose(); } };
+  return { meshes: [...nearGroups.flatMap((g) => g.parts.map((pt) => pt.im)), ...farParts.map((pt) => pt.im)], update, dispose() { for (const d of disp) d.dispose(); } };
 }

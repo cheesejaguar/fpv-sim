@@ -101,7 +101,11 @@ describe.skipIf(!have)('operations on the real Betaflight', () => {
     const env = await createNodeEnv();
     const run = await fly(env, base({ ops: { faults: [{ at: 1, kind: 'gyro_bias', axis: 'x', value: 20 }] } }), 150);
     const o = run.obs[run.obs.length - 1];
-    expect(o.gyro[0] - o.rates[0]).toBeCloseTo((20 * Math.PI) / 180, 1);
+    // the bias, on average after the fault: one sample also carries ~0.02 rad/s of sensor noise and
+    // vibration, so a single reading passes or fails on its noise draw
+    const after = run.obs.filter((x) => x.t > 1.2).map((x) => x.gyro[0] - x.rates[0]);
+    expect(after.length).toBeGreaterThan(50);
+    expect(after.reduce((a, b) => a + b, 0) / after.length).toBeCloseTo((20 * Math.PI) / 180, 1);
     // the attitude estimate integrates the bias: the real roll walks off level
     expect(Math.abs(o.euler[0])).toBeGreaterThan(0.15);
   }, 120000);

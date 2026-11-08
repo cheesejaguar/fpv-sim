@@ -27,7 +27,7 @@ import { DEFAULT_SETTINGS, SimSettings } from './shared';
 import { GPS_ORIGIN, UbxReceiver } from './ubxGps';
 import { OpsConfig, OpsLayer } from './ops';
 import { apLaunch, apVehicle, ApVehicle } from '../ap/apConfig';
-import { AP_FRAME_DT, ApSpawn, ArduPilotLink } from '../ap/apLink';
+import { AP_FRAME_DT, ApMissionItem, ApSpawn, ArduPilotLink } from '../ap/apLink';
 import { missionItems } from '../ap/apMission';
 import { stateJson } from '../sitl/ardupilotJson';
 
@@ -77,6 +77,10 @@ export interface HandLaunch {
   /** the throw: how long the arm has been pushing (s; -1 before it starts) */
   throwT: number;
   released: boolean;
+  /** nose-up attitude while held (rad; default HAND_PITCH) */
+  pitch?: number;
+  /** a grip that never throws (pin(): held still while a firmware boots), let go by unpin() */
+  pin?: boolean;
 }
 /**
  * Hand-launch throw: the speed it leaves the hand with along its heading and upward (m/s), how long
@@ -154,6 +158,10 @@ export class FlightCore {
   private apMissionSent = false;
   /** firmware time of the last RC packet that arrived (ArduPilot gets the sticks until 100 ms without one) */
   private apRcT = -Infinity;
+  /** firmware time of the last automatic power cycle (a hung or exited ArduPilot restarts at most every 5 s) */
+  private apRestartT = -Infinity;
+  /** the IMU samples of the current 1 ms ArduPilot frame, summed (it gets their mean, as a sensor's own filter would) */
+  private readonly apG: V3 = { x: 0, y: 0, z: 0 }; private readonly apA: V3 = { x: 0, y: 0, z: 0 }; private apN = 0;
   private readonly apOpts: FlightCoreOptions['ardupilot'];
   private readonly windTmp: V3 = { x: 0, y: 0, z: 0 }; private readonly airTmp: V3 = { x: 0, y: 0, z: 0 };
   /** motor commands as the ESCs receive them (after motor faults) */
@@ -190,6 +198,8 @@ export class FlightCore {
     this.apOpts = opts.ardupilot;
     this.rcLink = new RcLink(this.sub(0x5eed));
     this.baro = new BaroModel(this.sub(0xba50));
+    // (a seeded episode's own GPS error stream: with a fixed seed every episode drew the same errors)
+    if (this.seed !== undefined) this.gps = new UbxReceiver(GPS_ORIGIN, this.sub(0x6a5));
   }
 
   /**
@@ -203,7 +213,9 @@ export class FlightCore {
     this.seed = seed >>> 0;
     this.rcLink = new RcLink(this.sub(0x5eed));
     this.baro = new BaroModel(this.sub(0xba50));
-    this.gps = new UbxReceiver(GPS_ORIGIN);
+    // (keeps the map's origin: a map with its own geo origin used to fall back to the default one;
+    // the error stream's seed stays fixed, as recorded runs were made with it)
+    this.gps = new UbxReceiver({ ...this.gps.origin });
     this.gpsEpochMs = gpsEpochMs;
     this.linkAcc = 0; this.wakeAcc = 0; this.ringAcc = 0;
     this.rcAcc = 0; this.battAcc = 0; this.baroAcc = 0; this.gpsAcc = 0; this.bblAcc = 0;
@@ -241,8 +253,10 @@ export class FlightCore {
    * time t0). Seeded from the core's seed.
    */
   setOps(config: OpsConfig | null, t0 = this.simT) {
+    // (built first: a configuration that throws leaves the current one in place)
+    const next = config ? new OpsLayer(config, t0, this.seed ?? 0x0b5) : null;
     if (this.ops && this.quad) { this.ops.detach(this); this.gps.cepM = this.gpsCep0 || this.gps.cepM; }
-    this.ops = config ? new OpsLayer(config, t0, this.seed ?? 0x0b5) : null;
+    this.ops = next;
     if (this.ops && this.quad) this.ops.attach(this, true);
   }
 
@@ -256,6 +270,8 @@ export class FlightCore {
     this.world = new PrimitiveWorld(m);
     this.env = this.makeEnv();
     this.gps.origin = { lat: m.geo?.lat ?? GPS_ORIGIN.lat, lon: m.geo?.lon ?? GPS_ORIGIN.lon, altM: m.elevationM ?? 0 };
+    // ArduPilot's home (lat, lon, altitude) is fixed when it boots: power-cycle it on the new map's
+    if (this.ap) this.startArduPilot();
     // actors draw from their own stream: a map without them changes nothing else
     this.actors = m.actors?.length ? new ActorSim(m, this.sub(0xac70)) : null;
     this.resetActors();
@@ -335,12 +351,24 @@ export class FlightCore {
     if (r.repair) this.quad.repair();
     if (r.fullBattery) this.buildQuad(); else this.respawn();
     if (r.at) this.placeAt(r.at, (r.at.yawDeg * Math.PI) / 180);
+    this.apAfterTeleport();
   }
 
-  /** Put the quad somewhere specific, at rest (yaw in rad). */
+  /**
+   * After a respawn or a teleport, an ArduPilot build is power-cycled (as a pilot re-plugs the pack
+   * after a crash): its EKF has no way to learn of the jump and kept tens of degrees of attitude
+   * error for seconds, and its heading 160° off after 5 s, with arming allowed at once.
+   */
+  apAfterTeleport() { if (this.ap) this.startArduPilot(); }
+
+  /**
+   * Put the quad somewhere specific, at rest (yaw in rad), never under the ground: a teleport below
+   * it (API, debug) buried the quad metres deep and the contact springs flung it out at km/s.
+   */
   placeAt(pos: V3, yaw: number) {
     this.hand = null;
-    this.quad.reset({ x: pos.x, y: pos.y, z: pos.z }, yaw);
+    const floor = this.world.groundHeight(pos.x, pos.y) + 0.06 - Math.min(...this.build.params.colliders.map((c) => c.pos.z - c.radius));
+    this.quad.reset({ x: pos.x, y: pos.y, z: Math.max(pos.z, floor) }, yaw);
     this.env.wake.reset();
     this.lastPos = { ...this.quad.s.pos };
   }
@@ -631,13 +659,45 @@ export class FlightCore {
     const headingDeg = 90 - (this.map.spawn.yaw * 180) / Math.PI;
     const launch = apLaunch(this.build, { ...this.gps.origin }, headingDeg);
     this.ap = new ArduPilotLink(v, { moduleUrl: url, files: launch.files, args: launch.args, cwd: launch.cwd }, o.spawn, (t) => this.log(t));
-    this.apAcc = 0; this.apRcT = -Infinity; this.apMissionSent = false;
+    this.apAcc = 0; this.apRcT = -Infinity; this.apMissionSent = false; this.apRestored = false;
+    this.apG.x = this.apG.y = this.apG.z = this.apA.x = this.apA.y = this.apA.z = 0; this.apN = 0;
+    if (this.apStore.spec !== this.spec) this.apStore = { spec: this.spec, params: {}, mission: null };
     this.motorCmd.fill(0); this.armed = false;
     this.log(`Ardu${v === 'plane' ? 'Plane' : 'Copter'} 4.7.2 starting (WebAssembly)`);
     return this.ap;
   }
 
   stopArduPilot() { this.ap?.terminate(); this.ap = null; }
+
+  /**
+   * Hold the plant still where it is (level, at its heading) until unpin(): an ArduPilot build
+   * booting at a start or teleport pose in mid-air would otherwise fall while it waits for its GPS
+   * fix. A plane already in the hand stays there. Returns whether it pinned.
+   */
+  pin(): boolean {
+    if (this.hand) return false;
+    const q = this.quad.s.q, yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+    this.hand = { pos: { ...this.quad.s.pos }, yaw, hold: 0, throwT: -1, released: false, pitch: 0, pin: true };
+    this.holdInHand();
+    return true;
+  }
+  unpin() { if (this.hand?.pin) { this.hand = null; const s = this.quad.s; s.vel = { x: 0, y: 0, z: 0 }; s.w = { x: 0, y: 0, z: 0 }; } }
+
+  /**
+   * What a ground station stored on the flight controller (parameters, a mission), kept across
+   * ArduPilot power cycles (respawns, teleports, map changes, hang restarts) as its EEPROM keeps them:
+   * each start is a fresh WebAssembly instance with the build's parameters only. A new drone starts
+   * clean. (Changes a GCS makes over the raw MAVLink pass-through are not seen here.)
+   */
+  private apStore: { spec: DroneSpec | null; params: Record<string, number>; mission: ApMissionItem[] | null } = { spec: null, params: {}, mission: null };
+  private apRestored = false;
+  /** Set ArduPilot parameters now and after every later power cycle of this drone. */
+  apSetParams(params: Record<string, number>) { Object.assign(this.apStore.params, params); this.ap?.hub.setParams(params); }
+  /** Upload a mission now; it is uploaded again after every later power cycle of this drone. */
+  apUploadMission(items: ApMissionItem[], done: (ok: boolean, why: string) => void) {
+    this.apStore.mission = items;
+    if (this.ap) this.ap.hub.uploadMission(items, done); else done(false, 'ArduPilot is not running');
+  }
 
   /** The plant's state for ArduPilot's SITL JSON backend (sensors are ArduPilot's own SITL models). */
   private apStateLine(withRc: boolean): string {
@@ -646,6 +706,11 @@ export class FlightCore {
     const wind = this.env.wind.at(s.pos, this.windTmp);
     const air = this.airTmp; air.x = s.vel.x - wind.x; air.y = s.vel.y - wind.y; air.z = s.vel.z - wind.z;
     const airB = rotateInv(this.airTmp, s.q, air);
+    // the frame's mean IMU sample: one instantaneous sample per 1 ms let the plant's 1-2 kHz
+    // vibration alias down into ArduPilot's control band
+    const n = this.apN, g = this.apG, a = this.apA;
+    const imu = n ? { gyro: { x: g.x / n, y: g.y / n, z: g.z / n }, acc: { x: a.x / n, y: a.y / n, z: a.z / n } } : { gyro: quad.imu.gyroOut, acc: quad.imu.accOut };
+    g.x = g.y = g.z = a.x = a.y = a.z = 0; this.apN = 0;
     let rc: number[] | undefined;
     if (withRc) {
       rc = Array.from(this.rcBuf.subarray(0, 12), Math.round);
@@ -654,9 +719,10 @@ export class FlightCore {
     return stateJson({
       time: ap.apTime + AP_FRAME_DT,
       pos: s.pos, vel: s.vel, q: s.q,
-      gyro: this.fcGyro = this.ops?.imuTouched ? this.ops.gyro(quad.imu.gyroOut) : quad.imu.gyroOut,
-      accel: this.fcAcc = this.ops?.imuTouched ? this.ops.acc(quad.imu.accOut) : quad.imu.accOut,
-      airspeed: Math.max(0, airB.x),
+      gyro: this.fcGyro = this.ops?.imuTouched ? this.ops.gyro(imu.gyro) : imu.gyro,
+      accel: this.fcAcc = this.ops?.imuTouched ? this.ops.acc(imu.acc) : imu.acc,
+      // SITL's pitot reads equivalent airspeed: true airspeed × sqrt(rho / rho0)
+      airspeed: Math.max(0, airB.x) * Math.sqrt(isa(s.pos.z + this.map.elevationM, this.settings.ambientC - 15).rho / 1.225),
       battery: { voltage: s.vbus, current: s.ibus },
       rc,
     });
@@ -671,18 +737,34 @@ export class FlightCore {
       this.rcAcc -= 1 / this.settings.rcLinkHz;
       if (this.rcPacket()) this.apRcT = this.fcT;
     }
+    const io = quad.imu.gyroOut, ao = quad.imu.accOut;
+    this.apG.x += io.x; this.apG.y += io.y; this.apG.z += io.z; this.apA.x += ao.x; this.apA.y += ao.y; this.apA.z += ao.z; this.apN++;
     this.apAcc += dt;
     if (this.apAcc >= AP_FRAME_DT - 1e-9) {
       this.apAcc -= AP_FRAME_DT;
       // (SITL's RC input samples whichever frame its 50 Hz poll lands on: every frame carries the
       // sticks while the link is up; a link silent for 100 ms sends none and ArduPilot fails safe)
       if (ap.live || ap.status === 'running') ap.exchange(this.apStateLine(this.fcT - this.apRcT < 0.1), this.apOpts?.waitMs ?? 100);
+      // hung (a reboot request panics under WebAssembly) or exited after it had flown: the outputs
+      // are cut (the link zeroes them) and it is power-cycled, as the pilot / GCS asked
+      if ((ap.hung || (ap.live && ap.status === 'exited')) && this.fcT - this.apRestartT > 5) {
+        this.apRestartT = this.fcT;
+        this.log('ArduPilot stopped: power-cycling it');
+        this.startArduPilot();
+        return;
+      }
       ap.hub.pump(AP_FRAME_DT);
       this.armed = ap.hub.tel.armed;
-      const ms = this.map.mission;
-      if (ms && !this.apMissionSent && ap.hub.tel.connected && ap.hub.tel.gpsFix >= 3) {
+      // after a power cycle: what a ground station had stored (apStore)
+      if (!this.apRestored && ap.hub.tel.connected) {
+        this.apRestored = true;
+        if (Object.keys(this.apStore.params).length) ap.hub.setParams(this.apStore.params);
+      }
+      const ms = this.map.mission, stored = this.apStore.mission;
+      if ((ms || stored) && !this.apMissionSent && ap.hub.tel.connected && ap.hub.tel.gpsFix >= 3) {
         this.apMissionSent = true;
-        ap.hub.uploadMission(missionItems(ms, ap.vehicle, this.gps.origin, spawnGroundZ(this.map)), (ok, why) =>
+        if (stored) ap.hub.uploadMission(stored, (ok, why) => this.log(ok ? `Mission restored: ${stored.length} items` : `The stored mission was not restored: ${why}`));
+        else if (ms) ap.hub.uploadMission(missionItems(ms, ap.vehicle, this.gps.origin, spawnGroundZ(this.map)), (ok, why) =>
           this.log(ok ? `Mission loaded: ${ms.points.length} waypoints, then ${ms.end === 'rtl' ? 'home' : ms.end} (AUX4 flies it)` : `The map's mission was not loaded: ${why}`));
       }
       this.fcT += AP_FRAME_DT;
@@ -710,7 +792,8 @@ export class FlightCore {
   private holdAttitude() {
     const h = this.hand!, s = this.quad.s;
     // yaw about z, then the nose up (a rotation about the body's -y)
-    const cy = Math.cos(h.yaw / 2), sy = Math.sin(h.yaw / 2), cp = Math.cos(HAND_PITCH / 2), sp = Math.sin(HAND_PITCH / 2);
+    const pitch = h.pitch ?? HAND_PITCH;
+    const cy = Math.cos(h.yaw / 2), sy = Math.sin(h.yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
     s.q = { w: cy * cp, x: sy * sp, y: -cy * sp, z: sy * cp };
     s.w.x = s.w.y = s.w.z = 0;
   }
@@ -749,6 +832,7 @@ export class FlightCore {
    */
   private handRelease(dt: number) {
     const h = this.hand!;
+    if (h.pin) return;
     const motor = this.motorCmd.reduce((a, c) => Math.max(a, c), 0);
     const want = motor > 48 + 0.65 * 1999 || (this.armed && this.rcBuf[2] > 1800);
     h.hold = want ? h.hold + dt : 0;

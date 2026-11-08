@@ -88,7 +88,9 @@ const eeprom = new EepromStore(kv);
 // Started the moment the worker runs, before the main thread's init arrives: the firmware download
 // and compile, and the stored configuration, come in while the map and the drone are prepared.
 const fwPrefetch = Betaflight.prefetch(FW_URL);
-const storedConfig = Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY)]);
+/** Store key of the hardware the stored EEPROM was set up for (syncBetaflight writes it). */
+const BF_HW_KEY = 'bf-hw-key';
+const storedConfig = Promise.all([eeprom.load(), kv.get('bf-defaults-version'), kv.get('bf-fw-version'), kv.get(ACC_CAL_KEY), kv.get(BF_HW_KEY)]);
 storedConfig.catch(() => {}); // (the store never rejects; bootFirmware awaits it)
 
 // Noise-spectrum analyser: raw IMU gyro vs Betaflight's filtered gyro (debug_mode GYRO_FILTERED),
@@ -248,7 +250,7 @@ async function bootFirmware() {
     return;
   }
   try {
-    const [saved, applied, fwSeen, accKey] = await storedConfig;
+    const [saved, applied, fwSeen, accKey, hwKey] = await storedConfig;
     accCalKey = typeof accKey === 'string' ? accKey : undefined;
     if (saved) bf.eepromSet(saved);
     core.powerOnFirmware();
@@ -266,6 +268,12 @@ async function bootFirmware() {
       await cliBatch(defaultCli(core.build));
       await kv.set('bf-defaults-version', DEFAULTS_VERSION);
     }
+    // the stored EEPROM was made for another build (a change arrived while the firmware was not
+    // running, or the last session ended on ArduPilot): its hardware settings, in line again
+    // (no key yet: the first boot since keys were kept; the EEPROM matched the build as before)
+    try { bfHw = typeof hwKey === 'string' ? JSON.parse(hwKey) as BfHardware : null; } catch { bfHw = null; }
+    if (!why && bfHw && JSON.stringify(bfHw) !== JSON.stringify(bfHardware())) await syncBetaflight(null);
+    else { bfHw = bfHardware(); await kv.set(BF_HW_KEY, JSON.stringify(bfHw)); }
     // new defaults, another board, or trims from before the level calibration (ACC_CAL_REV)
     if (why || accCalStale()) await calibrateAcc();
     if (FW_VERSION !== 'dev') await kv.set('bf-fw-version', FW_VERSION);
@@ -277,6 +285,39 @@ async function bootFirmware() {
     post({ type: 'fwMissing', reason: `Betaflight failed to boot: ${(e as Error).message}` });
     core.bf = null;
   }
+}
+
+/**
+ * Keep Betaflight's hardware settings in line with the current build: motors (RPM filter), props
+ * direction (yaw mixing), battery, loop rates, and (when `old` is another video system or frame
+ * class, or null: everything) the OSD layout and failsafe. Then a level calibration for another board.
+ */
+async function syncBetaflight(prev: Pick<DroneSpec, 'video' | 'frame'> | null) {
+  const bf = core.bf, spec = core.spec;
+  if (!bf || !spec || !(fwState === 2 || fwState === 1)) return;
+  // what the EEPROM was last set up for (null: unknown, everything is written)
+  const old = prev ?? bfHw;
+  const build = core.build, b = build.info.components;
+  bf.setGyroRate(core.quad.imu.chip.sampleRateHz); // a different FC: its gyro rate applies from the reboot on save
+  const lines = [`set motor_poles = ${b.motor.poles}`, `set motor_kv = ${Math.round(b.motor.kv)}`, `set yaw_motors_reversed = ${spec.propDirection === 'props-out' ? 'ON' : 'OFF'}`, ...batteryCli(build), ...loopCli(build)];
+  if (!old || old.video !== spec.video) {
+    lines.push(`set vcd_video_system = ${osdGrid(b.video).vcd}`);
+    for (const [k, v] of Object.entries(osdLayout(b.video))) lines.push(`set ${k} = ${v}`);
+  }
+  if (!old || (old.frame === 'f7-lr') !== (spec.frame === 'f7-lr')) lines.push(`set failsafe_procedure = ${spec.frame === 'f7-lr' ? 'GPS-RESCUE' : 'DROP'}`);
+  lines.push('save');
+  await cliBatch(lines);
+  bfHw = bfHardware(); await kv.set(BF_HW_KEY, JSON.stringify(bfHw));
+  // another board (its own accelerometer offsets and misalignment): calibrate it level
+  if (accCalStale()) await calibrateAcc();
+}
+
+interface BfHardware { poles: number; kv: number; props: string; battery: string; video: string; frame: string; fc: string }
+/** The hardware the stored EEPROM was last set up for (persisted under BF_HW_KEY). */
+let bfHw: BfHardware | null = null;
+function bfHardware(): BfHardware {
+  const s = core.spec, b = core.build.info.components;
+  return { poles: b.motor.poles, kv: Math.round(b.motor.kv), props: s.propDirection, battery: s.battery, video: s.video, frame: s.frame, fc: s.fc };
 }
 
 /** The board the stored accelerometer trims were made for (accBoardKey; persisted under ACC_CAL_KEY). */
@@ -545,12 +586,15 @@ function tick(): number {
  * is behind would idle 4 ms per iteration and the overload governor would see a slower machine).
  */
 const loopChannel = new MessageChannel();
-loopChannel.port1.onmessage = () => loop();
+// a delay is armed from the message task, never from the timer callback itself: timers set from a
+// timer callback nest, and from five deep the browser stretches every 1 ms delay to 4 ms (the worker
+// then woke every 4 ms and stepped 32 at once: ~2 ms more video latency, ±2 ms capture jitter)
+loopChannel.port1.onmessage = (ev: MessageEvent<number>) => { if (ev.data > 0) setTimeout(loop, ev.data); else loop(); };
 function loop() {
   if (dead) return;
   let delay: number;
   try { delay = tick(); } catch (e) { fatal(e); return; }
-  if (delay <= 0) loopChannel.port2.postMessage(0); else setTimeout(loop, delay);
+  loopChannel.port2.postMessage(delay > 0 ? delay : 0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -659,27 +703,19 @@ async function firmwareOp(m: ToWorker) {
       // it (or swaps between ArduPilot and Betaflight)
       if (apVehicle(spec) || core.ap) {
         if (apVehicle(spec)) await bootArduPilot();
-        else { core.stopArduPilot(); blankOsd(); if (!core.bf) await bootFirmware(); else { fwState = 2; Atomics.store(sh.ctrl, 7, 2); post({ type: 'ready', fw: core.bf.version }); } }
+        else {
+          core.stopArduPilot(); blankOsd();
+          if (!core.bf) await bootFirmware(); else { fwState = 2; Atomics.store(sh.ctrl, 7, 2); post({ type: 'ready', fw: core.bf.version }); }
+          // Betaflight still holds the EEPROM of the last quad it flew, not this one (props
+          // direction, motors, battery, OSD): bring all of it in line (a first boot just now may
+          // already have: one save, one reboot)
+          if (!bfHw || JSON.stringify(bfHw) !== JSON.stringify(bfHardware())) await syncBetaflight(null);
+        }
         if (!apVehicle(spec) && apVehicle(old)) post({ type: 'log', text: 'Back on Betaflight' });
         resyncClock();
         break;
       }
-      // keep firmware hardware settings in sync with the generated airframe
-      const bf = core.bf;
-      if (bf && fwState === 2) {
-        const build = core.build, b = build.info.components;
-        bf.setGyroRate(core.quad.imu.chip.sampleRateHz); // a different FC: its gyro rate applies from the reboot on save
-        const lines = [`set motor_poles = ${b.motor.poles}`, `set motor_kv = ${Math.round(b.motor.kv)}`, `set yaw_motors_reversed = ${spec.propDirection === 'props-out' ? 'ON' : 'OFF'}`, ...batteryCli(build), ...loopCli(build)];
-        if (old.video !== spec.video) {
-          lines.push(`set vcd_video_system = ${osdGrid(b.video).vcd}`);
-          for (const [k, v] of Object.entries(osdLayout(b.video))) lines.push(`set ${k} = ${v}`);
-        }
-        if ((old.frame === 'f7-lr') !== (spec.frame === 'f7-lr')) lines.push(`set failsafe_procedure = ${spec.frame === 'f7-lr' ? 'GPS-RESCUE' : 'DROP'}`);
-        lines.push('save');
-        await cliBatch(lines);
-        // another board (its own accelerometer offsets and misalignment): calibrate it level
-        if (accCalStale()) await calibrateAcc();
-      }
+      await syncBetaflight(old);
       break;
     }
     case 'cli': {
@@ -733,7 +769,7 @@ async function handle(m: ToWorker) {
     }
     case 'ops': {
       if (run) stopRun('the operational environment changed');
-      core.setOps(m.config);
+      try { core.setOps(m.config); } catch (e) { post({ type: 'log', text: `The operational configuration was refused: ${(e as Error).message}` }); break; }
       if (core.ops) core.ops.onEvent = (e) => post({ type: 'opsEvent', e });
       break;
     }
@@ -771,10 +807,10 @@ async function handle(m: ToWorker) {
       if (!ap) { post({ type: 'apResult', id: m.id, ok: false, message: 'this build flies Betaflight' }); break; }
       const op = m.op, hub = ap.hub, id = m.id;
       if (op.kind === 'mission') {
-        hub.uploadMission(op.items, (ok, why) => post({ type: 'apResult', id, ok, message: ok ? `mission of ${op.items.length} items ${why}` : `mission upload: ${why}` }));
+        core.apUploadMission(op.items, (ok, why) => post({ type: 'apResult', id, ok, message: ok ? `mission of ${op.items.length} items ${why}` : `mission upload: ${why}` }));
         break;
       }
-      if (op.kind === 'params') hub.setParams(op.params);
+      if (op.kind === 'params') core.apSetParams(op.params);
       else if (op.kind === 'mode') hub.setMode(op.mode);
       else if (op.kind === 'arm') hub.arm(op.on, op.force);
       else hub.command(op.command, op.params);

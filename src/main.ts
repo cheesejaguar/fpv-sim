@@ -203,9 +203,12 @@ function applySpec(s: DroneSpec) {
   // download) instead of building it on the main thread (~1.2 s); the newest spec wins
   const n = ++specSeq;
   if (hasPropTable(s.prop) && droneMeshReady(s)) showBuild(s);
-  else void Promise.all([preloadPropTable(s.prop), preloadDroneMesh(s)]).then(() => { if (n === specSeq) showBuild(s); });
+  // (a failed download still shows the new build: the table is then made here, the mesh falls back)
+  else void Promise.all([preloadPropTable(s.prop), preloadDroneMesh(s)]).catch((e) => console.warn('build assets', e)).then(() => { if (n === specSeq) showBuild(s); });
 }
 function showBuild(s: DroneSpec) {
+  // a replay is on screen: it owns ctx.build / the mesh until it ends, then the live build is this one
+  if (ctx.replay) { ctx.afterReplay = () => showBuild(s); return; }
   ctx.build = buildDrone(s);
   ctx.scene.scene.remove(ctx.drone.root); ctx.drone.dispose();
   ctx.drone = makeDroneModel(ctx.build); ctx.scene.scene.add(ctx.drone.root);
@@ -301,6 +304,7 @@ input.onResume = stickPoller.wake;
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
   if (ctx.menuOpen) return; // the menu handles its own keys
+  if (e.repeat) return; // one action per press (held R spammed resets, C cycled cameras)
   if (e.code === 'Escape') gameMenu.toggle();
   if (e.code === 'KeyR') sendReset();
   if (e.code === 'KeyL' && !Atomics.load(ctx.sh.ctrl, 5)) gameMenu.openInitials(); // post a new personal best (disarmed)
@@ -453,7 +457,7 @@ const gameMenu = new GameMenu({
     { id: 'sim', label: 'Simulation', icon: 'sliders', render: () => settingsPanel(ctx.sim, ctx.view, applySim, applyView, {
       video: () => ctx.build.info.components.video,
       effectiveLatencyMs: () => (ctx.fpv as { effectiveLatencyMs?: number }).effectiveLatencyMs,
-    }) },
+    }, () => ctx.sim) },
     { id: 'controller', label: 'Controller', icon: 'gamepad', render: controllerTab },
     { id: 'bf', label: 'Betaflight', icon: 'cpu', render: bfTab },
     { id: 'builder', label: 'Drone builder', icon: 'wrench', render: builderTab },

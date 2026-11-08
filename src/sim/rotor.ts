@@ -176,7 +176,9 @@ export class RotorAero {
     const nT = this.common ? 0.6 * this.common.at(this.tNow, dt, tau) + 0.8 * this.ouT : this.ouT;
     if (vrs > 0) {
       const k = vrs * this.propwashScale;
-      T *= 1 - 0.18 * k + 0.28 * k * nT;
+      // (a disc in its own wash loses thrust and buffets, but a forward-spinning prop never pushes
+      // the wrong way: at a raised prop-wash setting the noise drove it negative for whole steps)
+      T *= Math.max(0.05, 1 - 0.18 * k + 0.28 * k * nT);
       Q *= 1 + 0.12 * k * this.ouQ;
     }
 

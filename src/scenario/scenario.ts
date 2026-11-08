@@ -76,14 +76,19 @@ export interface Scenario {
  * What the scenario checks and the episode resolution need to know about its map (the map has to be
  * loaded to know them): spawn ids, actors, the map's suggested wind. mapFacts(MapDef) makes one.
  */
+/** The map a scenario flies when it names none (docs/SCENARIO_FORMAT.md). */
+export const SCENARIO_DEFAULT_MAP = 'field';
+
 export interface MapFacts {
   spawns: string[];
+  /** course ids (drill areas) besides the default course */
+  courses?: string[];
   actors: { id: string; type: string }[];
   wind?: SimSettings['wind'];
 }
 
 export function mapFacts(m: MapDef): MapFacts {
-  return { spawns: (m.spawns ?? []).map((s) => s.id), actors: (m.actors ?? []).map((a) => ({ id: a.id, type: a.type })), ...(m.wind && { wind: { ...m.wind } }) };
+  return { spawns: (m.spawns ?? []).map((s) => s.id), courses: (m.courses ?? []).map((c) => c.id), actors: (m.actors ?? []).map((a) => ({ id: a.id, type: a.type })), ...(m.wind && { wind: { ...m.wind } }) };
 }
 
 /** Everything one episode needs, with every random choice made. */
@@ -227,10 +232,13 @@ export function parseScenario(raw: unknown, hasMap?: (id: string) => boolean, fa
   if (raw.ops !== undefined) errors.push(...checkOps(raw.ops));
   if (raw.randomize !== undefined) errors.push(...checkRandomize(raw.randomize));
   // ids that name things on the map: checked when the map is known (loaded)
-  const mapId = isObj(raw.map) && typeof raw.map.id === 'string' ? raw.map.id : DEFAULT_SETTINGS.mapId;
+  const mapId = isObj(raw.map) && typeof raw.map.id === 'string' ? raw.map.id : SCENARIO_DEFAULT_MAP;
   const f = facts && (!hasMap || hasMap(mapId)) ? facts(mapId) : null;
   if (f) {
     const spawn = isObj(raw.start) ? raw.start.spawn : undefined;
+    // a misspelt course would fly the default course without a word
+    const course = isObj(raw.map) ? raw.map.course : undefined;
+    if (typeof course === 'string' && course !== '' && f.courses && !f.courses.includes(course)) err(`map.course: map "${mapId}" has no course "${course}"${f.courses.length ? ` (${f.courses.join(', ')})` : ''}`);
     if (typeof spawn === 'string' && !f.spawns.includes(spawn)) err(`start.spawn: map "${mapId}" has no spawn "${spawn}"${f.spawns.length ? ` (${f.spawns.join(', ')})` : ''}`);
     const rs = isObj(raw.randomize) ? raw.randomize.spawn : undefined;
     if (Array.isArray(rs)) for (const id of rs) if (typeof id === 'string' && !f.spawns.includes(id)) err(`randomize.spawn: map "${mapId}" has no spawn "${id}"`);
@@ -353,7 +361,7 @@ export function scenarioSettings(sc: Scenario, mapWind?: SimSettings['wind']): S
     ...DEFAULT_SETTINGS, ...s,
     // no wind of its own: the map's suggested wind (MapDef.wind), if it has one
     wind: s.wind || !mapWind ? { ...DEFAULT_SETTINGS.wind, ...(s.wind ?? {}) } : { ...mapWind },
-    mapId: sc.map?.id ?? DEFAULT_SETTINGS.mapId, courseId: sc.map?.course ?? '',
+    mapId: sc.map?.id ?? SCENARIO_DEFAULT_MAP, courseId: sc.map?.course ?? '',
     timeScale: 1, paused: false,
     // a scenario never lets the physics rate change under it
     autoRate: false,

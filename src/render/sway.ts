@@ -137,6 +137,13 @@ export function patchMaterial<M extends THREE.Material>(mat: M, u: WorldUniforms
       if (v.begin) vs = vs.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + v.begin);
     } else vs = vs.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + (v.pre ?? '') + (v.begin ?? ''));
     if (v.project) vs = vs.replace('#include <project_vertex>', v.project);
+    // a tree wholly on the other side of the dissolve draws nothing: collapse it before the
+    // rasteriser (the far chunks hold every tree; the near bins reach a few metres past the band)
+    if (kind === 'tree' && opts.fade && !opts.depth) {
+      vs = vs.replace(/(vFade = distance\([^;]*;)/, opts.fade === 'far'
+        ? `$1\n      if (vFade < ${(TREE_FADE[0] - 1).toFixed(1)}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);`
+        : `$1\n      if (vFade > ${(TREE_FADE[1] + 1).toFixed(1)}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);`);
+    }
     if (v.color) vs = vs.replace('#include <color_vertex>', '#include <color_vertex>\n' + v.color);
     sh.vertexShader = vs;
     let fs = sh.fragmentShader;

@@ -225,3 +225,27 @@ describe.skipIf(!HAVE)('ArduPilot over the API server', () => {
     } finally { api.destroy(); gcs.destroy(); await srv.close(); }
   }, 240_000);
 });
+
+describe.skipIf(!HAVE)('ArduPilot power cycles (headless)', () => {
+  test('a mid-air start is held through the boot; a teleport keeps its pose and the clock; parameters survive the reboot', async () => {
+    const { createNodeEnv } = await import('../src/headless/node');
+    const env = await createNodeEnv();
+    try {
+      const sc = { format: 'fpvsim-scenario' as const, version: 1 as const, map: { id: 'field' }, drone: { spec: { ...DEFAULT_SPEC, autopilot: 'ardupilot' as const } }, sim: { physicsHz: 2000, wind: { speed: 0 } }, start: { pos: [10, 10, 20] as [number, number, number] } };
+      const r = await env.reset({ scenario: sc, seed: 4 });
+      // booted where it starts: still at 20 m when the episode begins (it used to fall during the boot)
+      expect(r.obs.pos[2]).toBeGreaterThan(19);
+      expect((await env.apRequest({ kind: 'params', params: { WP_SPD: 7 } })).ok).toBe(true);
+      env.step({}, 50);
+      const tBefore = env.time;
+      env.core.placeAt({ x: -20, y: 5, z: 15 }, 0);
+      await env.afterJump(false);
+      expect(env.core.quad.s.pos.z).toBeGreaterThan(14);
+      expect(env.time - tBefore).toBeLessThan(0.1); // the reboot's tens of seconds are not episode time
+      // the parameter set over the API is back after the power cycle
+      const ap = env.core.ap!;
+      for (let i = 0; i < 20 && ap.hub.paramValues.get('WP_SPD') !== 7; i++) { ap.hub.requestParam('WP_SPD'); env.step({}, 20); }
+      expect(ap.hub.paramValues.get('WP_SPD')).toBe(7); // (the build sets 12)
+    } finally { env.close(); }
+  }, 300_000);
+});

@@ -15,6 +15,8 @@ import { Wind } from './wind';
 import { G0, isa } from './atmosphere';
 import { emptySurfaceOut, evaluateSurface, SurfaceConfig, SurfaceOut } from './wing';
 
+const TWO_PI = 2 * Math.PI;
+
 export interface RotorConfig {
   pos: V3;        // hub position relative to CG, body frame (m)
   axis: V3;       // unit thrust axis, body frame (usually 0,0,1; motor tilt allowed)
@@ -113,6 +115,8 @@ export class QuadSim {
   private hubW: V3[] = []; // hub positions (world) for the 1 kHz wake sampling
   private hubLift: number[] = []; // per rotor: height of the prop's imbalance above the hub (≈ R/4)
   private misImb: number[] = []; private misV: number[] = []; // per rotor: blade mismatch for the imbalance it was computed at
+  /** per rotor: two unit vectors spanning its disc (the imbalance force turns in this plane; the ripple is along the axis) */
+  private discE1: V3[] = []; private discE2: V3[] = [];
   private th = { vth: 0, rth: 0 }; private bus = { a: 0, b: 0, driven: false }; // bus solve scratch
   private hit: ContactHit = { depth: 0, nx: 0, ny: 0, nz: 1, material: MATERIALS.grass };
   // temporaries (no allocation in the hot loop)
@@ -196,6 +200,13 @@ export class QuadSim {
     this.hubW = p.rotors.map(() => v3());
     this.hubLift = p.rotors.map((rc) => 0.25 * Math.sqrt((3 * rc.propInertia) / Math.max(1e-4, rc.propMass)));
     this.misImb = p.rotors.map(() => NaN); this.misV = p.rotors.map(() => 0);
+    // a disc basis per rotor: (x, y) for a rotor along ±z (as before), (z, ∓y) for a plane's along x
+    for (const rc of p.rotors) {
+      const a = rc.axis, ref = Math.abs(a.z) >= 0.9 ? v3(1, 0, 0) : v3(0, 0, 1), d = ref.x * a.x + ref.y * a.y + ref.z * a.z;
+      const e1x = ref.x - d * a.x, e1y = ref.y - d * a.y, e1z = ref.z - d * a.z, l = Math.hypot(e1x, e1y, e1z);
+      const e1 = v3(e1x / l, e1y / l, e1z / l);
+      this.discE1.push(e1); this.discE2.push(v3(a.y * e1.z - a.z * e1.y, a.z * e1.x - a.x * e1.z, a.x * e1.y - a.y * e1.x));
+    }
     this.surfaceDefl = new Float64Array(p.surfaces?.length ?? 0);
     this.surfaceOut = (p.surfaces ?? []).map(() => emptySurfaceOut());
     this.battery = new Battery(p.battery, soc, ambientC);
@@ -240,6 +251,7 @@ export class QuadSim {
     this.rotorExtraTorque.fill(0);
     this.servoCmd.fill(0); this.surfaceDefl.fill(0);
     this.cState.fill(0); this.hD.fill(0); this.windTimer = 0;
+    this.phase = this.p.rotors.map((_, i) => i * 1.3);
     this.evAge.fill(0); this.evProp.fill(0); this.evStrike.fill(0); this.evMotor.fill(0); this.evArm.fill(0); this.evTouch.fill(0);
     for (const v of this.wakeVel) { v.x = v.y = v.z = 0; }
     this.wakeTurb.fill(0);
@@ -280,7 +292,8 @@ export class QuadSim {
     // Each driven ESC draws I_k = a_k*V - b_k at its applied duty (an enabled current limiter acts
     // through that duty, with a lag, as the real PI does): V = vth - rth*sum(I) is linear in V.
     const th = this.battery.thevenin(this.th);
-    const iAux = p.auxPowerW / Math.max(6, s.vbus);
+    // (aux electronics are a constant-power load: their current rises as the pack sags, down to ~2.5 V/cell)
+    const iAux = p.auxPowerW / Math.max(2.5 * p.battery.cellsSeries, s.vbus);
     let A = 0, B = 0;
     for (const m of this.motors) {
       const c = m.busCoeffs(this.bus);
@@ -391,8 +404,10 @@ export class QuadSim {
       //    height above the CG (hub + bell, ~R/4), so it rocks roll and pitch, not just yaw
       //  - blade mismatch: blades never produce identical lift, so thrust wobbles at 1x rpm
       //    (~1.5-2 % pristine, growing with damage), plus blade-pass ripple and a 2x bell term
-      this.phase[k] += omega * rc.dir * dt;
-      const ph = this.phase[k];
+      // (kept within one turn: Math.sin / cos of a phase in the millions takes a slow path, ~10x)
+      let ph = this.phase[k] + omega * rc.dir * dt;
+      if (ph > TWO_PI || ph < -TWO_PI) ph %= TWO_PI;
+      this.phase[k] = ph;
       const fImb = ro.damage.imbalance * omega * omega;
       if (ro.damage.imbalance !== this.misImb[k]) {
         const imbRatio = ro.damage.imbalance / Math.max(1e-9, rc.imbalance ?? ro.damage.imbalance);
@@ -400,12 +415,14 @@ export class QuadSim {
       }
       const mismatch = this.misV[k];
       const ripple = o.thrust * (mismatch * Math.sin(ph + 1.3 * k) + 0.012 * Math.sin(rc.bladeCount * ph) + 0.006 * Math.sin(2 * ph + 0.7 * k));
-      const vfx = fImb * Math.cos(ph), vfy = fImb * Math.sin(ph), vfz = ripple;
+      // imbalance turning in the disc, ripple along the axis (for a quad: body x-y and z)
+      const e1 = this.discE1[k], e2 = this.discE2[k], a = rc.axis, ci = fImb * Math.cos(ph), si = fImb * Math.sin(ph);
+      const vfx = ci * e1.x + si * e2.x + ripple * a.x, vfy = ci * e1.y + si * e2.y + ripple * a.y, vfz = ci * e1.z + si * e2.z + ripple * a.z;
       fx += vfx; fy += vfy; fz += vfz;
       vibF.x += vfx; vibF.y += vfy; vibF.z += vfz;
       const ft = this.fTmp; ft.x = vfx; ft.y = vfy; ft.z = vfz;
       const hubLift = this.hubLift[k];
-      const hp = this.hubTmp; hp.x = rc.pos.x; hp.y = rc.pos.y; hp.z = rc.pos.z + hubLift;
+      const hp = this.hubTmp; hp.x = rc.pos.x + rc.axis.x * hubLift; hp.y = rc.pos.y + rc.axis.y * hubLift; hp.z = rc.pos.z + rc.axis.z * hubLift;
       const vt = cross(this.t3, hp, ft);
       // + broadband bearing / commutation / blade-turbulence noise (∝ rpm²): part excites the
       // arm's own resonance (the hump a real gyro spectrum shows between the motor harmonics), part
@@ -464,10 +481,48 @@ export class QuadSim {
     const Fw = rotate(this.Fb, s.q, F);
     const xf = this.extForce;
     if (xf.x !== 0 || xf.y !== 0 || xf.z !== 0) { Fw.x += xf.x; Fw.y += xf.y; Fw.z += xf.z; }
-    this.contacts(env, dt, Fw, Tq);
+    // Below 8 kHz, an airframe within reach of something runs its contacts and the rigid body in
+    // sub-steps of at most 125 µs (the forces above held): a contact lasts only a few steps, and at
+    // 2 kHz the springs and dampers resolved it so coarsely that a quad bounced ~70 % higher off
+    // concrete than at 8 kHz. In free flight (and at 8 kHz) nothing changes.
+    const vmag = Math.sqrt(s.vel.x * s.vel.x + s.vel.y * s.vel.y + s.vel.z * s.vel.z);
+    const nSub = dt > 1.3e-4 && env.world.sphere(s.pos, this.boundR + vmag * dt, this.hit) ? Math.min(8, Math.ceil(dt * 8000 - 1e-6)) : 1;
+    if (nSub === 1) {
+      this.contacts(env, dt, Fw, Tq);
+      this.integrate(Fw, Tq, h, dt);
+    } else {
+      const fx = Fw.x, fy = Fw.y, fz = Fw.z, tx = Tq.x, ty = Tq.y, tz = Tq.z, hs = dt / nSub;
+      let sx = 0, sy = 0, sz = 0;
+      for (let k = 0; k < nSub; k++) {
+        Fw.x = fx; Fw.y = fy; Fw.z = fz; Tq.x = tx; Tq.y = ty; Tq.z = tz;
+        this.contacts(env, hs, Fw, Tq);
+        this.integrate(Fw, Tq, h, hs);
+        sx += s.specForce.x; sy += s.specForce.y; sz += s.specForce.z;
+      }
+      // the IMU sees the step's mean specific force
+      s.specForce.x = sx / nSub; s.specForce.y = sy / nSub; s.specForce.z = sz / nSub;
+      // each substep added its strike / canopy braking torque (applied over the next whole step):
+      // the step's mean, not nSub times it (rotor torques were cleared before the contacts)
+      const rt = this.rotorExtraTorque;
+      for (let k = 0; k < rt.length; k++) rt[k] /= nSub;
+    }
+    const m = p.mass, w = s.w;
 
-    // ---------- integrate (semi-implicit Euler) ----------
-    const m = p.mass;
+    // ---------- sensors & battery ----------
+    this.imu.sample(w, s.specForce, vibT, vibF, m, dt, this.rotorVib, Math.sqrt(floor2));
+    this.battery.step(s.ibus, dt, env.ambientC, U);
+    s.time += dt;
+    if (this.corrupt()) {
+      // numerical failure: put the quad back where it last was finite-ish, at rest, and flag a crash
+      const p0 = Number.isFinite(s.pos.x + s.pos.y + s.pos.z) ? { ...s.pos } : { x: 0, y: 0, z: 1 };
+      this.reset(p0);
+      s.crashed = true;
+    }
+  }
+
+  /** Semi-implicit Euler over dt: forces Fw (world, N), torques Tq (body, N·m), rotor angular momentum h (body). */
+  private integrate(Fw: V3, Tq: V3, h: V3, dt: number): void {
+    const p = this.p, s = this.s, m = p.mass;
     s.accWorld.x = Fw.x / m; s.accWorld.y = Fw.y / m; s.accWorld.z = Fw.z / m - G0;
     // specific force = non-gravitational acceleration, body frame
     const sfw = this.fTmp; sfw.x = Fw.x / m; sfw.y = Fw.y / m; sfw.z = Fw.z / m;
@@ -487,17 +542,6 @@ export class QuadSim {
     w.y += (Ii[3] * gx + Ii[4] * gy + Ii[5] * gz) * dt;
     w.z += (Ii[6] * gx + Ii[7] * gy + Ii[8] * gz) * dt;
     qintegrate(s.q, w, dt);
-
-    // ---------- sensors & battery ----------
-    this.imu.sample(w, s.specForce, vibT, vibF, m, dt, this.rotorVib, Math.sqrt(floor2));
-    this.battery.step(s.ibus, dt, env.ambientC, U);
-    s.time += dt;
-    if (this.corrupt()) {
-      // numerical failure: put the quad back where it last was finite-ish, at rest, and flag a crash
-      const p0 = Number.isFinite(s.pos.x + s.pos.y + s.pos.z) ? { ...s.pos } : { x: 0, y: 0, z: 1 };
-      this.reset(p0);
-      s.crashed = true;
-    }
   }
 
   /**
@@ -554,7 +598,17 @@ export class QuadSim {
       const c = cs[i];
       const cw = rotate(this.t2, s.q, c.pos);
       pw.x = s.pos.x + cw.x; pw.y = s.pos.y + cw.y; pw.z = s.pos.z + cw.z;
-      if (!(near ? world.sphereNear!(pw, c.radius, hit) : world.sphere(pw, c.radius, hit))) { this.cState[i] = 0; continue; }
+      if (!(near ? world.sphereNear!(pw, c.radius, hit) : world.sphere(pw, c.radius, hit))) {
+        // a sphere that went into a thin slab (a 1 cm panel, a flag) and out of its far side misses
+        // here, but is still behind the plane it entered by: keep pushing it back out that way. (It
+        // used to forget the plane, meet the far face next step, and the prop discs pinched the slab
+        // from both sides: the quad hung in a flag.)
+        if (this.cState[i] === 2) {
+          const i3 = i * 3, dPl = c.radius - (cN[i3] * pw.x + cN[i3 + 1] * pw.y + cN[i3 + 2] * pw.z - this.cD[i]);
+          if (dPl > 0 && dPl < 0.15) { hN[i3] = cN[i3]; hN[i3 + 1] = cN[i3 + 1]; hN[i3 + 2] = cN[i3 + 2]; this.hD[i] = dPl; nTouch++; continue; }
+        }
+        this.cState[i] = 0; continue;
+      }
       const r = c.radius, i3 = i * 3, st = this.cState[i];
       const inside = hit.depth >= r;
       let depth = hit.depth, frozen = false;
@@ -612,7 +666,7 @@ export class QuadSim {
         const k = (kk[i] *= sk);
         const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
         const vin = Math.max(this.cVin[i], 0.5), e = restitutionAt(mat, vin);
-        const cc = Math.max((8 * (1 - e)) / (5 * e * vin) * k * depth, 0.6 * Math.sqrt(k / (1 / p.mass + r2 / this.iMin)));
+        const cc = Math.max((8 * (1 - e)) / (5 * e * vin) * k * Math.min(depth, 2 * c.radius), 0.6 * Math.sqrt(k / (1 / p.mass + r2 / this.iMin)));
         this.cC[i] = cc;
         for (let a = 0; a < 6; a++) { const ca = cc * jall[o + a]; for (let b = 0; b < 6; b++) W[a * 6 + b] += ca * jall[o + b]; }
       }
@@ -658,7 +712,9 @@ export class QuadSim {
       // effective inverse mass at this point incl. rotation (r²/I), shared by all touching spheres
       const r2 = c.pos.x * c.pos.x + c.pos.y * c.pos.y + c.pos.z * c.pos.z;
       const invM = 1 / p.mass + r2 / this.iMin;
-      let fn = k * depth - this.cC[i] * dScale * vn;
+      // a sphere buried past twice its size (tunnelled, or put inside a wall) is pushed out by at most
+      // that much spring: metres of depth made forces that flung the quad off at thousands of m/s
+      let fn = k * Math.min(depth, 2 * c.radius) - this.cC[i] * dScale * vn;
       if (fn < 0) fn = 0;
       // friction (regularised Coulomb) on the sliding velocity, + snag / ploughing on soft ground
       const vnt = vx * nx + vy * ny + vz * nz;
@@ -667,11 +723,12 @@ export class QuadSim {
       const digs = isProp || c.kind === 'motor';
       let mu = isProp ? Math.min(1, mat.friction + 0.3) : mat.friction;
       if (digs) mu += mat.snag * Math.min(1, depth / (0.3 * c.radius));
-      // Regularised Coulomb acts as a viscous damper (mu*fn/vReg) below vReg. Keep it inside the
-      // explicit integrator's stability limit for this contact's effective mass: c·dt·(1/m + r²/I) <= 0.5.
-      const vReg = Math.max(0.08, 2 * mu * fn * dt * invM);
+      // Coulomb friction with sticking: at most mu*fn, and no more than stops this contact's share of
+      // the sliding in one step (vt / (dt * invM * nTouch)). That is static friction at the velocity
+      // level: a quad on a slope gentler than atan(mu) stays put instead of creeping down it at
+      // ~5 cm/s, and the force can never overshoot (it stays inside the explicit integrator's limit).
       const plough = digs ? mat.plough * Math.min(depth, c.radius) : 0; // N/(m/s): tips cutting turf
-      const ftk = vt > 1e-6 ? (mu * fn) / Math.max(vt, vReg) + plough : 0;
+      const ftk = vt > 1e-6 ? Math.min(mu * fn, vt / (dt * invM * Math.max(1, nTouch))) / vt + plough : 0;
       const f = this.fTmp;
       f.x = fn * nx - ftk * tx; f.y = fn * ny - ftk * ty; f.z = fn * nz - ftk * tz;
       Fw.x += f.x; Fw.y += f.y; Fw.z += f.z;
@@ -697,7 +754,13 @@ export class QuadSim {
       const kr = c.rotor;
       if (kr >= 0 && kr < nr) {
         this.evTouch[kr] = 1;
-        if (isProp) this.evProp[kr] += work; else if (c.kind === 'motor') this.evMotor[kr] += work; else this.evArm[kr] += work;
+        if (isProp) this.evProp[kr] += work;
+        else if (c.kind === 'motor') {
+          // shafts bend from side loads on the bell; a load along the shaft (a flat landing on the
+          // motors) goes into the arm instead
+          const aw = rotate(this.dirTmp, s.q, p.rotors[kr].axis), along = nx * aw.x + ny * aw.y + nz * aw.z, side = 1 - along * along;
+          this.evMotor[kr] += work * side; this.evArm[kr] += work * (1 - side);
+        } else this.evArm[kr] += work;
         if (mat.propDamage > this.evMat[kr].propDamage || this.evAge[kr] === 0) this.evMat[kr] = mat;
       }
       if (isProp) {

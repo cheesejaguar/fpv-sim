@@ -8,7 +8,7 @@ import { bandoMap, MAPS } from '../src/maps/maps';
 import { MapDef, PrimitiveWorld } from '../src/maps/world';
 import { buildCrowd, figureGeometry } from '../src/render/crowd';
 import { bladeLengths, propColor, PROP_COLORS } from '../src/render/droneMesh';
-import { blockStep, clutterPoints, TERRAIN_LOD_ERR, terrainTiles } from '../src/render/ground';
+import { blockErr, blockStep, clutterPoints, TERRAIN_LOD_ERR, TERRAIN_LOD_PX, TERRAIN_PX_PER_RAD, terrainGrid, terrainLevels, terrainTileLevels, terrainTiles, tileLevel } from '../src/render/ground';
 import { snapShadow } from '../src/render/scene';
 import { buildLights, environment, floodTowers } from '../src/render/sky';
 import { MAX_MAP_LIGHTS } from '../src/maps/world';
@@ -74,14 +74,46 @@ describe('terrain tiles', () => {
       const p = g.getAttribute('position');
       for (let i = 0; i < p.count; i += 7) {
         const x = p.getX(i), z = p.getZ(i), y = p.getY(i), h = field.terrain(x, -z);
-        // surface vertices exactly on the heightfield; skirt vertices hang 0.4 m below it
-        expect(Math.abs(y - h) < 1e-3 || Math.abs(y - (h - 0.4)) < 1e-3).toBe(true);
+        // surface vertices exactly on the heightfield; skirt vertices hang 0.4 m (plus both blocks' error) below it
+        expect(Math.abs(y - h) < 1e-3 || (y <= h - 0.4 + 1e-3 && y >= h - 0.4 - 2 * TERRAIN_LOD_ERR - 1e-3)).toBe(true);
         xmin = Math.min(xmin, x); xmax = Math.max(xmax, x);
       }
     }
     expect(tris).toBeLessThan(204800 * 0.75);   // the old single mesh: 320² quads
     expect(xmin).toBeCloseTo(-field.size * 1.1, 3); expect(xmax).toBeCloseTo(field.size * 1.1, 3);
     expect(TERRAIN_LOD_ERR).toBeLessThanOrEqual(0.05);
+  });
+  it('big terrains: 8 x 8 tiles at 3 levels, coarser with distance, every level on the terrain, skirts deep enough', () => {
+    const m = MAPS.mountains(), N = terrainGrid(m), cfg = terrainLevels(m, N);
+    expect(cfg).toEqual({ tiles: 8, levels: 3 });
+    expect(terrainLevels(field, terrainGrid(field))).toEqual({ tiles: 4, levels: 1 }); // a stadium keeps its 16 tiles
+    const tl = terrainTileLevels(m, N, cfg.tiles, cfg.levels);
+    expect(tl.length).toBe(64);
+    const tris = [0, 0, 0];
+    for (const t of tl) for (let lv = 0; lv < 3; lv++) {
+      tris[lv] += t[lv].getIndex()!.count / 3;
+      const p = t[lv].getAttribute('position');
+      for (let i = 0; i < p.count; i += 13) {
+        const y = p.getY(i), h = m.terrain(p.getX(i), -p.getZ(i));
+        expect(y).toBeLessThanOrEqual(h + 1e-3); // on the terrain, or a skirt below it
+      }
+    }
+    expect(tris[1]).toBeLessThan(tris[0] * 0.5);
+    expect(tris[2]).toBeLessThan(tris[1] * 0.6);
+    // the level for a distance: the coarsest whose height error stays under TERRAIN_LOD_PX on screen
+    const at = (e: number[]) => e.map((x) => { const g = new THREE.BufferGeometry(); g.userData.lodErr = x; return g; });
+    const px = (e: number, d: number) => (e / d) * TERRAIN_PX_PER_RAD;
+    const lv = at([0, 0.5, 2]);
+    expect(tileLevel(10, lv)).toBe(0);
+    expect(px(0.5, 150)).toBeLessThan(TERRAIN_LOD_PX); expect(tileLevel(150, lv)).toBe(1);
+    expect(tileLevel(1000, lv)).toBe(2);
+    expect(tileLevel(20, at([0, 0.05, 0.05]))).toBe(2); // a flat tile is coarse 20 m away
+    expect(tileLevel(5000, at([0]))).toBe(0);
+    for (const t of tl) expect(t[1].userData.lodErr).toBeGreaterThanOrEqual(t[0].userData.lodErr);
+    // a coarse block's error is what its skirts allow for
+    const H = (i: number, j: number) => Math.sin(i * 0.9) * 3 + Math.cos(j * 0.4) * 2;
+    expect(blockErr(H, 0, 0, 20, 4)).toBeGreaterThan(blockErr(H, 0, 0, 20, 2));
+    expect(blockErr(H, 0, 0, 20, 1)).toBe(0);
   });
 });
 

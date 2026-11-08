@@ -657,7 +657,8 @@
                 "type": "array",
                 "items": {
                   "type": "number",
-                  "exclusiveMinimum": 0
+                  "exclusiveMinimum": 0,
+                  "maximum": 4000
                 },
                 "minItems": 3,
                 "maxItems": 3,
@@ -753,11 +754,13 @@
               },
               "radius": {
                 "type": "number",
-                "exclusiveMinimum": 0
+                "exclusiveMinimum": 0,
+                "maximum": 2000
               },
               "height": {
                 "type": "number",
-                "exclusiveMinimum": 0
+                "exclusiveMinimum": 0,
+                "maximum": 4000
               }
             },
             "required": [
@@ -812,7 +815,8 @@
               },
               "radius": {
                 "type": "number",
-                "exclusiveMinimum": 0
+                "exclusiveMinimum": 0,
+                "maximum": 2000
               }
             },
             "required": [

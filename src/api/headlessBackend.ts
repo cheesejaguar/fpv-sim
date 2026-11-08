@@ -106,16 +106,15 @@ export class HeadlessBackend implements ApiBackend {
         return {};
       }
       case 'cli': ready(); return { output: env.cli(req.lines) };
-      case 'respawn': {
+      case 'respawn': case 'teleport': {
         ready();
-        env.core.quad.repair();
-        if (req.fullBattery) env.core.buildQuad(); else env.core.respawn();
-        this.resync();
-        return { obs: env.observe() };
-      }
-      case 'teleport': {
-        ready();
-        env.core.placeAt({ x: req.pos[0], y: req.pos[1], z: req.pos[2] }, ((req.yawDeg ?? 0) * Math.PI) / 180);
+        // (an ArduPilot build reboots in afterJump, over many waits: the realtime ticks stand by)
+        this.resetting = true;
+        try {
+          if (req.cmd === 'respawn') { env.core.quad.repair(); if (req.fullBattery) env.core.buildQuad(); else env.core.respawn(); }
+          else env.core.placeAt({ x: req.pos[0], y: req.pos[1], z: req.pos[2] }, ((req.yawDeg ?? 0) * Math.PI) / 180);
+          await env.afterJump(req.cmd === 'respawn');
+        } finally { this.resetting = false; }
         this.resync();
         return { obs: env.observe() };
       }
@@ -147,6 +146,7 @@ export class HeadlessBackend implements ApiBackend {
   close() {
     this.closed = true;
     this.running = false;
+    this.env.close();
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.env.onLog = null;

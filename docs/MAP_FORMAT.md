@@ -424,6 +424,7 @@ the numbers.
 | any single file | 8 MiB |
 | `size` (half-extent) | 2000 m |
 | primitives (including the 3-8 parts each gate generates) | 5 000 |
+| one primitive: box `size`, cylinder `height` / `radius`, sphere `radius` | 4000 m / 4000 m / 2000 m / 2000 m |
 | gates / trees / wake zones / indoor boxes / lights / geometry entries | 64 / 20 000 / 32 / 32 / 8 / 16 |
 | spawns / courses / paths (points each) / actors / scenarios | 32 / 16 / 32 (256) / 64 / 16 |
 | convex brushes (Quake / Doom geometry + mesh collision) | 20 000 |

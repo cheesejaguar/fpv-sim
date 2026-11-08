@@ -146,6 +146,12 @@ export function pilotPos(m: MapDef, o: V3): V3 {
 // loads and rejects far prims with one squared-distance test.
 const REC = 13;
 const K_BOX = 0, K_CYL = 1, K_SPHERE = 2;
+/**
+ * Grid key of the prims too big to list cell by cell (a footprint over BIG_CELLS cells: a floor the
+ * size of the map). Every query tests them as well, instead of the constructor filling a quarter of a
+ * million cells with them.
+ */
+const BIG = -1e15, BIG_CELLS = 4096;
 /** Terrain under the sphere queries: tangent planes (height + normal from 5 terrain samples), each
  *  used within PLANE_REUSE m (per axis) of where it was taken; a few kept so that all of a quad's
  *  collider spheres find one. */
@@ -161,6 +167,13 @@ export class PrimitiveWorld implements CollisionWorld {
   private groundMat: SurfaceMaterial;
   /** The surface: the terrain, or the water over it (map.water) */
   private surf: (x: number, y: number) => number;
+  /**
+   * Contacts read the surface's own height, not the tangent plane's: sampled heightfields crease at
+   * every cell edge and a shoreline creases at the water line, so a plane taken up to 15 cm away is
+   * off there by centimetres to metres. Smooth procedural ground keeps the plane (exact to second
+   * order, and the noise it would evaluate costs a third of a resting step).
+   */
+  private exactSurf: boolean;
   private planes = new Float64Array(PLANES * PL).fill(Infinity); // (no plane anywhere yet)
   private nPlanes = 0; private lastPlane = 0; private nextPlane = 0;
   private cand = new Float64Array(64 * REC); private nCand = 0; // near(): records within reach
@@ -173,14 +186,18 @@ export class PrimitiveWorld implements CollisionWorld {
     this.groundMat = MATERIALS[map.groundMat];
     const t = map.terrain, wl = map.water?.level;
     this.surf = wl === undefined ? t : (x, y) => Math.max(t(x, y), wl);
+    this.exactSurf = map.terrainRes !== undefined || wl !== undefined;
     for (const p of map.prims) {
       // foliage spheres and thick foliage boxes are volumes; thin ones (safety nets, flags) stay solid
       if (p.mat === 'foliage' && (p.kind === 'sphere' || (p.kind === 'box' && Math.min(p.half.x, p.half.y, p.half.z) > 0.25))) this.insertCanopy(p);
       else this.insert(p);
     }
     for (const t of map.trees) {
-      const g = map.terrain(t.x, t.y);
-      this.insert({ kind: 'cyl', c: { x: t.x, y: t.y, z: g - 0.2 }, r: t.r * 0.12, h: t.h * 0.5, mat: 'wood' });
+      const g = map.terrain(t.x, t.y), rt = t.r * 0.12;
+      // the trunk's foot reaches below the lowest ground under it (a trunk on a slope must not float)
+      let low = g;
+      for (let k = 0; k < 8; k++) low = Math.min(low, map.terrain(t.x + rt * Math.cos(k * 0.785), t.y + rt * Math.sin(k * 0.785)));
+      this.insert({ kind: 'cyl', c: { x: t.x, y: t.y, z: low - 0.2 }, r: rt, h: t.h * 0.5 + g - low, mat: 'wood' });
       const c = { x: t.x, y: t.y, z: g + t.h * 0.62 };
       this.insertCanopy({ kind: 'sphere', c, r: t.r, mat: 'foliage' });
       this.insert({ kind: 'sphere', c, r: t.r * 0.3, mat: 'wood' }); // trunk top + main limbs: solid core
@@ -212,20 +229,25 @@ export class PrimitiveWorld implements CollisionWorld {
   private insertCanopy(p: SpherePrim | BoxPrim) {
     const r = p.kind === 'sphere' ? p.r : Math.hypot(p.half.x, p.half.y, p.half.z);
     if (p.kind === 'box') this.boxRot.set(p, { c: Math.cos(p.yaw), s: Math.sin(p.yaw), cp: Math.cos(p.pitch ?? 0), sp: Math.sin(p.pitch ?? 0) });
+    this.hasCanopy = true;
+    const n = (Math.floor((p.c.x + r) / this.cell) - Math.floor((p.c.x - r) / this.cell) + 1) * (Math.floor((p.c.y + r) / this.cell) - Math.floor((p.c.y - r) / this.cell) + 1);
+    if (!(n <= BIG_CELLS)) { let l = this.canopies.get(BIG); if (!l) { l = []; this.canopies.set(BIG, l); } l.push(p); return; }
     for (let ix = Math.floor((p.c.x - r) / this.cell); ix <= Math.floor((p.c.x + r) / this.cell); ix++) for (let iy = Math.floor((p.c.y - r) / this.cell); iy <= Math.floor((p.c.y + r) / this.cell); iy++) {
       const k = this.key(ix, iy);
       let l = this.canopies.get(k); if (!l) { l = []; this.canopies.set(k, l); }
       l.push(p);
     }
-    this.hasCanopy = true;
   }
 
   /** Depth of p inside the deepest canopy / foliage volume (m), 0 outside. */
   foliage(p: V3): number {
     if (!this.hasCanopy) return 0;
-    const l = this.canopies.get(this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell)));
-    if (!l) return 0;
-    let best = 0;
+    const l = this.canopies.get(this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell))), big = this.canopies.get(BIG);
+    let best = l ? this.foliageIn(l, p, 0) : 0;
+    if (big) best = this.foliageIn(big, p, best);
+    return best;
+  }
+  private foliageIn(l: (SpherePrim | BoxPrim)[], p: V3, best: number): number {
     for (const pr of l) {
       let d: number;
       if (pr.kind === 'sphere') { const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z; d = pr.r - Math.sqrt(dx * dx + dy * dy + dz * dz); }
@@ -245,10 +267,15 @@ export class PrimitiveWorld implements CollisionWorld {
     if (p.kind === 'brush') { this.brushes.insert(p); return; }
     let r: number;
     if (p.kind === 'box') { r = Math.hypot(p.half.x, p.half.y, p.half.z); this.boxRot.set(p, { c: Math.cos(p.yaw), s: Math.sin(p.yaw), cp: Math.cos(p.pitch ?? 0), sp: Math.sin(p.pitch ?? 0) }); }
-    else if (p.kind === 'cyl') r = Math.max(p.r, p.h);
+    else if (p.kind === 'cyl') r = p.r; // (the grid is 2D: a vertical cylinder covers its footprint)
     else r = p.r;
     const x0 = Math.floor((p.c.x - r) / this.cell), x1 = Math.floor((p.c.x + r) / this.cell);
     const y0 = Math.floor((p.c.y - r) / this.cell), y1 = Math.floor((p.c.y + r) / this.cell);
+    if (!((x1 - x0 + 1) * (y1 - y0 + 1) <= BIG_CELLS)) {
+      let l = this.grid.get(BIG); if (!l) { l = []; this.grid.set(BIG, l); }
+      l.push(p);
+      return;
+    }
     for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) {
       const k = this.key(ix, iy);
       let l = this.grid.get(k); if (!l) { l = []; this.grid.set(k, l); }
@@ -283,8 +310,10 @@ export class PrimitiveWorld implements CollisionWorld {
   private terrainHit(px: number, py: number, pz: number, radius: number, out: ContactHit): number {
     // the tangent plane under the sphere (all of a quad's spheres share a few)
     const P = this.planes, o = this.plane(px, py);
-    const h = P[o + 2] + P[o + 3] * (px - P[o]) + P[o + 4] * (py - P[o + 1]);
+    let h = P[o + 2] + P[o + 3] * (px - P[o]) + P[o + 4] * (py - P[o + 1]);
     if (pz - radius >= h + 0.5) return 0;
+    // close to a creased surface: its own height here (exactSurf); the plane keeps the normal
+    if (this.exactSurf) h = this.surf(px, py);
     const nz = P[o + 7], d = radius - (pz - h) * nz;
     if (d <= 0) return 0;
     out.depth = d; out.nx = P[o + 5]; out.ny = P[o + 6]; out.nz = nz; out.material = P[o + 8] ? MATERIALS.water : this.groundMat;
@@ -325,16 +354,28 @@ export class PrimitiveWorld implements CollisionWorld {
           best = depth; out.depth = depth; out.nx = c * wx0 - s * ny; out.ny = s * wx0 + c * ny; out.nz = -sp * nx + cp * nz; out.material = mats[a[i + 11]];
         }
       } else if (kind === K_CYL) {
-        const r = a[i + 4], top = a[i + 3] + a[i + 5];
-        if (pz < a[i + 3] - radius || pz > top + radius) continue;
-        const rr = Math.sqrt(dx * dx + dy * dy), side = r + radius - rr;
-        if (side <= 0) continue;
-        const dTop = top + radius - pz;
-        if (dTop < side && pz > top) {
-          if (dTop > best && rr < r) { best = dTop; out.depth = dTop; out.nx = 0; out.ny = 0; out.nz = 1; out.material = mats[a[i + 11]]; }
-        } else if (side > best) {
-          best = side; out.depth = side; out.nx = dx / (rr || 1); out.ny = dy / (rr || 1); out.nz = 0; out.material = mats[a[i + 11]];
+        // a closed vertical cylinder (base z0, top z1): the sphere against its nearest point
+        const r = a[i + 4], z0 = a[i + 3], z1 = z0 + a[i + 5];
+        if (pz < z0 - radius || pz > z1 + radius) continue;
+        const rr2 = dx * dx + dy * dy, lim = r + radius;
+        if (rr2 >= lim * lim) continue;
+        const rr = Math.sqrt(rr2);
+        let depth: number, nx: number, ny: number, nz: number;
+        if (rr <= r && pz >= z0 && pz <= z1) {
+          // centre inside: out through the nearest of the side, the top and the bottom
+          const eS = r - rr, eT = z1 - pz, eB = pz - z0;
+          if (eS <= eT && eS <= eB) { depth = eS + radius; nx = rr > 1e-9 ? dx / rr : 1; ny = rr > 1e-9 ? dy / rr : 0; nz = 0; }
+          else if (eT <= eB) { depth = eT + radius; nx = 0; ny = 0; nz = 1; }
+          else { depth = eB + radius; nx = 0; ny = 0; nz = -1; }
+        } else {
+          const k = rr > r ? 1 - r / rr : 0, ux = dx * k, uy = dy * k, uz = pz < z0 ? pz - z0 : pz > z1 ? pz - z1 : 0;
+          const d2 = ux * ux + uy * uy + uz * uz;
+          if (d2 >= r2) continue;
+          const d = Math.sqrt(d2);
+          depth = radius - d;
+          if (d > 1e-9) { nx = ux / d; ny = uy / d; nz = uz / d; } else { nx = rr > 1e-9 ? dx / rr : 1; ny = rr > 1e-9 ? dy / rr : 0; nz = 0; }
         }
+        if (depth > best) { best = depth; out.depth = depth; out.nx = nx; out.ny = ny; out.nz = nz; out.material = mats[a[i + 11]]; }
       } else {
         const rs = a[i + 4] + radius, d2 = dx * dx + dy * dy + dz * dz;
         if (d2 >= rs * rs) continue;
@@ -356,6 +397,8 @@ export class PrimitiveWorld implements CollisionWorld {
       const a = cells.get(this.key(cx, cy));
       if (a !== undefined) best = this.records(a, a.length, px, py, pz, radius, best, out);
     }
+    const big = cells.get(BIG);
+    if (big !== undefined) best = this.records(big, big.length, px, py, pz, radius, best, out);
     if (this.brushes.count) best = this.brushes.sphere(p, radius, out, best);
     return best > 0;
   }
@@ -367,20 +410,27 @@ export class PrimitiveWorld implements CollisionWorld {
    */
   near(p: V3, r: number): void {
     const R = r * (1 + 1e-9) + 1e-9, px = p.x, py = p.y, pz = p.z, C = this.cell;
-    let c = this.cand, n = 0;
+    let n = 0;
     for (let cx = Math.floor((px - R) / C), cx1 = Math.floor((px + R) / C); cx <= cx1; cx++) for (let cy = Math.floor((py - R) / C), cy1 = Math.floor((py + R) / C); cy <= cy1; cy++) {
       const a = this.packed.get(this.key(cx, cy));
-      if (a === undefined) continue;
-      for (let i = 0; i < a.length; i += REC) {
-        const dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3], kind = a[i];
-        const reach = (kind === K_BOX ? a[i + 12] : a[i + 4]) + R;
-        if (kind === K_CYL ? pz < a[i + 3] - R || pz > a[i + 3] + a[i + 5] + R || dx * dx + dy * dy > reach * reach : dx * dx + dy * dy + dz * dz > reach * reach) continue;
-        if ((n + 1) * REC > c.length) { const g = new Float64Array(c.length * 2); g.set(c); this.cand = c = g; }
-        for (let j = 0, o = n * REC; j < REC; j++) c[o + j] = a[i + j];
-        n++;
-      }
+      if (a !== undefined) n = this.gather(a, px, py, pz, R, n);
     }
+    const big = this.packed.get(BIG);
+    if (big !== undefined) n = this.gather(big, px, py, pz, R, n);
     this.nCand = n;
+  }
+  /** Append the records of `a` within reach R of (px, py, pz) to the candidates (n so far); returns the new count. */
+  private gather(a: Float64Array, px: number, py: number, pz: number, R: number, n: number): number {
+    let c = this.cand;
+    for (let i = 0; i < a.length; i += REC) {
+      const dx = px - a[i + 1], dy = py - a[i + 2], dz = pz - a[i + 3], kind = a[i];
+      const reach = (kind === K_BOX ? a[i + 12] : a[i + 4]) + R;
+      if (kind === K_CYL ? pz < a[i + 3] - R || pz > a[i + 3] + a[i + 5] + R || dx * dx + dy * dy > reach * reach : dx * dx + dy * dy + dz * dz > reach * reach) continue;
+      if ((n + 1) * REC > c.length) { const g = new Float64Array(c.length * 2); g.set(c); this.cand = c = g; }
+      for (let j = 0, o = n * REC; j < REC; j++) c[o + j] = a[i + j];
+      n++;
+    }
+    return n;
   }
 
   /** sphere() for a sphere inside the one last passed to near(). */
@@ -392,50 +442,121 @@ export class PrimitiveWorld implements CollisionWorld {
     return best > 0;
   }
 
-  raycast(p: V3, dir: V3, maxDist: number): number {
-    let best = Infinity;
-    // terrain by marching (short rays only: ground effect / LOS)
-    const n = Math.min(Math.ceil(maxDist / 0.05), 400);
-    // a vertical ray (the height above ground) sees one terrain height
-    const hv = dir.x === 0 && dir.y === 0 ? this.surf(p.x, p.y) : NaN;
-    for (let i = 1; i <= n; i++) {
-      const t = (i / n) * maxDist;
-      const z = p.z + dir.z * t;
-      if (z <= (hv === hv ? hv : this.surf(p.x + dir.x * t, p.y + dir.y * t))) { best = t; break; }
+  /** Visit the grid cell keys under the segment (ax, ay) → (bx, by), in order (2D DDA). */
+  private walkCells(ax: number, ay: number, bx: number, by: number, f: (key: number) => void) {
+    const c = this.cell, dx = bx - ax, dy = by - ay;
+    let ix = Math.floor(ax / c), iy = Math.floor(ay / c);
+    const ex = Math.floor(bx / c), ey = Math.floor(by / c), sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+    const tdx = dx ? Math.abs(c / dx) : Infinity, tdy = dy ? Math.abs(c / dy) : Infinity;
+    let tmx = dx ? (dx > 0 ? (ix + 1) * c - ax : ax - ix * c) / Math.abs(dx) : Infinity;
+    let tmy = dy ? (dy > 0 ? (iy + 1) * c - ay : ay - iy * c) / Math.abs(dy) : Infinity;
+    for (let n = Math.abs(ex - ix) + Math.abs(ey - iy) + 1; n > 0; n--) {
+      f(this.key(ix, iy));
+      if (tmx < tmy) { tmx += tdx; ix += sx; } else { tmy += tdy; iy += sy; }
     }
-    // boxes in the start cell and end cell
-    const k0 = this.key(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell));
-    const k1 = this.key(Math.floor((p.x + dir.x * maxDist) / this.cell), Math.floor((p.y + dir.y * maxDist) / this.cell));
-    for (let c = 0; c < 2; c++) {
-      if (c === 1 && k1 === k0) break;
-      const l = this.grid.get(c ? k1 : k0); if (!l) continue;
-      for (const pr of l) {
-        if (pr.kind !== 'box') continue;
-        const rot = this.boxRot.get(pr)!;
-        const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
-        let ox = rot.c * dx + rot.s * dy, oy = -rot.s * dx + rot.c * dy, oz = dz;
-        let vx = rot.c * dir.x + rot.s * dir.y, vy = -rot.s * dir.x + rot.c * dir.y, vz = dir.z;
-        const t1 = rot.cp * ox - rot.sp * oz; oz = rot.sp * ox + rot.cp * oz; ox = t1;
-        const t2 = rot.cp * vx - rot.sp * vz; vz = rot.sp * vx + rot.cp * vz; vx = t2;
-        let tmin = 0, tmax = maxDist;
-        const slab = (o: number, v: number, h: number) => {
-          if (Math.abs(v) < 1e-9) return Math.abs(o) <= h;
-          let a = (-h - o) / v, b = (h - o) / v; if (a > b) { const t = a; a = b; b = t; }
-          tmin = Math.max(tmin, a); tmax = Math.min(tmax, b); return tmin <= tmax;
-        };
-        if (slab(ox, vx, pr.half.x) && slab(oy, vy, pr.half.y) && slab(oz, vz, pr.half.z)) best = Math.min(best, tmin);
+  }
+
+  /** Where the ray p + t·dir (dir a unit vector) is inside the prim, clipped to [0, tMax]: [spanIn, spanOut], or false. */
+  private spanIn = 0; private spanOut = 0;
+  private span(pr: Prim, p: V3, dir: V3, tMax: number): boolean {
+    let t0 = 0, t1 = tMax;
+    const dx = p.x - pr.c.x, dy = p.y - pr.c.y, dz = p.z - pr.c.z;
+    if (pr.kind === 'box') {
+      const rot = this.boxRot.get(pr)!;
+      let ox = rot.c * dx + rot.s * dy, oz = dz, vx = rot.c * dir.x + rot.s * dir.y, vz = dir.z;
+      const oy = -rot.s * dx + rot.c * dy, vy = -rot.s * dir.x + rot.c * dir.y;
+      const a = rot.cp * ox - rot.sp * oz; oz = rot.sp * ox + rot.cp * oz; ox = a;
+      const b = rot.cp * vx - rot.sp * vz; vz = rot.sp * vx + rot.cp * vz; vx = b;
+      const o = [ox, oy, oz], v = [vx, vy, vz], h = [pr.half.x, pr.half.y, pr.half.z];
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(v[k]) < 1e-12) { if (Math.abs(o[k]) > h[k]) return false; continue; }
+        let ta = (-h[k] - o[k]) / v[k], tb = (h[k] - o[k]) / v[k];
+        if (ta > tb) { const t = ta; ta = tb; tb = t; }
+        if (ta > t0) t0 = ta; if (tb < t1) t1 = tb;
+        if (t0 > t1) return false;
       }
-    }
+    } else if (pr.kind === 'cyl') {
+      // vertical, capped: the circle in xy, then the z slab
+      const a = dir.x * dir.x + dir.y * dir.y, b = 2 * (dx * dir.x + dy * dir.y), cc = dx * dx + dy * dy - pr.r * pr.r;
+      if (a < 1e-12) { if (cc > 0) return false; }
+      else {
+        const disc = b * b - 4 * a * cc;
+        if (disc < 0) return false;
+        const sq = Math.sqrt(disc);
+        t0 = Math.max(t0, (-b - sq) / (2 * a)); t1 = Math.min(t1, (-b + sq) / (2 * a));
+      }
+      if (Math.abs(dir.z) < 1e-12) { if (p.z < pr.c.z || p.z > pr.c.z + pr.h) return false; }
+      else {
+        let za = (pr.c.z - p.z) / dir.z, zb = (pr.c.z + pr.h - p.z) / dir.z;
+        if (za > zb) { const t = za; za = zb; zb = t; }
+        t0 = Math.max(t0, za); t1 = Math.min(t1, zb);
+      }
+      if (t0 > t1) return false;
+    } else if (pr.kind === 'sphere') {
+      const b = dx * dir.x + dy * dir.y + dz * dir.z, cc = dx * dx + dy * dy + dz * dz - pr.r * pr.r, disc = b * b - cc;
+      if (disc < 0) return false;
+      const sq = Math.sqrt(disc);
+      t0 = Math.max(t0, -b - sq); t1 = Math.min(t1, -b + sq);
+      if (t0 > t1) return false;
+    } else return false;
+    this.spanIn = t0; this.spanOut = t1;
+    return true;
+  }
+
+  private visited = new Set<Prim>();
+  /** Distance along a unit ray to the first surface (terrain / water, any solid prim, brushes), or Infinity. */
+  raycast(p: V3, dir: V3, maxDist: number): number {
+    let best = this.terrainRay(p, dir, maxDist);
+    // every grid cell under the ray (each prim once): boxes, cylinders (tree trunks, poles), spheres
+    const seen = this.visited; seen.clear();
+    const visit = (k: number) => {
+      const l = this.grid.get(k);
+      if (l) for (const pr of l) {
+        if (seen.has(pr)) continue;
+        seen.add(pr);
+        if (this.span(pr, p, dir, Math.min(maxDist, best))) best = Math.min(best, this.spanIn);
+      }
+    };
+    this.walkCells(p.x, p.y, p.x + dir.x * maxDist, p.y + dir.y * maxDist, visit);
+    visit(BIG);
     if (this.brushes.count) best = Math.min(best, this.brushes.raycast(p, dir, Math.min(maxDist, best)));
     return best;
   }
 
-  /** Line-of-sight obstruction loss (dB) between two points, used by the video link model. */
+  /** The terrain / water surface along a unit ray: marched in steps that shrink near the ground, then bisected. */
+  private terrainRay(p: V3, dir: V3, maxDist: number): number {
+    const S = this.surf;
+    // a vertical ray (the height above ground) sees one terrain height
+    if (dir.x === 0 && dir.y === 0) {
+      const g = p.z - S(p.x, p.y);
+      if (g <= 0) return 0;
+      return dir.z < 0 && g <= -dir.z * maxDist ? g / -dir.z : Infinity;
+    }
+    let t = 0, prev = 0;
+    for (let it = 0; it < 4000 && t <= maxDist; it++) {
+      const gap = p.z + dir.z * t - S(p.x + dir.x * t, p.y + dir.y * t);
+      if (gap <= 0) {
+        if (t === 0) return 0;
+        let lo = prev, hi = t;
+        for (let k = 0; k < 12; k++) { const m = (lo + hi) / 2; if (p.z + dir.z * m - S(p.x + dir.x * m, p.y + dir.y * m) <= 0) hi = m; else lo = m; }
+        return hi;
+      }
+      prev = t;
+      // terrain can rise up to ~2:1 towards the ray: a third of the gap cannot step over it
+      t = Math.min(t + Math.max(0.05, gap / 3), t < maxDist ? maxDist : t + 1);
+    }
+    return Infinity;
+  }
+
+  /**
+   * Line-of-sight obstruction loss (dB) between two points at 5.8 GHz (the video link; other bands
+   * scale it), used by the video, RC and EW link models.
+   */
   obstructionDb(a: V3, b: V3): number { return this.sampleLos(a, b, null); }
 
   /**
    * Line of sight between two points, split by what is in the way: `db` is obstructionDb (the
-   * same sampler, the same number), `hardDb` the part from terrain, walls and other solids, and
+   * same number), `hardDb` the part from terrain that cuts the line, walls and other solids, and
    * `foliageDb` the part from tree canopies and foliage (which a sensor sees through, weakened).
    * Detectors (src/sim/actors.ts) treat hardDb > 0 as blocked.
    */
@@ -445,49 +566,64 @@ export class PrimitiveWorld implements CollisionWorld {
     return out;
   }
 
-  /** The obstruction sampler (loss summed in sample order, as it always was); `split` also tallies hard / foliage parts. */
+  private losDir = { x: 0, y: 0, z: 0 };
+  /**
+   * The obstruction model:
+   * - terrain (and the water surface): single knife-edge diffraction (ITU-R P.526) at the worst
+   *   Fresnel parameter v along the path, at 5.8 GHz. It costs ~6 dB at grazing and ~20-40 dB behind
+   *   a ridge, whatever the link's length. Only a line that the ground actually cuts (v > 0) counts
+   *   as hard blockage; a merely grazing path (Fresnel zone partly obstructed) only costs signal;
+   * - walls and other solids: the path length through each (every grid cell along the path), scaled
+   *   to the material's loss through a ~0.3 m wall (concrete 14, metal 18, wood 6 dB);
+   * - canopies and foliage: 0.8 dB per metre of path through them (ITU-R P.833 order of magnitude
+   *   at 5.8 GHz), at most 40 dB in all.
+   */
   private sampleLos(a: V3, b: V3, split: LosLoss | null): number {
     const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
     const L = Math.hypot(dx, dy, dz);
     if (L < 0.5) return 0;
-    let loss = 0;
-    const n = Math.min(80, Math.ceil(L / 1.5));
-    const seen = new Set<Prim>();
+    let hard = 0, foliage = 0, soft = 0;
+    // terrain: the worst Fresnel parameter along the path (samples ~2 m apart, at most 256)
+    const LAMBDA = 299.792458 / 5800, n = Math.min(256, Math.max(8, Math.ceil(L / 2)));
+    let vMax = -Infinity;
     for (let i = 1; i < n; i++) {
-      const t = i / n;
-      const x = a.x + dx * t, y = a.y + dy * t, z = a.z + dz * t;
-      if (z < this.map.terrain(x, y)) { loss += 1.2; if (split) split.hardDb += 1.2; }
-      const key = this.key(Math.floor(x / this.cell), Math.floor(y / this.cell));
-      const cl = this.canopies.get(key);
-      if (cl) for (const pr of cl) if (!seen.has(pr) && this.inside(pr, x, y, z)) { seen.add(pr); loss += 4; if (split) split.foliageDb += 4; }
-      const l = this.grid.get(key);
-      if (!l) continue;
-      for (const pr of l) {
+      const t = i / n, d1 = t * L, d2 = L - d1;
+      const above = this.surf(a.x + dx * t, a.y + dy * t) - (a.z + dz * t);
+      const v = above * Math.sqrt((2 * L) / (LAMBDA * d1 * d2));
+      if (v > vMax) vMax = v;
+    }
+    if (vMax > -0.78) {
+      const j = 6.9 + 20 * Math.log10(Math.sqrt((vMax - 0.1) ** 2 + 1) + vMax - 0.1);
+      if (vMax > 0) hard += j; else soft += j;
+    }
+    // prims along the path, by the length of path inside each
+    const dir = this.losDir; dir.x = dx / L; dir.y = dy / L; dir.z = dz / L;
+    const seen = this.visited; seen.clear();
+    const visit = (k: number) => {
+      const cl = this.canopies.get(k);
+      if (cl) for (const pr of cl) {
         if (seen.has(pr)) continue;
-        if (pr.mat === 'wood' && pr.kind === 'sphere') continue; // canopy core: already counted as foliage
-        if (this.inside(pr, x, y, z)) {
-          seen.add(pr);
-          const db = pr.mat === 'concrete' ? 14 : pr.mat === 'metal' ? 18 : pr.mat === 'foliage' ? 4 : 6;
-          loss += db;
-          if (split) { if (pr.mat === 'foliage') split.foliageDb += db; else split.hardDb += db; }
-        }
+        seen.add(pr);
+        if (this.span(pr, a, dir, L)) foliage += 0.8 * (this.spanOut - this.spanIn);
       }
-    }
-    if (this.brushes.count) { const bd = this.brushes.obstructionDb(a, b); loss += bd; if (split) split.hardDb += bd; }
-    return Math.min(loss, 60);
-  }
-
-  private inside(pr: Prim, x: number, y: number, z: number): boolean {
-    if (pr.kind === 'box') {
-      const rot = this.boxRot.get(pr)!;
-      const dx = x - pr.c.x, dy = y - pr.c.y, dz = z - pr.c.z;
-      let lx = rot.c * dx + rot.s * dy; const ly = -rot.s * dx + rot.c * dy; let lz = dz;
-      const t = rot.cp * lx - rot.sp * lz; lz = rot.sp * lx + rot.cp * lz; lx = t;
-      return Math.abs(lx) <= pr.half.x && Math.abs(ly) <= pr.half.y && Math.abs(lz) <= pr.half.z;
-    }
-    if (pr.kind === 'cyl') return z >= pr.c.z && z <= pr.c.z + pr.h && Math.hypot(x - pr.c.x, y - pr.c.y) <= pr.r;
-    if (pr.kind === 'brush') return brushContains(pr, x, y, z);
-    return Math.hypot(x - pr.c.x, y - pr.c.y, z - pr.c.z) <= pr.r;
+      const l = this.grid.get(k);
+      if (l) for (const pr of l) {
+        if (seen.has(pr)) continue;
+        seen.add(pr);
+        if (pr.mat === 'wood' && pr.kind === 'sphere') continue; // canopy core: inside the canopy, already counted
+        if (!this.span(pr, a, dir, L)) continue;
+        const thick = this.spanOut - this.spanIn;
+        if (pr.mat === 'foliage') { foliage += 0.8 * thick; continue; }
+        const db = pr.mat === 'concrete' ? 14 : pr.mat === 'metal' ? 18 : 6;
+        hard += db * Math.min(3, Math.max(0.5, thick / 0.3));
+      }
+    };
+    this.walkCells(a.x, a.y, b.x, b.y, visit);
+    visit(BIG);
+    if (this.brushes.count) hard += this.brushes.obstructionDb(a, b);
+    foliage = Math.min(foliage, 40);
+    if (split) { split.hardDb = hard; split.foliageDb = foliage; }
+    return Math.min(hard + foliage + soft, 60);
   }
 
   material(name: Material): SurfaceMaterial { return MATERIALS[name]; }

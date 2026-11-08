@@ -204,12 +204,12 @@ export class Checker {
     return v;
   }
   bool(o: Obj, k: string, path: string) { if (o[k] !== undefined && typeof o[k] !== 'boolean') this.err(`${path}.${k}`, `must be true or false (got ${show(o[k])})`); }
-  vec(o: Obj, k: string, path: string, n: number | [number, number], r: { gt?: number; req?: boolean } = {}): number[] | undefined {
+  vec(o: Obj, k: string, path: string, n: number | [number, number], r: { gt?: number; max?: number; req?: boolean } = {}): number[] | undefined {
     const v = o[k], p = `${path}.${k}`;
     if (v === undefined) { if (r.req) this.err(p, 'is required'); return undefined; }
     const [lo, hi] = typeof n === 'number' ? [n, n] : n;
     if (!Array.isArray(v) || v.length < lo || v.length > hi) { this.err(p, `must be an array of ${lo === hi ? lo : `${lo}-${hi}`} numbers (got ${show(v)})`); return undefined; }
-    v.forEach((x, i) => this.numV(x, `${p}[${i}]`, { gt: r.gt }));
+    v.forEach((x, i) => this.numV(x, `${p}[${i}]`, { gt: r.gt, max: r.max }));
     return v as number[];
   }
   arr(o: Obj, k: string, path: string, max: number, each: (v: unknown, p: string, i: number) => void) {
@@ -352,11 +352,11 @@ export function validateMapDoc(raw: unknown): { doc: MapDocV1; warnings: string[
     const type = c.str(p, 'type', P, { req: true, oneOf: ['box', 'cylinder', 'sphere'] });
     if (type === 'box' && c.obj(p, P, [...common, 'size', 'yawDeg', 'pitchDeg', 'visual', 'texture', 'text'], ['pos', 'size'])) {
       c.str(p, 'text', P, { max: 40 });
-      c.vec(p, 'size', P, 3, { gt: 0 }); c.num(p, 'yawDeg', P); c.num(p, 'pitchDeg', P, { min: -90, max: 90 });
+      c.vec(p, 'size', P, 3, { gt: 0, max: 2 * BUDGETS.halfExtentM }); c.num(p, 'yawDeg', P); c.num(p, 'pitchDeg', P, { min: -90, max: 90 });
       c.str(p, 'visual', P, { oneOf: VISUALS }); c.path(p, 'texture', P, false, IMG);
     }
-    if (type === 'cylinder' && c.obj(p, P, [...common, 'radius', 'height'], ['pos', 'radius', 'height'])) { c.num(p, 'radius', P, { gt: 0 }); c.num(p, 'height', P, { gt: 0 }); }
-    if (type === 'sphere' && c.obj(p, P, [...common, 'radius'], ['pos', 'radius'])) c.num(p, 'radius', P, { gt: 0 });
+    if (type === 'cylinder' && c.obj(p, P, [...common, 'radius', 'height'], ['pos', 'radius', 'height'])) { c.num(p, 'radius', P, { gt: 0, max: BUDGETS.halfExtentM }); c.num(p, 'height', P, { gt: 0, max: 2 * BUDGETS.halfExtentM }); }
+    if (type === 'sphere' && c.obj(p, P, [...common, 'radius'], ['pos', 'radius'])) c.num(p, 'radius', P, { gt: 0, max: BUDGETS.halfExtentM });
     if (!type) return;
     c.vec(p, 'pos', P, 3); c.str(p, 'material', P, { oneOf: MATERIAL_NAMES });
     c.str(p, 'color', P, { re: COLOR, hint: 'must be a colour like "#2a5bd7"' }); c.str(p, 'tag', P, { max: 32, re: /^[A-Za-z0-9_-]+$/, hint: 'may only use A-Z a-z 0-9 _ -' });
@@ -514,17 +514,24 @@ export function imageSize(b: Uint8Array): { type: 'png' | 'jpeg' | 'webp'; w: nu
   return null;
 }
 
-/** Decode a non-interlaced 8/16-bit PNG to its first channel (grey or red), normalised to 0..1. */
-export async function decodePngChannel(b: Uint8Array): Promise<{ w: number; h: number; data: Float32Array }> {
+/**
+ * Decode a non-interlaced 8/16-bit PNG to its first channel (grey or red), normalised to 0..1. It
+ * reads untrusted files: IHDR must come first and only once (the size checked by imageSize is the
+ * size decoded), at most maxPx per side, and the image data may not inflate past what that size needs.
+ */
+export async function decodePngChannel(b: Uint8Array, maxPx = BUDGETS.heightfieldPx): Promise<{ w: number; h: number; data: Float32Array }> {
   const be32 = (o: number) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
   if (imageSize(b)?.type !== 'png') throw new Error('not a PNG file');
-  let o = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0;
+  let o = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0, chunks = 0;
   const idat: Uint8Array[] = [];
   while (o + 8 <= b.length) {
     const len = be32(o), type = String.fromCharCode(b[o + 4], b[o + 5], b[o + 6], b[o + 7]);
     const body = b.subarray(o + 8, o + 8 + len);
-    if (type === 'IHDR') { w = be32(o + 8); h = be32(o + 12); depth = body[8]; ctype = body[9]; interlace = body[12]; }
-    else if (type === 'IDAT') idat.push(body);
+    if ((type === 'IHDR') !== (chunks++ === 0)) throw new Error('malformed PNG (IHDR must be the first chunk, and only once)');
+    if (type === 'IHDR') {
+      w = be32(o + 8); h = be32(o + 12); depth = body[8]; ctype = body[9]; interlace = body[12];
+      if (!(w >= 1 && h >= 1 && w <= maxPx && h <= maxPx)) throw new Error(`PNG is ${w}x${h} px; at most ${maxPx} px per side`);
+    } else if (type === 'IDAT') idat.push(body);
     else if (type === 'IEND') break;
     o += 12 + len;
   }
@@ -534,8 +541,8 @@ export async function decodePngChannel(b: Uint8Array): Promise<{ w: number; h: n
   if (interlace) throw new Error('interlaced PNGs are not supported');
   const all = new Uint8Array(idat.reduce((s, x) => s + x.length, 0));
   let k = 0; for (const x of idat) { all.set(x, k); k += x.length; }
-  const raw = await inflate(all, 'deflate');
   const bpp = channels * (depth / 8), stride = w * bpp;
+  const raw = await inflate(all, 'deflate', h * (stride + 1) + 1);
   if (raw.length < h * (stride + 1)) throw new Error('truncated PNG data');
   const cur = new Uint8Array(stride), prev = new Uint8Array(stride);
   const data = new Float32Array(w * h);

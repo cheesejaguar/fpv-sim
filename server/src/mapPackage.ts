@@ -7,7 +7,7 @@
 //   sha256( sorted lines "<path>\0<sha256 hex of the file's bytes>", joined with "\n" )
 // so it names the files, not the zip (any zip of the same files has the same id), passes the room
 // protocol's MAP_ID_RE and binds rooms and replays to exact bytes.
-import { ASSET_EXT, assetPathError, BUDGETS, DOC_FILE, FORBIDDEN_EXT, imageSize, isObj, MapFormatError, NEEDS_TEXT, validateMapDoc } from '../../src/maps/mapDoc';
+import { ASSET_EXT, assetPathError, BUDGETS, decodePngChannel, DOC_FILE, FORBIDDEN_EXT, imageSize, isObj, MapFormatError, NEEDS_TEXT, validateMapDoc } from '../../src/maps/mapDoc';
 import type { MapDocV1 } from '../../src/maps/mapDoc';
 import { readZip } from '../../src/maps/zip';
 import { USER_MAP_RE } from '../../src/net/protocol';
@@ -148,6 +148,9 @@ export async function checkPackage(files: Map<string, Uint8Array>): Promise<Chec
       else if (s !== null && /\.json$/i.test(p)) { try { JSON.parse(s); } catch (e) { errors.push(`file "${p}": not valid JSON (${(e as Error).message})`); } }
     }
   }
+  // the heightfield decodes (bounded: a decoy IHDR or a deflate bomb is refused here, not on every player's machine)
+  const hfImage = doc.ground?.type === 'heightfield' ? doc.ground.image : undefined, hfBytes = hfImage ? files.get(hfImage) : undefined;
+  if (hfBytes) try { await decodePngChannel(hfBytes); } catch (e) { errors.push(`map.json.ground.image: ${(e as Error).message}`); }
   for (const [i, p] of (doc.scenarios ?? []).entries()) {
     const b = files.get(p);
     if (b) try { const j = JSON.parse(new TextDecoder().decode(b)); if (!isObj(j) || j.format !== 'fpvsim-scenario') errors.push(`map.json.scenarios[${i}]: "${p}" is not an fpvsim-scenario file`); } catch { /* reported above */ }

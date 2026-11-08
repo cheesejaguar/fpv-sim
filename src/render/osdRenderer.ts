@@ -117,6 +117,21 @@ export class OsdRenderer {
   /** HD glyphs (digital systems: the goggles draw the OSD at the video's resolution). */
   setHd(on: boolean) { if (on !== this.hd) { this.hd = on; this.lastSeq = -1; } }
 
+  /** chars + attributes of the grid last drawn, to skip frames that change nothing */
+  private drawn = new Uint8Array(0);
+  /** Whether the published grid differs from the one drawn (and remember it as drawn). */
+  private changed(sh: Pick<Shared, 'osd'>, cols: number, rows: number): boolean {
+    const n = cols * rows, A = OSD_MAX_COLS * OSD_MAX_ROWS;
+    let diff = this.drawn.length !== 2 * n;
+    if (diff) this.drawn = new Uint8Array(2 * n);
+    const d = this.drawn;
+    for (let y = 0, k = 0; y < rows; y++) for (let x = 0; x < cols; x++, k += 2) {
+      const i = y * OSD_MAX_COLS + x, c = sh.osd[i], a = sh.osd[A + i];
+      if (d[k] !== c || d[k + 1] !== a) { d[k] = c; d[k + 1] = a; diff = true; }
+    }
+    return diff;
+  }
+
   /** Redraw if Betaflight published a new frame (or blink phase changed). Returns true if redrawn. */
   update(sh: Pick<Shared, 'ctrl' | 'osd'>, now: number): boolean {
     const seq = Atomics.load(sh.ctrl, 2);
@@ -125,8 +140,12 @@ export class OsdRenderer {
     if (blinkChanged) { this.blinkOn = blinkPhase; this.lastBlink = now; }
     // (a canvas redraw is a full texture upload, 3.5 MB for a 53x20 HD grid, and a new present)
     if (seq === this.lastSeq && !(blinkChanged && this.blinks)) return false;
+    const forced = this.lastSeq === -1 || (blinkChanged && this.blinks);
     this.lastSeq = seq;
     const cols = Atomics.load(sh.ctrl, 3) || 30, rows = Atomics.load(sh.ctrl, 4) || 16;
+    // a new frame with the same characters as the one drawn (ArduPilot publishes every 20 ms
+    // whether or not anything changed): nothing to redraw or upload
+    if (!this.changed(sh, cols, rows) && !forced) return false;
     const s = this.hd ? 2 : 1, gw = GLYPH_W * s, gh = GLYPH_H * s;
     if (cols !== this.cols || rows !== this.rows || this.canvas.width !== cols * gw || this.canvas.height !== rows * gh) {
       this.cols = cols; this.rows = rows;

@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import Ajv from 'ajv';
+import * as THREE from 'three';
 import { describe, expect, test } from 'vitest';
 import { buildDrone, DEFAULT_SPEC } from '../src/builder/derive';
 import { BUDGETS, loadMapPackage, MapFormatError, PackageSource } from '../src/maps/mapFormat';
@@ -177,8 +178,8 @@ describe('Cascadia Coast package', async () => {
   });
 
   test('the sea mesh: depth from the terrain, dry land left out, open sea out to the horizon', () => {
-    const [grid, ring] = seaGeometries(map, 64);
-    const depth = grid.getAttribute('aDepth'), pos = grid.getAttribute('position');
+    const geos = seaGeometries(map, 64), ring = geos.pop()!, tiles = geos;
+    const depth = tiles[0].getAttribute('aDepth'), pos = tiles[0].getAttribute('position');
     let deep = 0;
     for (let i = 0; i < depth.count; i++) {
       expect(pos.getY(i)).toBe(W);
@@ -186,7 +187,14 @@ describe('Cascadia Coast package', async () => {
       if (depth.getX(i) > 5) deep++;
     }
     expect(deep).toBeGreaterThan(depth.count * 0.25);
-    expect(grid.getIndex()!.count / 6).toBeLessThan(64 * 64 * 0.75); // inland quads skipped
+    expect(tiles.reduce((a, g) => a + g.getIndex()!.count / 6, 0)).toBeLessThan(64 * 64 * 0.75); // inland quads skipped
+    expect(tiles.length).toBeLessThan(64); // tiles over dry land left out
+    // each tile's bounds hold its own quads (and are a fraction of the whole)
+    for (const g of tiles) {
+      const ix = g.getIndex()!;
+      for (let k = 0; k < ix.count; k += 7) expect(g.boundingBox!.containsPoint(new THREE.Vector3(pos.getX(ix.getX(k)), pos.getY(ix.getX(k)), pos.getZ(ix.getX(k))))).toBe(true);
+      expect(g.boundingSphere!.radius).toBeLessThan(map.size);
+    }
     expect(ring.boundingSphere!.radius).toBeGreaterThan(3000);       // past the camera's far plane
   });
 });

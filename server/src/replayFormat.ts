@@ -181,6 +181,8 @@ function encodeOsd(frames: readonly OsdFrame[], w: Writer) {
 export async function encodeReplay(d: ReplayData): Promise<Uint8Array> {
   const h = d.header, w = new Writer();
   const head = new TextEncoder().encode(JSON.stringify({ ...h, osd: d.osd.length > 0 }));
+  // (readers refuse a longer header: fail here, where the cause is known)
+  if (head.length > MAX_HEADER_BYTES) throw new Error(`replay header is ${head.length} bytes; at most ${MAX_HEADER_BYTES}`);
   w.uvar(head.length); w.bytes(head);
   for (const c of h.cols) {
     const v = d.columns[c.id];

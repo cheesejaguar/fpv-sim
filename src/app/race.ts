@@ -64,7 +64,10 @@ export function onGate(ctx: AppCtx, gate: number, t: number, wall = performance.
       start: r.lapStart, gates: passes,
       meta: {
         app: APP_VERSION, commit: APP_COMMIT || undefined, date: Date.now(), map: ctx.map.id, course, cls, summary, ...roundLap(lapMs, splitsMs),
-        spec: ctx.spec, timeScale, physicsHz: ctx.sim.physicsHz, wind: ctx.sim.wind, timeOfDay: ctx.view?.timeOfDay, invalid,
+        // (an ArduPilot build's Lua scripts are not needed to play the lap back, and a few kB of them
+        // pushed the header past the 16 kB readers accept: their names stay, their text does not)
+        spec: ctx.spec.apScripts ? { ...ctx.spec, apScripts: Object.fromEntries(Object.keys(ctx.spec.apScripts).map((k) => [k, ''])) } : ctx.spec,
+        timeScale, physicsHz: ctx.sim.physicsHz, wind: ctx.sim.wind, timeOfDay: ctx.view?.timeOfDay, invalid,
       },
     });
     ctx.lb.onLap({ map: ctx.map.id, course, cls, summary, lapMs, splitsMs, invalid, replay });

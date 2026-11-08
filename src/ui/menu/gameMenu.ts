@@ -869,6 +869,9 @@ export class GameMenu {
             if (from?.isConnected) { if (this.nav.usingPad) focusEl(from); else from.focus({ preventScroll: true }); }
           },
         });
+        // the menu closed while the replay loaded (Esc / Start on "Loading", or "Fly now"): the
+        // pilot is flying again, so the replay must not take over the screen and the drone
+        if (!this.openState) this.player?.close();
       }
     } catch (e) {
       fail = (e as Error)?.message || String(e);

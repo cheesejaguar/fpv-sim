@@ -65,6 +65,9 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   const { renderer, sh, pilot } = ctx;
   const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), lensPos = new THREE.Vector3(), lensQ = new THREE.Quaternion();
   const mpRec = new Float64Array(REC), motionRec = new Float64Array(REC);
+  // what the pilot hears: the newest state, every frame (rec holds the video-delayed pose on capture
+  // frames and the newest on the others: on a fast display the motor pitch warbled between the two)
+  const audioRec = new Float64Array(REC);
   // the state being drawn: the ring (into ctx.rec, which the HUD shares), or a replay (its own record)
   const replayRec = new Float64Array(REC);
   const ringState = (t: number, o: Float64Array) => sampleRing(sh, t, o);
@@ -109,6 +112,21 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   const applyPixelRatio = (want: number) => { if (renderer.getPixelRatio() !== want) { renderer.setPixelRatio(want); presentDue = true; } };
   // the shadow map is a full scene pass: 30 Hz is plenty, in every view
   const shadowsDue = (now: number) => { if (now - lastShadowAt < 33) return false; lastShadowAt = now; return true; };
+  // The sun's shadow box (±45 m across the light) used to sit on the quad: from 40 m up the ground
+  // below and ahead lies ~h·cos(elevation) off that centre, so the shadows the camera looks at faded
+  // out. Centre it halfway down to the ground and, as height grows, some way ahead of the view.
+  const sunAt = new THREE.Vector3(), sunFwd = new THREE.Vector3();
+  const aimSun = (p: THREE.Vector3, view?: THREE.Quaternion) => {
+    const agl = Math.max(0, Math.min(200, p.y - ctx.world.groundHeight(p.x, -p.z)));
+    sunAt.set(p.x, p.y - 0.5 * agl, p.z);
+    if (view) {
+      sunFwd.set(0, 0, -1).applyQuaternion(view); sunFwd.y = 0;
+      const n = sunFwd.length();
+      if (n > 0.1) sunAt.addScaledVector(sunFwd, Math.min(25, 0.5 * agl) / n);
+    }
+    ctx.scene.sun.position.copy(ctx.scene.sunDir).multiplyScalar(120).add(sunAt);
+    ctx.scene.sun.target.position.copy(sunAt);
+  };
   // motor sound goes quiet in the menus and while the tab is hidden (rAF stops then, so listen too)
   const setMuted = () => ctx.audio.setMuted(ctx.replay ? !ctx.replay.sound || document.hidden : ctx.menuOpen || document.hidden);
   document.addEventListener('visibilitychange', setMuted);
@@ -215,8 +233,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         const a = reducedMotion.matches ? 2.2 : now * 0.00016 + 2.2;
         orbitCam.position.set(p.x + Math.cos(a) * r, p.y + 0.32 * r + 0.04, p.z + Math.sin(a) * r);
         orbitCam.lookAt(p.x, p.y + 0.02, p.z);
-        sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(p);
-        sceneB.sun.target.position.copy(p);
+        aimSun(p);
         renderer.shadowMap.needsUpdate = shadowsDue(now);
         renderer.setRenderTarget(null);
         renderer.render(sceneB.scene, orbitCam);
@@ -238,8 +255,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         lensPos.copy(camOffset).applyQuaternion(drone.root.quaternion).add(drone.root.position);
         lensQ.copy(drone.root.quaternion).multiply(ctx.mountQ);
         if (!link.state.freeze) {
-          sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(drone.root.position);
-          sceneB.sun.target.position.copy(drone.root.position);
+          aimSun(drone.root.position, lensQ);
           fpv.sunDir.copy(sceneB.sunDir); fpv.sunColor.copy(sceneB.sun.color);
           updateSky(dtw);
           sceneB.hemi.intensity = sceneB.hemiBase * (0.04 + 0.96 * skyOpen);
@@ -327,8 +343,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           marker.scale.setScalar((2 * 30 * tanH) / H); // ~30 px across at any zoom (sizeAttenuation off)
         }
         if (marker.parent !== sceneB.scene) sceneB.scene.add(marker);
-        sceneB.sun.position.copy(sceneB.sunDir).multiplyScalar(120).add(p);
-        sceneB.sun.target.position.copy(p);
+        aimSun(p, chaseCam.quaternion);
         renderer.shadowMap.needsUpdate = shadowsDue(now);
         renderer.setRenderTarget(null);
         renderer.render(sceneB.scene, chaseCam);
@@ -344,25 +359,28 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     if (tgt) { enuToThree(tgt.x, tgt.y, tgt.z, drillMesh.position); drillMesh.scale.setScalar(tgt.radius / 1.5); }
     else if (ctx.drill.on) { enuToThree(ctx.map.spawn.pos.x, ctx.map.spawn.pos.y, spawnGroundZ(ctx.map) + 3, drillMesh.position); drillMesh.scale.setScalar(1); }
     // where the listener is: the pilot (FPV / line of sight) or the chase camera
-    const quad = { x: rec[R.px], y: rec[R.py], z: rec[R.pz] };
+    const ar = rp ? rec : sampleRing(sh, newestTime(sh), audioRec) ? audioRec : rec;
+    const quad = { x: ar[R.px], y: ar[R.py], z: ar[R.pz] };
     const earView = rp ? (rp.cam === 'orbit' ? 'chase' : rp.cam) : view.view, cam = earView === 'chase';
     const cp = chaseCam.position, listener = cam ? { x: cp.x, y: -cp.z, z: cp.y } : { x: pilot.x, y: pilot.y, z: pilot.z };
     let fwd: { x: number; y: number; z: number };
     if (cam) { const f = chaseCam.getWorldDirection(tmpV); fwd = { x: f.x, y: -f.z, z: f.y }; }
     else { const n = Math.hypot(quad.x - pilot.x, quad.y - pilot.y, quad.z - pilot.z) || 1; fwd = { x: (quad.x - pilot.x) / n, y: (quad.y - pilot.y) / n, z: (quad.z - pilot.z) / n }; } // the pilot faces the quad
-    const hearD = cam ? (rp?.cam === 'orbit' ? rp.orbit.dist : 2) : Math.hypot(rec[R.px] - pilot.x, rec[R.py] - pilot.y, rec[R.pz] - pilot.z);
+    const hearD = cam ? (rp?.cam === 'orbit' ? rp.orbit.dist : 2) : Math.hypot(ar[R.px] - pilot.x, ar[R.py] - pilot.y, ar[R.pz] - pilot.z);
     // Betaflight's own buzzer and DShot beacon (arming, RX loss, low battery, the beeper switch)
-    ctx.audio.update([rec[R.rpm0], rec[R.rpm1], rec[R.rpm2], rec[R.rpm3]].map(Math.abs), rec[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles, hearD, rec[R.vrs], {
-      beeper: !rp && (ctx.tel?.beeper ?? false), beacon: !rp && (ctx.tel?.beacon ?? false), quad, quadVel: { x: rec[R.vx], y: rec[R.vy], z: rec[R.vz] },
+    ctx.audio.update([ar[R.rpm0], ar[R.rpm1], ar[R.rpm2], ar[R.rpm3]].map(Math.abs), ar[R.ibus], build.info.components.prop.blades, build.info.components.motor.poles, hearD, ar[R.vrs], {
+      beeper: !rp && (ctx.tel?.beeper ?? false), beacon: !rp && (ctx.tel?.beacon ?? false), quad, quadVel: { x: ar[R.vx], y: ar[R.vy], z: ar[R.vz] },
       listener, listenerFwd: fwd, enclosed: 1 - skyOpen, view: earView,
     });
     // the other pilots' motors, from their newest pose (not over a replay)
     if (mp.connected && rp) ctx.audio.updateRemote([], listener, fwd);
     else if (mp.connected) {
       const others: RemoteSound[] = [];
+      // the pose the picture shows (interpolated, gone after 3 s of silence); a pilot in their menu
+      // (paused) is silent, not stuck at their last rpm
       for (const [id, peer] of mp.peers) {
-        const p = peer.poses[peer.poses.length - 1];
-        if (p) others.push({ id, pos: { x: p.p[0], y: p.p[1], z: p.p[2] }, rpm: p.r });
+        const p = mp.poseOf(peer, now);
+        if (p) others.push({ id, pos: { x: p.p[0], y: p.p[1], z: p.p[2] }, rpm: p.h === 1 ? [0, 0, 0, 0] : p.r });
       }
       ctx.audio.updateRemote(others, listener, fwd);
     }
