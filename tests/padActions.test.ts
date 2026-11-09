@@ -1,6 +1,6 @@
 // Controller buttons for the sim actions (battery, camera, telemetry, drill, spectrum).
 import { expect, test } from 'vitest';
-import { djiRc3Profile, InputManager, ps5Profile, standardProfile, STANDARD_ACTIONS } from '../src/input/gamepad';
+import { djiRc3Profile, InputManager, ps5Profile, standardProfile, STANDARD_ACTIONS, triggerThrottleProfile } from '../src/input/gamepad';
 
 // minimal browser globals for InputManager in Node
 const store = new Map<string, string>();
@@ -39,4 +39,13 @@ test('radios / unmapped joysticks get no implicit action buttons, and bound butt
   expect(im.actionButtons(pad([], ''), djiRc3Profile('x'))).toEqual({});
   const p = { ...standardProfile('x'), reset: 1 }; // someone moved respawn to B
   expect(im.actionButtons(pad([]), p).battery).toBeUndefined();
+});
+
+test('practice points on LT / RT; a right-trigger throttle keeps RT (the point stays on LT only)', () => {
+  const im = new InputManager();
+  const std = im.actionButtons(pad([]), standardProfile('x'));
+  expect(std.markPoint).toBe(6); expect(std.recallPoint).toBe(7);
+  const trig = im.actionButtons(pad([]), triggerThrottleProfile('x'));
+  expect(trig.markPoint).toBe(6);
+  expect(trig.recallPoint).toBeUndefined(); // RT is the throttle
 });

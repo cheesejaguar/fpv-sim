@@ -264,6 +264,25 @@ export class Betaflight {
 
   armingDisableFlags(): number { return this.xArmFlags() >>> 0; }
   flightModeFlags(): number { return this.xModeFlags() >>> 0; }
+  /**
+   * The firmware's whole state, as an emulator's save state: its linear memory (statics, heap,
+   * stack; between calls nothing lives anywhere else), trimmed after the last non-zero word.
+   */
+  saveState(): Uint8Array {
+    const h = this.m.HEAPU8, w = new Uint32Array(h.buffer, h.byteOffset, h.byteLength >> 2);
+    let n = w.length;
+    while (n > 0 && w[n - 1] === 0) n--;
+    return h.slice(0, n * 4);
+  }
+
+  /** Back to a saveState(): the memory as it was, anything above it zeroed. */
+  loadState(s: Uint8Array): void {
+    const h = this.m.HEAPU8;
+    if (s.length > h.length) throw new Error('firmware save state larger than its memory');
+    h.set(s);
+    h.fill(0, s.length);
+  }
+
   attitude(): [number, number, number] {
     this.xAttitude(this.pAtt);
     const h = this.m.HEAPF32, b = this.pAtt >> 2;

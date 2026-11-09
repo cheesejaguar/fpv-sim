@@ -18,6 +18,7 @@ import type { ViewSettings } from '../ui/settingsPanel';
 import type { Shared, SimSettings, Telemetry, ToWorker } from '../worker/shared';
 import type { LapBoard } from './leaderboard';
 import type { DrillState, RaceState } from './race';
+import type { PracticeState } from './practice';
 import type { LapRecorder } from './replayRecorder';
 
 /**
@@ -110,6 +111,8 @@ export interface AppCtx {
   replays: LapRecorder;
   /** the replay being watched, or null (the live session) */
   replay: ReplayView | null;
+  /** the practice point (practice.ts): where it is kept, and its notice */
+  practice: PracticeState;
   /** runs once when the replay on screen ends (the live session is back): a live change that came in meanwhile */
   afterReplay?: () => void;
   logLines: string[];

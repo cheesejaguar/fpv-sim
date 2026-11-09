@@ -33,6 +33,7 @@ export const CHAPTERS: Chapter[] = [
       <tr><td>Beeper (AUX4)</td><td>Y (hold)</td><td>△ (hold)</td><td>—</td></tr>
       <tr><td>Respawn after a crash</td><td>A</td><td>✕</td><td>R</td></tr>
       <tr><td>Respawn with a fresh battery</td><td>B</td><td>○</td><td>B</td></tr>
+      <tr><td>Set a practice point / fly back to it</td><td>LT / RT</td><td>L2 / R2</td><td>Q / E</td></tr>
       <tr><td>Camera: FPV / chase / line of sight</td><td>D-pad ↑</td><td>D-pad ↑</td><td>C</td></tr>
       <tr><td>Telemetry overlay</td><td>D-pad ↓</td><td>D-pad ↓</td><td>H</td></tr>
       <tr><td>Hover drill / noise spectrum</td><td>D-pad ← / →</td><td>D-pad ← / →</td><td>G / F</td></tr>

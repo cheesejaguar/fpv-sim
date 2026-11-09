@@ -196,7 +196,7 @@ and checks the re-simulation against the worker's state at every millisecond.
 | `steps` | physics steps flown |
 | `packetSteps` | per RC packet, the physics step it arrived in (base64, uint32 little-endian) |
 | `packetChannels` | per RC packet, 16 channels in µs (base64, float32 little-endian) |
-| `events` | respawns: `{ k, type: "reset", repair, fullBattery, at? }` (k: the physics step) |
+| `events` | respawns: `{ k, type: "reset", repair, fullBattery, at? }`; practice points kept and flown back to: `{ k, type: "mark" }`, `{ k, type: "recall" }` (k: the physics step). A simulator older than practice points misreads the last two |
 | `end` | why the recording ended |
 
 A run stores 68 bytes per RC packet before compression, about 1 MB per minute at 250 Hz. Sticks compress well: a 9 s test flight came to 9 KB.

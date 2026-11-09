@@ -17,6 +17,7 @@ import { courseOf, LapBoard } from './app/leaderboard';
 import { KEYS, load, save, validSim, validSpec, validView } from './app/persist';
 import { newDrill, newRace, onGate, onRespawn, resetLaps, toggleDrill } from './app/race';
 import { LapRecorder } from './app/replayRecorder';
+import { markPoint, newPractice, onPracticeMessage, onPracticeTelemetry, PRACTICE_KEYS, recallPoint } from './app/practice';
 import { buildDrone, DroneBuild, DroneSpec, hasPropTable, preloadPropTable } from './builder/derive';
 import type { EditorHost } from './editor/host';
 import { droneClass } from './builder/droneClass';
@@ -124,7 +125,7 @@ const ctx: AppCtx = {
   input: new InputManager(), mp: new MultiplayerClient(), remotes: new RemoteQuads(), blackbox: new Blackbox(),
   tel: null, fwStatus: 'Loading Betaflight firmware…', menuOpen: false,
   rec: new Float64Array(REC), rcOverride: null, run: { active: false }, pilot: { x: 0, y: 0, z: 1.6 },
-  race: newRace(), drill: newDrill(), lb: new LapBoard(), replays: new LapRecorder(), replay: null, logLines, log: makeLog(logLines),
+  race: newRace(), drill: newDrill(), lb: new LapBoard(), replays: new LapRecorder(), replay: null, practice: newPractice(), logLines, log: makeLog(logLines),
 };
 ctx.scene.scene.add(ctx.drone.root);
 ctx.fpv.setVideo(ctx.build.info.components.video, ctx.view.renderScale);
@@ -148,7 +149,8 @@ bridge.onMessage = (m) => {
       });
       break;
     }
-    case 'telemetry': ctx.tel = m.tel; apiHost.onTelemetry(m.tel); break;
+    case 'telemetry': ctx.tel = m.tel; apiHost.onTelemetry(m.tel); onPracticeTelemetry(ctx, m.tel.practice); break;
+    case 'practice': onPracticeMessage(ctx, m); break;
     case 'log': ctx.log(m.text); apiHost.onLog(m.text); break;
     case 'opsEvent': ctx.log(opsEventText(m.e)); apiHost.onOps(m.e); break;
     case 'gate': onGate(ctx, m.gate, m.t); apiHost.onGate(m.gate, m.t); break;
@@ -294,6 +296,8 @@ function simAction(a: SimAction) {
   if (a === 'drill') { toggleDrill(ctx); gameMenu.activeMode = ctx.drill.on ? 'drill' : gameMenu.activeMode === 'drill' ? 'free' : gameMenu.activeMode; } // the pause menu's Respawn keeps it
   if (a === 'battery') sendReset(true);
   if (a === 'spectrum') ctx.send({ type: 'spectrum', on: spectrum.toggle() });
+  if (a === 'markPoint') markPoint(ctx);
+  if (a === 'recallPoint') recallPoint(ctx, () => { ctx.link.reset(); apiHost.onRespawn(); });
 }
 // ~1 kHz, timestamped samples into the shared stick ring (~125 Hz while a menu has the controls and the
 // simulation is paused; back to full rate the moment the menu hands them back)
@@ -308,7 +312,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') gameMenu.toggle();
   if (e.code === 'KeyR') sendReset();
   if (e.code === 'KeyL' && !Atomics.load(ctx.sh.ctrl, 5)) gameMenu.openInitials(); // post a new personal best (disarmed)
-  const a = ({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum' } as Record<string, SimAction>)[e.code];
+  const a = ({ KeyC: 'camera', KeyH: 'telemetry', KeyG: 'drill', KeyB: 'battery', KeyF: 'spectrum', [`Key${PRACTICE_KEYS.markPoint}`]: 'markPoint', [`Key${PRACTICE_KEYS.recallPoint}`]: 'recallPoint' } as Record<string, SimAction>)[e.code];
   if (a) simAction(a);
 });
 // Every page gesture (not just the first) unlocks / resumes audio: controller input can't, and the

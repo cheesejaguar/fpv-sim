@@ -14,6 +14,10 @@ import { WakeField } from './wake';
 import { Wind } from './wind';
 import { G0, isa } from './atmosphere';
 import { emptySurfaceOut, evaluateSurface, SurfaceConfig, SurfaceOut } from './wing';
+import { capture, reachable, restore, Snapshot } from './saveState';
+
+/** Per quad: the constants its save states keep by reference (see QuadSim.saveState). */
+const SHARED = new WeakMap<QuadSim, Set<object>>();
 
 const TWO_PI = 2 * Math.PI;
 
@@ -890,6 +894,26 @@ export class QuadSim {
     }
     if (this.impactLog.length > 256) this.impactLog.splice(0, 64);
     if (this.damageLog.length > 256) this.damageLog.splice(0, 64);
+  }
+
+  /**
+   * The whole plant state (a practice point): pose, motion, motors, battery, IMU, aero, contacts,
+   * damage, random streams. The parameters a flight changes (mass and inertia with a payload, the
+   * rotor axes of bent arms) are state too; the rest of them (prop tables, motor and chip specs,
+   * colliders) and the surface materials are constants, shared by reference.
+   */
+  saveState(): Snapshot { return capture(this, this.sharedConstants()); }
+  /** Back to a saveState(), in place (every reference to the quad's parts stays valid). */
+  loadState(s: Snapshot): void { restore(this, s, this.sharedConstants()); }
+  private sharedConstants(): Set<object> {
+    let s = SHARED.get(this);
+    if (!s) {
+      s = reachable([this.p, ...Object.values(MATERIALS)]);
+      s.delete(this.p); s.delete(this.p.rotors); s.delete(this.p.inertia);
+      for (const r of this.p.rotors) { s.delete(r); s.delete(r.axis); }
+      SHARED.set(this, s);
+    }
+    return s;
   }
 
   repair(): void {
