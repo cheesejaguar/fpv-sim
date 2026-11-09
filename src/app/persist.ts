@@ -6,6 +6,7 @@ import { DEFAULT_SPEC, DroneSpec, PRESETS } from '../builder/derive';
 import { BATTERIES, ESCS, FCS, FRAMES, MOTORS, PROPS, VIDEO } from '../data/catalog';
 import { AIRFRAMES } from '../data/airframes';
 import { hasMap } from '../maps/maps';
+import { isUserMapId } from '../net/protocol';
 import { DEFAULT_VIEW, ViewSettings } from '../ui/settingsPanel';
 import { DEFAULT_SETTINGS, SimSettings } from '../worker/shared';
 
@@ -174,8 +175,10 @@ export function validSpec(raw: unknown, fallback: DroneSpec): DroneSpec {
 
 export function validSim(raw: unknown): SimSettings {
   return merge(DEFAULT_SETTINGS, raw, {
-    mapId: (x, d) => (hasMap(x) ? x : d), // maps loaded from disk are gone after a reload
-    courseId: text(24),                   // an id the map doesn't have flies its default course
+    // maps loaded from disk are gone after a reload; a user map ("u-…") is kept: it is registered only
+    // once fetched, and the app restores it from this device's cache after starting on the field
+    mapId: (x, d) => (hasMap(x) || isUserMapId(x) ? x : d),
+    courseId: text(32),                   // an id the map doesn't have flies its default course (ids: up to 32, as map.json allows)
     spawnId: text(32),                    // likewise: an unknown spawn id starts from the map's spawn
     physicsHz: oneOf(2000, 4000, 8000),  // the worker steps whole multiples of 1 kHz
     timeScale: num(0.05, 1),
@@ -237,7 +240,7 @@ export interface PbRecord { lapMs: number; splitsMs: number[]; at: number; summa
 /** Keyed by `${track}|${class}` (track: the map id, or `map:course`). */
 export type PbTable = Record<string, PbRecord>;
 
-export const PB_KEY_RE = /^[a-z0-9_-]{1,48}(?::[a-z0-9_-]{1,24})?\|[a-z0-9_-]{1,24}$/;
+export const PB_KEY_RE = /^[a-z0-9_-]{1,48}(?::[a-z0-9_-]{1,32})?\|[a-z0-9_-]{1,24}$/;
 const MAX_PBS = 300;
 const lapMs = (x: unknown): x is number => Number.isInteger(x) && (x as number) > 0 && (x as number) <= 3_600_000;
 

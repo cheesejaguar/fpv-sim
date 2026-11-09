@@ -75,6 +75,8 @@ export class FpvEnv {
   private events: EnvEvent[] = [];
   private probeDirs: V3[] = [];
   private stepImpact = 0;
+  /** gate / drop bonuses that arrived between task steps (from the flight core's callbacks): paid with the next step's reward */
+  private bonus = 0;
   private ended = false;
   /** episodes started by reset() without a seed (episode k gets subSeed(scenario seed, k)) */
   private episodeCount = 0;
@@ -120,10 +122,13 @@ export class FpvEnv {
 
     await Promise.all([preloadMap(ep.mapId), preloadPropTable(spec.prop)]);
     this.events = [];
+    this.bonus = 0; this.stepImpact = 0;
+    // the last episode's ArduPilot thread (and its 256 MB) goes with it
+    this.core?.stopArduPilot();
     const core = this.core = new FlightCore({
       sticks: (out) => out.set(this.rc),
       log: (text) => { this.events.push({ type: 'log', text, t: this.time }); this.onLog?.(text); },
-      gate: (gate, t) => { this.events.push({ type: 'gate', gate, t: t - this.t0 }); this.task?.onGate(gate, t - this.t0); },
+      gate: (gate, t) => { this.events.push({ type: 'gate', gate, t: t - this.t0 }); this.bonus += this.task?.onGate(gate, t - this.t0) ?? 0; },
       // (actor time is episode time: the actors start with the episode)
       detect: (e) => this.events.push({ type: 'detect', detector: e.id, on: e.on, t: e.t }),
     }, { seed, ardupilot: this.opts.ardupilot });
@@ -137,21 +142,25 @@ export class FpvEnv {
 
     this.rc.fill(1500); this.rc[2] = 1000; this.rc[AUX.arm] = 1000; this.rc[AUX.mode] = MODE_US[ep.start.mode]; this.rc[AUX.turtle] = 1000; this.rc[AUX.beeper] = 1000;
     const cliErrors: string[] = [];
-    if (core.apVehicle) await this.bootArduPilot(ep.start.armed, plan !== null);
-    else await this.bootBetaflight(ep.start.armed, plan, cliErrors);
-    const bootS = core.simT;
-    // the start pose (after the boot: the quad calibrates on the pad, then is put where it starts)
+    // the start pose
     const sp = core.map.spawn;
     const off = ep.start.offset;
     const yaw = ((ep.start.yawDeg ?? (sp.yaw * 180) / Math.PI) + ep.start.yawOffsetDeg) * (Math.PI / 180);
-    if (ep.start.pos || off.some((x) => x !== 0) || ep.start.yawOffsetDeg !== 0 || ep.start.yawDeg !== null) {
+    const custom = !!ep.start.pos || off.some((x) => x !== 0) || ep.start.yawOffsetDeg !== 0 || ep.start.yawDeg !== null;
+    const placeStart = () => {
       const base = ep.start.pos ? { x: ep.start.pos[0], y: ep.start.pos[1], z: ep.start.pos[2] } : { x: sp.pos.x, y: sp.pos.y, z: core.quad.s.pos.z };
       const pos = { x: base.x + off[0], y: base.y + off[1], z: base.z + off[2] };
       // never below the ground (a jittered pad start would start inside it)
       const floor = (ep.start.pos ? core.map.terrain(pos.x, pos.y) : spawnGroundZ(core.map)) + 0.06 - Math.min(...core.build.params.colliders.map((c) => c.pos.z - c.radius));
       pos.z = Math.max(pos.z, floor);
       core.placeAt(pos, yaw);
-    } else core.respawn();
+    };
+    // ArduPilot boots where it starts (its EKF aligns there and cannot follow a jump afterwards);
+    // Betaflight calibrates on the pad, then the quad is put where it starts
+    if (core.apVehicle) { if (custom) placeStart(); await this.bootArduPilot(ep.start.armed, plan !== null); }
+    else await this.bootBetaflight(ep.start.armed, plan, cliErrors);
+    const bootS = core.simT;
+    if (!core.apVehicle) { if (custom) placeStart(); else core.respawn(); }
     core.nextGate = 0;
     this.t0 = core.simT;
     // the actors start with the episode (their clock, their detectors' looks)
@@ -200,19 +209,28 @@ export class FpvEnv {
    * it; then armed if the scenario says so (AUX1).
    */
   private async bootArduPilot(armed: boolean, hadDiff: boolean) {
-    const core = this.core, dt = 1 / core.settings.physicsHz;
+    const core = this.core;
     if (hadDiff) throw new Error('scenario drone.diff is Betaflight configuration: an ArduPilot build takes drone.apParams');
     const ap = core.startArduPilot();
     if (!ap) throw new Error('ArduPilot is not available here (build it: bash firmware/apwasm/build.sh)');
-    const chunk = Math.round(0.01 / dt);
-    for (let i = 0; i < 3000 && !ap.live; i++) {
-      for (let k = 0; k < chunk; k++) core.physicsStep(dt);
-      if (!ap.live) {
-        if (ap.status === 'failed' || ap.status === 'exited') throw new Error(`ArduPilot did not start: ${ap.failure || ap.status}`);
-        await new Promise((r) => setTimeout(r, 10));
-      }
+    // held still where it starts (a start or teleport pose in mid-air) until it is ready to fly
+    const pinned = core.pin();
+    try { await this.apBootSteps(ap, armed); } finally { if (pinned) core.unpin(); }
+  }
+
+  /** bootArduPilot's waits and steps, from the module loading to armed. */
+  private async apBootSteps(ap: NonNullable<FlightCore['ap']>, armed: boolean) {
+    const core = this.core, dt = 1 / core.settings.physicsHz;
+    // the module and its threads load in wall time: wait for its first servo packet with the plant
+    // still (stepping it meanwhile made how much sim time passed depend on the machine's load)
+    for (let i = 0; i < 3000 && !ap.started; i++) {
+      if (ap.status === 'failed' || ap.status === 'exited') throw new Error(`ArduPilot did not start: ${ap.failure || ap.status}`);
+      await new Promise((r) => setTimeout(r, 10));
     }
-    if (!ap.live) throw new Error('ArduPilot did not start within 30 s');
+    if (!ap.started) throw new Error('ArduPilot did not start within 30 s');
+    // (the plant meets ArduPilot once per 1 ms frame)
+    for (let i = 0; i < Math.ceil(0.002 / dt) && !ap.live; i++) core.physicsStep(dt);
+    if (!ap.live) throw new Error(`ArduPilot did not start: ${ap.failure || ap.status}`);
     let ekfGps = false;
     const seen = ap.hub.onMessage;
     ap.hub.onMessage = (m) => { seen?.(m); if (m.name === 'STATUSTEXT' && /is using GPS/.test(String.fromCharCode(...m.fields.text))) ekfGps = true; };
@@ -232,7 +250,7 @@ export class FpvEnv {
     core.setOps(config, this.t0);
     if (core.ops) core.ops.onEvent = (e) => {
       this.events.push(e);
-      if (e.type === 'payload_impact') this.task?.onPayload(e.pos, e.speed);
+      if (e.type === 'payload_impact') this.bonus += this.task?.onPayload(e.pos, e.speed) ?? 0;
     };
   }
 
@@ -280,6 +298,8 @@ export class FpvEnv {
     this.stepImpact = 0;
     const n = physicsSteps ?? Math.max(1, Math.round(core.settings.physicsHz / ep.controlHz));
     this.advance(n);
+    const bonus = this.bonus;
+    this.bonus = 0;
     if (this.stepImpact > 0) this.events.push({ type: 'impact', speed: this.stepImpact, t: this.time });
     const s = core.quad.s;
     const act = core.actors;
@@ -294,8 +314,30 @@ export class FpvEnv {
     this.ended = !!reason;
     const events = this.events;
     this.events = [];
-    return { obs: this.observe(), reward: st.reward, terminated: !!reason && !truncated, truncated, info: { reason, metrics: this.task.metrics(), events } };
+    return { obs: this.observe(), reward: st.reward + bonus, terminated: !!reason && !truncated, truncated, info: { reason, metrics: this.task.metrics(), events } };
   }
+
+  /**
+   * After a respawn (the course starts over) or a teleport: the task's shaping starts again from
+   * here, and an ArduPilot build is power-cycled where it now is and booted as at the episode's
+   * start (its EKF cannot follow a jump), disarmed.
+   */
+  async afterJump(respawn: boolean) {
+    const core = this.core;
+    if (core.ap) {
+      // the reboot takes sim time (GPS fix, EKF): the episode's clock (the task's, the operational
+      // layer's) stands still meanwhile, or a respawn could time the episode out
+      const before = core.simT;
+      await this.bootArduPilot(false, false);
+      this.t0 += core.simT - before;
+      if (core.ops) core.ops.t0 += core.simT - before;
+    }
+    if (respawn) this.task?.restartCourse(); else this.task?.discontinuity();
+    this.stepImpact = 0; this.bonus = 0;
+  }
+
+  /** Stop what the episode runs outside this thread (an ArduPilot build's firmware thread). */
+  close() { this.core?.stopArduPilot(); }
 
   /** The episode has ended (step() after that keeps simulating, but the task is over). */
   get done(): boolean { return this.ended; }
@@ -330,13 +372,13 @@ export class FpvEnv {
     const hub = ap.hub;
     if (op.kind === 'mission') {
       let done: { ok: boolean; why: string } | null = null;
-      hub.uploadMission(op.items, (ok, why) => { done = { ok, why }; });
+      this.core.apUploadMission(op.items, (ok, why) => { done = { ok, why }; });
       const t0 = this.core.simT, dt = 1 / this.core.settings.physicsHz;
       while (!done && this.core.simT - t0 < 5) this.advance(Math.round(0.01 / dt));
       const r = done as { ok: boolean; why: string } | null;
       return { ok: !!r?.ok, message: r ? `mission of ${op.items.length} items ${r.why}` : 'no answer from ArduPilot', steppedS: this.core.simT - t0 };
     }
-    if (op.kind === 'params') hub.setParams(op.params);
+    if (op.kind === 'params') this.core.apSetParams(op.params);
     else if (op.kind === 'mode') hub.setMode(op.mode);
     else if (op.kind === 'arm') hub.arm(op.on, op.force);
     else hub.command(op.command, op.params);

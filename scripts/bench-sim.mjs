@@ -10,8 +10,10 @@ import { performance } from 'node:perf_hooks';
 import { loadTs } from './lib/load-ts.mjs';
 
 const [mapId = 'field', presetIx = '0', secs = '8', runs = '3'] = process.argv.slice(2);
-const { mods, close } = await loadTs('src/bf/bfModule.ts', 'src/bf/defaults.ts', 'src/builder/derive.ts', 'src/maps/maps.ts', 'src/maps/world.ts', 'src/sim/quad.ts', 'src/sim/wake.ts', 'src/sim/wind.ts', 'src/worker/accCal.ts');
-const [{ Betaflight, BF_PORT }, { defaultCli }, { buildDrone, PRESETS }, { MAPS, preloadMap }, { PrimitiveWorld, spawnGroundZ }, { QuadSim }, { WakeField }, { Wind }, { calibrateAccLevel, sampleLevelRest }] = mods;
+const { mods, close } = await loadTs('src/bf/bfModule.ts', 'src/bf/defaults.ts', 'src/builder/derive.ts', 'src/maps/maps.ts', 'src/maps/world.ts', 'src/sim/quad.ts', 'src/sim/wake.ts', 'src/sim/wind.ts', 'src/worker/accCal.ts', 'src/headless/node.ts');
+const [{ Betaflight, BF_PORT }, { defaultCli }, { buildDrone, PRESETS }, { MAPS, preloadMap }, { PrimitiveWorld, spawnGroundZ }, { QuadSim }, { WakeField }, { Wind }, { calibrateAccLevel, sampleLevelRest }, { installNodeHost }] = mods;
+// map packages (community maps, cascadia ...) and prop tables load from public/ as on the site
+installNodeHost();
 const fw = await import(new URL('../public/bf/betaflight.mjs', import.meta.url).href);
 const bf = await Betaflight.fromFactory(fw.default);
 

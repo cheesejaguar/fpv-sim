@@ -129,6 +129,9 @@ export function buildSky(env: Environment, sunDir: THREE.Vector3): THREE.Mesh {
   const u = sky.material.uniforms;
   u.turbidity.value = env.turbidity; u.rayleigh.value = env.rayleigh; u.mieCoefficient.value = env.mie; u.mieDirectionalG.value = 0.85;
   u.sunPosition.value.copy(sunDir);
+  // Sky.js draws clouds at 40 % cover whatever the sky: a clear day gets a few, an overcast one a deck
+  u.cloudCoverage.value = env.sky === 'overcast' ? 0.9 : env.sky === 'dusk' ? 0.35 : 0.22;
+  u.cloudDensity.value = env.sky === 'overcast' ? 0.7 : 0.4;
   // Sky.js radiance is ~10x the sunlit-ground radiance our lights produce; real sunlit grass and
   // clear sky have comparable luminance, so scale the sky into proportion for the camera model.
   sky.material.uniforms.skyScale = { value: env.skyScale };

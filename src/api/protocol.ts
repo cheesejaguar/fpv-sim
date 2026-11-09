@@ -223,7 +223,8 @@ export class ApiSession {
   /** A message (one JSON document) from the peer. */
   receive(text: string): Promise<void> {
     const p = parseRequest(text);
-    if (p.error !== undefined) { this.reply({ id: p.id, ok: false, error: p.error }); return this.queue; }
+    // (in turn, like every other reply: a client without ids pairs replies with requests by order)
+    if (p.error !== undefined) { const id = p.id, error = p.error; this.queue = this.queue.then(() => this.reply({ id, ok: false, error })); return this.queue; }
     const req = p.req;
     this.queue = this.queue.then(async () => {
       try {

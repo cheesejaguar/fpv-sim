@@ -201,6 +201,15 @@ export class TaskRunner {
     return bonus;
   }
 
+  /**
+   * The quad jumped (a respawn or a teleport from the API): distance shaping and the distance flown
+   * start again from where it now is, instead of paying (or charging) the jump on the next step.
+   */
+  discontinuity() { this.prevD = NaN; this.last = null; }
+
+  /** A respawn put the course back to its first gate (the flight core's count restarts too). */
+  restartCourse() { if (this.def.type === 'gates' && !this.done) { this.next = 0; this.prevD = NaN; } this.last = null; }
+
   step(s: TaskSample): TaskStatus {
     if (Number.isNaN(this.t0)) this.t0 = s.t;
     const dt = this.last ? Math.max(0, s.t - this.last.t) : 0;

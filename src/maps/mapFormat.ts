@@ -45,6 +45,8 @@ export function glbTriangles(b: Uint8Array): { positions: Float64Array; triangle
     if (a.sparse) throw new Error('sparse glTF accessors are not supported');
     const [size, get] = COMP[a.componentType] ?? []; const n = NUM[a.type];
     if (!get || !n) throw new Error(`glTF accessor ${i}: unsupported type`);
+    // (untrusted: a count no real mesh within budget needs is refused before anything is allocated)
+    if (!Number.isInteger(a.count) || a.count < 0 || a.count > BUDGETS.meshTriangles * 3) throw new Error(`glTF accessor ${i}: count ${a.count} is out of range`);
     if (a.bufferView === undefined) return new Array(a.count * n).fill(0);
     const bv = json.bufferViews[a.bufferView];
     if (!bin || bv.buffer !== 0) throw new Error('glTF buffer view outside the .glb binary chunk');
@@ -65,18 +67,24 @@ export function glbTriangles(b: Uint8Array): { positions: Float64Array; triangle
   };
   const pos: number[] = [];
   let triangles = 0;
+  // glTF nodes form trees (a node has one parent): a node reached twice is visited once, so a file
+  // that shares nodes cannot multiply its geometry exponentially
+  const seen = new Set<number>();
   const visit = (ni: number, parent: number[], depth: number) => {
     const n = json.nodes?.[ni];
-    if (!n || depth > 64) return;
+    if (!n || depth > 64 || seen.has(ni)) return;
+    seen.add(ni);
     const m = mul(parent, local(n));
     if (n.mesh !== undefined) for (const p of json.meshes[n.mesh].primitives ?? []) {
       if ((p.mode ?? 4) !== 4 || p.attributes?.POSITION === undefined) continue;
       const v = accessor(p.attributes.POSITION);
       const idx = p.indices !== undefined ? accessor(p.indices) : [...Array(v.length / 3).keys()];
       triangles += Math.floor(idx.length / 3);
+      if (triangles > BUDGETS.meshTriangles) throw new Error(`more than ${BUDGETS.meshTriangles} triangles`);
       for (const i of idx) {
         const x = v[i * 3], y = v[i * 3 + 1], z = v[i * 3 + 2];
         const gx = m[0] * x + m[4] * y + m[8] * z + m[12], gy = m[1] * x + m[5] * y + m[9] * z + m[13], gz = m[2] * x + m[6] * y + m[10] * z + m[14];
+        if (!Number.isFinite(gx + gy + gz)) throw new Error('a vertex position is not a finite number (or an index is out of range)');
         pos.push(gx, -gz, gy); // glTF (+X right, +Y up, +Z toward the viewer) -> ENU: x = east, y = north = -Z, z = up = +Y
       }
     }

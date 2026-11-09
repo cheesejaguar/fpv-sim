@@ -113,7 +113,9 @@ export function probeDirections(n: number): V3[] {
  */
 export function obsVector(o: Observation): number[] {
   const g = o.goalBody ?? [0, 0, 0];
-  const v = [...o.pos, ...o.vel, ...o.quat, ...o.rates, ...o.gyro, ...(o.acc ?? [0, 0, 0]), ...o.motorRpm.map((r) => r / 10000), o.battery.cellV, o.armed ? 1 : 0, o.agl, ...g, ...o.probes];
+  // (always four rpm slots, as obsVectorLabels names them: a two-motor plane pads with zeros)
+  const rpm = [0, 1, 2, 3].map((k) => (o.motorRpm[k] ?? 0) / 10000);
+  const v = [...o.pos, ...o.vel, ...o.quat, ...o.rates, ...o.gyro, ...(o.acc ?? [0, 0, 0]), ...rpm, o.battery.cellV, o.armed ? 1 : 0, o.agl, ...g, ...o.probes];
   if (o.actors) {
     for (const t of o.actors.targets) v.push(...t.pos, ...t.vel);
     v.push(o.actors.detected.length, o.actors.rcMarginDb);

@@ -4,7 +4,7 @@
 // comes from the worker's 1 kHz state ring, and a scenario sets up map, drone, conditions, Betaflight
 // and a scored task. Reached through a local relay over WebSocket (scripts/fpv-api.mjs --live) or
 // window.fpvSim in the page.
-import type { OpsEvent } from '../worker/ops';
+import { checkOps, type OpsEvent } from '../worker/ops';
 import { Action, applyAction, AUX, MODE_US, Observation, obsVector, obsVectorLabels, probeDirections, rot, rotInv } from '../api/types';
 import { ApiBackend, ApiEvent, ApiSession, API_PROTOCOL, API_VERSION, COMMANDS, Hello, parseRequest, Request, fromBase64, toBase64 } from '../api/protocol';
 import { planDiffImport } from '../bf/diffImport';
@@ -197,7 +197,12 @@ export class LiveBackend implements ApiBackend {
       }
       case 'fault': this.deps.injectFaults(req.faults); return {};
       case 'drop': this.deps.dropPayload(); return {};
-      case 'ops': this.deps.setOps(req.config ?? null); await this.deps.sync(); return {};
+      case 'ops': {
+        // checked here: an invalid configuration reaching the simulation worker stopped it
+        const errs = req.config ? checkOps(req.config, 'config') : [];
+        if (errs.length) throw new Error(`ops: ${errs.join('; ')}`);
+        this.deps.setOps(req.config ?? null); await this.deps.sync(); return {};
+      }
       case 'linkmap': throw new Error('linkmap: a planning tool of the headless simulator (npm run api)');
       case 'bye': setTimeout(() => this.disconnect(), 0); return {};
     }

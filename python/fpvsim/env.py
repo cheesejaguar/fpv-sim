@@ -68,6 +68,11 @@ class FpvSimEnv(_Base):
             r, self._first = self._first, None
         else:
             self._first = None
+            if seed is None and gym is not None:
+                # Gymnasium seeds an env once (vector envs: seed + i) and auto-resets it without a seed:
+                # draw each episode's seed from this env's own generator, or every worker would get the
+                # same sequence of episodes (the same builds, wind, starts and faults)
+                seed = int(self.np_random.integers(2**31 - 1))
             r = self.sim.reset(scenario=(options or {}).get("scenario"), seed=seed)
             self.labels = r["vectorLabels"]
         st = self.sim.state(vector=True)

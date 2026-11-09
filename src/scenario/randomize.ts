@@ -210,7 +210,13 @@ export function sampleOps(base: OpsConfig, d: OpsDist | undefined, rng: Rng): Op
     }
     for (const x of f) {
       if (d.faultAt !== undefined) x.at = Math.max(0, sample(d.faultAt, rng));
-      if (d.faultMotor !== undefined && x.motor !== undefined) x.motor = Math.round(sample(d.faultMotor, rng));
+      if (d.faultMotor !== undefined && x.motor !== undefined) {
+        // a whole motor number: { uniform: [1, 4] } picks 1..4 equally (rounding a continuous draw
+        // gave the end motors half the odds), and never below motor 1
+        const fm = d.faultMotor;
+        const u = typeof fm === 'object' && 'uniform' in fm ? fm.uniform : null;
+        x.motor = Math.max(1, u ? Math.min(u[1], Math.floor(u[0] + (u[1] - u[0] + 1) * rng.next())) : Math.round(sample(fm, rng)));
+      }
     }
     o.faults = f;
   }

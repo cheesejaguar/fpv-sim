@@ -285,14 +285,21 @@ export function inputPanel(im: InputManager): HTMLElement {
             el('div', { class: 'actions' }, ...(calibrating
               ? [btn('cal-finish', 'Finish', () => {
                 if (!calibrating) return;
+                // an axis that was hardly moved keeps its previous calibration (as the setup wizard
+                // does): a range of a few thousandths turned stick noise into full deflection
+                const skipped: string[] = [];
                 for (const n of ['roll', 'pitch', 'yaw', 'throttle'] as const) {
                   const b = p[n]; if (b.src !== 'axis') continue;
-                  b.min = calibrating.min[b.index]; b.max = calibrating.max[b.index];
+                  const lo = calibrating.min[b.index], hi = calibrating.max[b.index];
+                  if (!(hi - lo >= 0.5)) { skipped.push(n); continue; }
+                  b.min = lo; b.max = hi;
                   // throttle may not self-center (radios): use mid-travel instead of its resting value
                   b.center = n === 'throttle' ? (b.min + b.max) / 2 : pad.axes[b.index] ?? 0;
                 }
                 const r = ringed();
-                calibrating = null; save(); detectMsg.textContent = 'Calibration saved.'; render(); focusKey('cal-start', r);
+                calibrating = null; save();
+                detectMsg.textContent = skipped.length ? `Calibration saved; not moved, kept as they were: ${skipped.join(', ')}.` : 'Calibration saved.';
+                render(); focusKey('cal-start', r);
               }, { primary: true }), btn('cal-cancel', 'Cancel', () => { const r = ringed(); calibrating = null; detectMsg.textContent = 'Calibration cancelled.'; render(); focusKey('cal-start', r); })]
               : [btn('cal-start', 'Start', () => {
                 const r = ringed();

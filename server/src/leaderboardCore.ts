@@ -71,7 +71,7 @@ export const CUSTOM_SUMMARY_RE = /^Custom · (?:\d{1,2}"|\d{2,3} mm) · \d{3,4}(
 
 // maps from disk ("local-…") and published user maps ("u-…", not reviewed) never have a board
 const MAP_RE = /^(?!local-|u-)[a-z0-9_-]{1,24}$/;
-const COURSE_RE = /^[a-z0-9_-]{1,24}$/;
+const COURSE_RE = /^[a-z0-9_-]{1,32}$/; // (course ids: up to 32 characters, as map.json allows)
 const CLIENT_RE = /^[0-9a-f]{32}$/;
 const HASH_RE = /^[0-9a-f]{8,64}$/;
 const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);

@@ -51,7 +51,9 @@ Tests:
 2. **Replay.** The logged sticks are flown through the same Betaflight build, high above the
    ground in still air, so the flight can't hit anything:
    - roll, pitch and yaw come from `rcCommand` (yaw negated, as Betaflight flips it);
-   - throttle is mapped back from Betaflight's `min_check` rescale;
+   - throttle is mapped back from Betaflight's `min_check` rescale. The logged throttle has already
+     been through the throttle curve (`thr_mid` / `thr_expo`), so the replay flies with
+     `thr_expo = 0` (the curve is then the identity) rather than applying it a second time;
    - for the gap report, a slow trim on the throttle keeps the simulated height on the log's
      `baroAlt`, so both fly the same vertical profile.
 3. **Compare log with log.** The simulator records its own Betaflight blackbox during the replay.

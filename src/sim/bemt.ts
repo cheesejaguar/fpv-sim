@@ -63,7 +63,10 @@ function airfoil(a: AirfoilParams, alpha: number, out: { cl: number; cd: number 
   while (al > Math.PI) al -= 2 * Math.PI;
   while (al < -Math.PI) al += 2 * Math.PI;
   const clLin = a.cl0 + a.clAlpha * al;
-  const cdLin = a.cd0 + a.cdK * (clLin - a.clMinDrag) ** 2;
+  // the attached drag polar, from a lift that stays within the section's range: beyond stall the
+  // linear lift is meaningless (at α ≈ −160° it gave cd ≈ 6, against a flat plate's ~0.3, so a
+  // stopped prop in edgewise flow windmilled and every idle dive met a wall of prop drag)
+  const cdLin = a.cd0 + a.cdK * (Math.min(a.clMax, Math.max(a.clMin, clLin)) - a.clMinDrag) ** 2;
   const s = Math.sin(al), c = Math.cos(al);
   const aS = (a.clMax - a.cl0) / a.clAlpha, aSN = (a.clMin - a.cl0) / a.clAlpha;
   const clFp = 2 * s * c * 0.95, k = a.stallSmooth;
@@ -126,12 +129,12 @@ export function bemtSolve(g: PropGeometry, rho: number, omega: number, vc: numbe
         const phi = Math.atan2(up, ut);
         const U2 = ut * ut + up * up;
         airfoil(g.airfoil, th[k] - phi, af);
-        // Prandtl tip loss
-        const lam = Math.max(0.02, Math.abs(up) / Math.max(1e-3, Math.abs(omega * R)));
-        const f = ((B / 2) * (1 - r / R)) / ((r / R) * lam);
+        const cphi = Math.cos(phi), sphi = Math.sin(phi);
+        // Prandtl tip loss, f = B/2 (R - r) / (r sin φ): (with the inflow ratio in place of sin φ it went
+        // to 0 as the inflow grew, so a slow or stopped prop in axial flow made almost no drag)
+        const f = ((B / 2) * (1 - r / R)) / ((r / R) * Math.max(0.02, Math.abs(sphi)));
         const F = Math.min(1, (2 / Math.PI) * Math.acos(Math.min(1, Math.exp(-f))));
         const qd = 0.5 * rho * U2 * cs[k] * dr;
-        const cphi = Math.cos(phi), sphi = Math.sin(phi);
         const dT = qd * (af.cl * cphi - af.cd * sphi) * F;
         T += dT;
         Ms += dT * r * sp; Mc -= dT * r * cp;

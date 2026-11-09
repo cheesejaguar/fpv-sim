@@ -17,6 +17,18 @@ const args = process.argv.slice(2);
 const flag = (k) => args.includes(k);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 && i + 1 < args.length ? args[i + 1] : d; };
 const log = (t) => process.stderr.write(`[campaign] ${t}\n`);
+// any error (a bad file, a run that crashed the simulator) exits 3, never 1 ("a requirement fails")
+const fatal = (e) => { log(`error: ${e?.stack ?? e}`); process.exit(3); };
+process.on('uncaughtException', fatal);
+process.on('unhandledRejection', fatal);
+/** A whole-number option >= 1, or exit 3 (a NaN worker count started no worker and waited forever). */
+const count = (k, d) => {
+  const v = opt(k);
+  if (v === undefined) return d;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1) { log(`${k} takes a whole number >= 1 (got "${v}")`); process.exit(3); }
+  return n;
+};
 if (flag('--help') || flag('-h') || !args.length) {
   console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 10).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exit(args.length ? 0 : 3);
@@ -46,13 +58,13 @@ if (flag('--case')) {
 
 const file = resolve(args.find((a) => !a.startsWith('--') && args[args.indexOf(a) - 1]?.startsWith('--') !== true) ?? '');
 const raw = JSON.parse(readFileSync(file, 'utf8'));
-if (opt('--runs')) raw.runs = Number(opt('--runs'));
+if (opt('--runs') !== undefined) raw.runs = count('--runs');
 const { campaign: c, errors } = C.parseCampaign(raw, (id) => id in maps.MAPS);
 if (!c) { log(`invalid campaign:\n  ${errors.join('\n  ')}`); process.exit(3); }
 const vs = C.variants(c);
 const pilot = c.pilot ?? { type: 'reference' };
 const modulePath = pilot.type === 'module' ? resolve(dirname(file), pilot.path) : undefined;
-const nWorkers = Math.max(1, Math.min(Number(opt('--workers', Math.max(1, cpus().length))), vs.length * c.runs));
+const nWorkers = Math.max(1, Math.min(count('--workers', Math.max(1, cpus().length)), vs.length * c.runs));
 const outDir = resolve(opt('--out', join('campaign-out', (c.meta?.id ?? basename(file, '.json')).replace(/[^\w.-]+/g, '_'))));
 mkdirSync(join(outDir, 'cases'), { recursive: true });
 const saveFailures = c.saveFailures ?? 5;
@@ -61,6 +73,8 @@ log(`${c.meta?.name ?? basename(file)}: ${vs.length} variant(s) x ${c.runs} runs
 const jobs = [];
 for (const v of vs) for (let k = 0; k < c.runs; k++) jobs.push({ id: jobs.length, variant: v.index, run: k, seed: C.runSeed(c, v.index, k), scenario: v.scenario, pilot, trace: saveFailures > 0 });
 const results = [], cases = [];
+// the failures saved per variant are those with the lowest run numbers, whichever worker finished
+// first: the same campaign saves the same cases every time
 const kept = new Map();
 let next = 0, done = 0, firmware = 'Betaflight 4.5.5 (WASM)';
 const t0 = performance.now();
@@ -76,13 +90,12 @@ await new Promise((resolveAll, reject) => {
       if (!m.ok) { log(`run ${job.run} of variant ${job.variant} failed to run:\n${m.error}`); reject(new Error('a run crashed the simulator')); return; }
       const r = m.result;
       results.push({ variant: job.variant, run: job.run, seed: job.seed, outcome: r.outcome, wallMs: r.wallMs, events: r.events });
-      if (!r.outcome.success && (kept.get(job.variant) ?? 0) < saveFailures) {
-        kept.set(job.variant, (kept.get(job.variant) ?? 0) + 1);
-        const name = `v${job.variant}-r${job.run}`;
-        const caseFile = join(outDir, 'cases', `${name}.json`);
-        writeFileSync(caseFile, JSON.stringify({ format: 'fpvsim-case', version: 1, campaign: c.meta?.name ?? basename(file), variant: vs[job.variant].label, run: job.run, seed: job.seed, pilot: { ...pilot, ...(modulePath ? { modulePath } : {}) }, scenario: job.scenario, outcome: r.outcome, events: r.events }, null, 1));
-        if (r.trace) writeFileSync(join(outDir, 'cases', `${name}.csv`), toCsv(runner.TRACE_LABELS, r.trace));
-        cases.push({ variant: job.variant, run: job.run, seed: job.seed, reason: r.outcome.reason, file: `cases/${name}.json`, events: r.events });
+      if (!r.outcome.success && saveFailures > 0) {
+        const list = kept.get(job.variant) ?? [];
+        kept.set(job.variant, list);
+        const worst = list.reduce((w, x, i) => (w < 0 || x.job.run > list[w].job.run ? i : w), -1);
+        if (list.length < saveFailures) list.push({ job, r });
+        else if (job.run < list[worst].job.run) list[worst] = { job, r };
       }
       done++;
       const now = performance.now();
@@ -94,6 +107,14 @@ await new Promise((resolveAll, reject) => {
 });
 const wallS = (performance.now() - t0) / 1000;
 results.sort((a, b) => a.variant - b.variant || a.run - b.run);
+for (const v of [...kept.keys()].sort((a, b) => a - b)) {
+  for (const { job, r } of kept.get(v).sort((a, b) => a.job.run - b.job.run)) {
+    const name = `v${job.variant}-r${job.run}`;
+    writeFileSync(join(outDir, 'cases', `${name}.json`), JSON.stringify({ format: 'fpvsim-case', version: 1, campaign: c.meta?.name ?? basename(file), variant: vs[job.variant].label, run: job.run, seed: job.seed, pilot: { ...pilot, ...(modulePath ? { modulePath } : {}) }, scenario: job.scenario, outcome: r.outcome, events: r.events }, null, 1));
+    if (r.trace) writeFileSync(join(outDir, 'cases', `${name}.csv`), toCsv(runner.TRACE_LABELS, r.trace));
+    cases.push({ variant: job.variant, run: job.run, seed: job.seed, reason: r.outcome.reason, file: `cases/${name}.json`, events: r.events });
+  }
+}
 const report = R.buildReport(c, vs, results, cases, { app, firmware, workers: nWorkers, wallS });
 writeFileSync(join(outDir, 'report.json'), JSON.stringify({ ...report, runs: results }, null, 1));
 writeFileSync(join(outDir, 'report.md'), R.reportMarkdown(report));

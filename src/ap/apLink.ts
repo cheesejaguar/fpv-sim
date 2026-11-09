@@ -40,12 +40,21 @@ export class ArduPilotLink {
   /** frames ArduPilot did not answer in time (the plant went on with the last outputs) */
   stalls = 0;
   frames = 0;
+  /**
+   * ArduPilot stopped answering altogether (STALL_LIMIT frames in a row): a reboot request (SITL's
+   * reboot cannot exec under WebAssembly and panics into an endless loop) or a hang. The outputs are
+   * cut, as an ESC does when its signal stops, and frames are no longer waited for; the flight core
+   * power-cycles it.
+   */
+  hung = false;
+  private consecStalls = 0;
+  private quietDump = false;
 
   constructor(readonly vehicle: ApVehicle, init: Omit<ApInit, 'sab'>, spawn: ApSpawn, private onLog: (text: string) => void = () => {}) {
     for (let p = 0; p < AP.PORTS; p++) this.rings.push([new ByteRing(this.sab, ringOffset(p, 0)), new ByteRing(this.sab, ringOffset(p, 1))]);
     this.hub = new ApHub(vehicle, this.rings[0], onLog);
     this.thread = spawn({ ...init, sab: this.sab }, (m) => {
-      if (m.type === 'log') this.onLog(m.text);
+      if (m.type === 'log') { if (!this.noise(m.text)) this.onLog(m.text); }
       else if (m.type === 'error') { this.failReason = m.reason; this.onLog(m.reason); }
       else if (m.type === 'exit') this.onLog(`ArduPilot exited (code ${m.code})`);
     });
@@ -58,6 +67,21 @@ export class ArduPilotLink {
 
   /** why it failed to load, if it did */
   get failure(): string { return this.failReason; }
+
+  /**
+   * SITL console chatter that is not for the pilot: the resend notice while paused, and the key
+   * dump SIM_JSON prints whenever the RC block comes or goes (every link loss and recovery).
+   */
+  private noise(t: string): boolean {
+    if (/^No JSON sensor message received/.test(t)) return true;
+    if (/^JSON received:/.test(t)) { this.quietDump = true; return true; }
+    if (this.quietDump && /^\s/.test(t)) return true;
+    this.quietDump = false;
+    return false;
+  }
+
+  /** ArduPilot is up and has sent its first servo packet (it waits for the first state line now). */
+  get started(): boolean { return Atomics.load(this.ctrl, AP.STATUS) === AP.RUNNING && Atomics.load(this.ctrl, AP.SERVO_SEQ) > 0; }
 
   /** ArduPilot has sent its first servo packet: the plant answers every frame from now on. */
   get live(): boolean { return this.synced; }
@@ -74,7 +98,8 @@ export class ArduPilotLink {
    * ArduPilot's first packet (it is still loading or booting) nothing is sent and nothing waited for.
    */
   exchange(stateLine: string, waitMs: number): boolean {
-    if (Atomics.load(this.ctrl, AP.STATUS) !== AP.RUNNING) return false;
+    if (Atomics.load(this.ctrl, AP.STATUS) !== AP.RUNNING) { if (this.synced) this.pwm.fill(0); return false; }
+    if (this.hung) return false;
     if (!this.synced) {
       if (Atomics.load(this.ctrl, AP.SERVO_SEQ) === 0) return false;
       this.synced = true;
@@ -92,10 +117,14 @@ export class ArduPilotLink {
     for (;;) {
       const seq = Atomics.load(this.ctrl, AP.SERVO_SEQ);
       // a new frame number (a resend after a long pause repeats the last one)
-      if (Atomics.load(this.ctrl, AP.SERVO_FRAME) !== this.seenFrame) { this.takeServos(); return true; }
-      if (Atomics.load(this.ctrl, AP.STATUS) !== AP.RUNNING) return false;
+      if (Atomics.load(this.ctrl, AP.SERVO_FRAME) !== this.seenFrame) { this.takeServos(); this.consecStalls = 0; return true; }
+      if (Atomics.load(this.ctrl, AP.STATUS) !== AP.RUNNING) { this.pwm.fill(0); return false; }
       const left = deadline - performance.now();
-      if (left <= 0) { this.stalls++; return false; }
+      if (left <= 0) {
+        this.stalls++;
+        if (++this.consecStalls >= STALL_LIMIT) { this.hung = true; this.pwm.fill(0); this.onLog(`ArduPilot stopped answering (${STALL_LIMIT} frames in a row): outputs cut`); }
+        return false;
+      }
       Atomics.wait(this.ctrl, AP.SERVO_SEQ, seq, left);
     }
   }
@@ -113,6 +142,9 @@ export class ArduPilotLink {
 
   terminate() { this.thread?.terminate(); this.thread = null; }
 }
+
+/** Frames in a row without an answer after which ArduPilot counts as hung (with the usual 50-100 ms wait: 1-2 s). */
+export const STALL_LIMIT = 20;
 
 // ---------------------------------------------------------------------------------------------
 

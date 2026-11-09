@@ -92,7 +92,11 @@ export function coefficients(sc: SurfaceConfig, alpha: number, delta: number): {
   const cdAtt = sc.cd0 + (clAtt * clAtt) / (Math.PI * sc.oswald * sc.aspect) + 0.7 * d * d;
   const ae = alpha + d;
   const clPlate = 2 * Math.sin(ae) * Math.cos(ae), cdPlate = sc.cd0 + 2 * Math.sin(ae) * Math.sin(ae);
-  return { cl: (1 - s) * clAtt + s * clPlate, cd: (1 - s) * cdAtt + s * cdPlate, cm: (1 - s) * (sc.cm0 - 0.7 * d) - s * 0.5 * Math.sin(ae) * 0.25 };
+  // stalled: a flat plate's normal force (≈ 2 sin α) acts from a centre of pressure moving from the
+  // quarter chord back to mid-chord at 90° (x_cp ≈ 0.25 + 0.25 |sin α|), i.e. cm(c/4) = -0.5 sin α |sin α|
+  // (it was a quarter of that at 90°: stall recovery was far too weak)
+  const sa = Math.sin(ae);
+  return { cl: (1 - s) * clAtt + s * clPlate, cd: (1 - s) * cdAtt + s * cdPlate, cm: (1 - s) * (sc.cm0 - 0.7 * d) - s * 0.5 * sa * Math.abs(sa) };
 }
 
 /**

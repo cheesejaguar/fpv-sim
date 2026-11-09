@@ -12,87 +12,139 @@ import { patchMaterial, WorldUniforms } from './sway';
 export const TERRAIN_N = 320, TERRAIN_TILES = 4, TERRAIN_BLOCK = 20;
 /** Height error (m) a coarser block may show against the full grid: flat blocks use 2x / 4x bigger quads. */
 export const TERRAIN_LOD_ERR = 0.05;
+/**
+ * Distance LOD (big terrains only, terrainLevels): a tile is drawn from the coarsest level (1: quads
+ * of at least 2 grid cells, 2: at least 4) whose largest height error, seen from the camera's
+ * distance to the tile, stays under TERRAIN_LOD_PX pixels at ~TERRAIN_PX_PER_RAD (an FPV cube face):
+ * a flat field goes coarse close by, a cliff keeps its detail far out (fixed switch distances made
+ * cliffs pop by up to ~20 px).
+ */
+export const TERRAIN_LOD_PX = 1.5, TERRAIN_PX_PER_RAD = 400;
 const SKIRT = 0.4;
-/** Grid size for a map: as fine as its heightfield's samples (map.terrainRes), 320 .. 800 quads per side. */
-export const terrainGrid = (m: MapDef) => (m.terrainRes ? Math.min(800, Math.max(TERRAIN_N, Math.ceil((m.size * 2.2) / m.terrainRes / 80) * 80)) : TERRAIN_N);
+/** Grid size for a map: as fine as its heightfield's samples (map.terrainRes), 320 .. 800 quads per side (multiples of 160: 8 x 8 tiles of 20-quad blocks). */
+export const terrainGrid = (m: MapDef) => (m.terrainRes ? Math.min(800, Math.max(TERRAIN_N, Math.ceil((m.size * 2.2) / m.terrainRes / 160) * 160)) : TERRAIN_N);
+/** Tiles per side and LOD levels for a terrain: big ones are cut finer (each cube face culls more) and get distance LOD. */
+export function terrainLevels(map: MapDef, N: number): { tiles: number; levels: number } {
+  const big = map.size * 2.2 > 600 && (N / TERRAIN_BLOCK) % 8 === 0;
+  return big ? { tiles: 8, levels: 3 } : { tiles: TERRAIN_TILES, levels: 1 };
+}
+
+/** Largest height error (m) of a block drawn with quads of L grid cells against the full grid. */
+export function blockErr(h: (i: number, j: number) => number, i0: number, j0: number, B: number, L: number, stopAbove = Infinity): number {
+  if (L <= 1) return 0;
+  let err = 0;
+  for (let j = j0; j <= j0 + B; j++) for (let i = i0; i <= i0 + B; i++) {
+    const a = i0 + Math.floor((i - i0) / L) * L, b = j0 + Math.floor((j - j0) / L) * L;
+    const a1 = Math.min(a + L, i0 + B), b1 = Math.min(b + L, j0 + B), u = (i - a) / L, v = (j - b) / L;
+    // the two triangles of the coarse quad, split as drawn below
+    const ha = h(a, b), hb = h(a, b1), hc = h(a1, b), hd = h(a1, b1);
+    const s = u + v <= 1 ? ha + (hc - ha) * u + (hb - ha) * v : hd + (hb - hd) * (1 - u) + (hc - hd) * (1 - v);
+    err = Math.max(err, Math.abs(s - h(i, j)));
+    if (err > stopAbove) return err;
+  }
+  return err;
+}
 
 /** Coarsest quad step (4, 2 or 1 grid cells) whose triangles stay within TERRAIN_LOD_ERR of every grid height in the block. */
 export function blockStep(h: (i: number, j: number) => number, i0: number, j0: number, B: number): number {
-  for (const L of [4, 2]) {
-    if (B % L) continue;
-    let ok = true;
-    for (let j = j0; j <= j0 + B && ok; j++) for (let i = i0; i <= i0 + B; i++) {
-      const a = i0 + Math.floor((i - i0) / L) * L, b = j0 + Math.floor((j - j0) / L) * L;
-      const a1 = Math.min(a + L, i0 + B), b1 = Math.min(b + L, j0 + B), u = (i - a) / L, v = (j - b) / L;
-      // the two triangles of the coarse quad, split as drawn below
-      const ha = h(a, b), hb = h(a, b1), hc = h(a1, b), hd = h(a1, b1);
-      const s = u + v <= 1 ? ha + (hc - ha) * u + (hb - ha) * v : hd + (hb - hd) * (1 - u) + (hc - hd) * (1 - v);
-      if (Math.abs(s - h(i, j)) > TERRAIN_LOD_ERR) { ok = false; break; }
-    }
-    if (ok) return L;
-  }
+  for (const L of [4, 2]) if (B % L === 0 && blockErr(h, i0, j0, B, L, TERRAIN_LOD_ERR) <= TERRAIN_LOD_ERR) return L;
   return 1;
 }
 
 /**
- * The terrain grid (TERRAIN_N² quads over 2.2 × map.size, as before) as TERRAIN_TILES² tile
- * geometries (one draw each; each face of the FPV cube capture culls the tiles it can't see).
+ * The terrain grid (N² quads over 2.2 × map.size) as tiles² tile geometries (one draw each; each
+ * face of the FPV cube capture culls the tiles it can't see), each at `levels` levels of detail.
  * Inside a tile every TERRAIN_BLOCK² block of quads uses the coarsest of 1x / 2x / 4x quads that
  * stays within TERRAIN_LOD_ERR of the full grid — a stadium floor is flat, hills keep their detail —
- * and where neighbouring blocks differ, double-sided skirts hide the hairline cracks. Normals come
- * from the full heightfield (central differences) so every edge shades seamlessly; UVs are world
- * metres / 3 (one detail-texture repeat per 3 m).
+ * and level k never uses quads finer than 2^k cells. Where neighbouring blocks differ, and along
+ * every tile border when there are several levels (the neighbour may be drawn at another), double-
+ * sided skirts deep enough for both sides' error hide the cracks. Normals come from the full
+ * heightfield (central differences) so every edge shades seamlessly; UVs are world metres / 3 (one
+ * detail-texture repeat per 3 m). Returns [tile][level].
  */
-export function terrainTiles(map: MapDef, N = TERRAIN_N): THREE.BufferGeometry[] {
-  const S = map.size * 2.2, step = S / N, W = N + 1, B = TERRAIN_BLOCK, nb = N / B, bpt = nb / TERRAIN_TILES;
+export function terrainTileLevels(map: MapDef, N = TERRAIN_N, tiles = TERRAIN_TILES, levels = 1): THREE.BufferGeometry[][] {
+  const S = map.size * 2.2, step = S / N, W = N + 1, B = TERRAIN_BLOCK, nb = N / B, bpt = nb / tiles;
   const H = new Float32Array(W * W);
   // three x = ENU x, three z = -ENU y; grid row j runs along +z
   for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) H[j * W + i] = map.terrain(-S / 2 + i * step, S / 2 - j * step);
   const h = (i: number, j: number) => H[Math.min(N, Math.max(0, j)) * W + Math.min(N, Math.max(0, i))];
-  const lod = new Int32Array(nb * nb);
-  for (let bj = 0; bj < nb; bj++) for (let bi = 0; bi < nb; bi++) lod[bj * nb + bi] = blockStep(h, bi * B, bj * B, B);
-  const lodAt = (bi: number, bj: number) => (bi < 0 || bj < 0 || bi >= nb || bj >= nb ? 0 : lod[bj * nb + bi]);
-  const tiles: THREE.BufferGeometry[] = [];
-  for (let tj = 0; tj < TERRAIN_TILES; tj++) for (let ti = 0; ti < TERRAIN_TILES; ti++) {
-    const pos: number[] = [], nrm: number[] = [], uv: number[] = [], idx: number[] = [];
-    const vert = (i: number, j: number) => {
-      const x = -S / 2 + i * step, z = -S / 2 + j * step;
-      const gx = (h(i + 1, j) - h(i - 1, j)) / ((Math.min(N, i + 1) - Math.max(0, i - 1)) * step);
-      const gz = (h(i, j + 1) - h(i, j - 1)) / ((Math.min(N, j + 1) - Math.max(0, j - 1)) * step);
-      const l = Math.hypot(gx, 1, gz);
-      pos.push(x, h(i, j), z); nrm.push(-gx / l, 1 / l, -gz / l); uv.push(x / 3, -z / 3);
-    };
-    for (let bj = tj * bpt; bj < (tj + 1) * bpt; bj++) for (let bi = ti * bpt; bi < (ti + 1) * bpt; bi++) {
-      const L = lod[bj * nb + bi], m = B / L, R = m + 1, base = pos.length / 3;
-      for (let b = 0; b <= m; b++) for (let a = 0; a <= m; a++) vert(bi * B + a * L, bj * B + b * L);
-      for (let b = 0; b < m; b++) for (let a = 0; a < m; a++) {
-        const p = base + b * R + a, r = p + R;
-        idx.push(p, r, p + 1, r, r + 1, p + 1); // counter-clockwise seen from above
-      }
-      // skirts where the neighbouring block has another resolution
-      const edges: [number, (k: number) => number][] = [
-        [lodAt(bi, bj - 1), (k) => k], [lodAt(bi, bj + 1), (k) => m * R + k], [lodAt(bi - 1, bj), (k) => k * R], [lodAt(bi + 1, bj), (k) => k * R + m],
-      ];
-      for (const [other, at] of edges) {
-        if (!other || other === L) continue;
-        let prevTop = -1, prevBot = -1;
-        for (let k = 0; k <= m; k++) {
-          const top = base + at(k), bot = pos.length / 3;
-          pos.push(pos[top * 3], pos[top * 3 + 1] - SKIRT, pos[top * 3 + 2]); nrm.push(nrm[top * 3], nrm[top * 3 + 1], nrm[top * 3 + 2]); uv.push(uv[top * 2], uv[top * 2 + 1]);
-          if (k) idx.push(prevTop, prevBot, top, top, prevBot, bot, prevTop, top, prevBot, top, bot, prevBot); // both faces
-          prevTop = top; prevBot = bot;
+  const flat = new Int32Array(nb * nb);
+  for (let bj = 0; bj < nb; bj++) for (let bi = 0; bi < nb; bi++) flat[bj * nb + bi] = blockStep(h, bi * B, bj * B, B);
+  // per level: each block's quad step and its error (the error at the coarsest level bounds a neighbour tile's)
+  const lods: Int32Array[] = [], errs: Float32Array[] = [];
+  for (let lv = 0; lv < levels; lv++) {
+    const lod = new Int32Array(nb * nb), err = new Float32Array(nb * nb);
+    for (let k = 0; k < nb * nb; k++) {
+      lod[k] = Math.max(flat[k], 1 << lv);
+      err[k] = lod[k] === flat[k] ? (lod[k] > 1 ? TERRAIN_LOD_ERR : 0) : blockErr(h, (k % nb) * B, Math.floor(k / nb) * B, B, lod[k]);
+    }
+    lods.push(lod); errs.push(err);
+  }
+  const out: THREE.BufferGeometry[][] = [];
+  for (let tj = 0; tj < tiles; tj++) for (let ti = 0; ti < tiles; ti++) {
+    const tile: THREE.BufferGeometry[] = [];
+    for (let lv = 0; lv < levels; lv++) {
+      const lod = lods[lv], err = errs[lv], worst = errs[levels - 1];
+      const at = (bi: number, bj: number) => (bi < 0 || bj < 0 || bi >= nb || bj >= nb ? -1 : bj * nb + bi);
+      const pos: number[] = [], nrm: number[] = [], uv: number[] = [], idx: number[] = [];
+      const vert = (i: number, j: number) => {
+        const x = -S / 2 + i * step, z = -S / 2 + j * step;
+        const gx = (h(i + 1, j) - h(i - 1, j)) / ((Math.min(N, i + 1) - Math.max(0, i - 1)) * step);
+        const gz = (h(i, j + 1) - h(i, j - 1)) / ((Math.min(N, j + 1) - Math.max(0, j - 1)) * step);
+        const l = Math.hypot(gx, 1, gz);
+        pos.push(x, h(i, j), z); nrm.push(-gx / l, 1 / l, -gz / l); uv.push(x / 3, -z / 3);
+      };
+      for (let bj = tj * bpt; bj < (tj + 1) * bpt; bj++) for (let bi = ti * bpt; bi < (ti + 1) * bpt; bi++) {
+        const self = bj * nb + bi, L = lod[self], m = B / L, R = m + 1, base = pos.length / 3;
+        for (let b = 0; b <= m; b++) for (let a = 0; a <= m; a++) vert(bi * B + a * L, bj * B + b * L);
+        for (let b = 0; b < m; b++) for (let a = 0; a < m; a++) {
+          const p = base + b * R + a, r = p + R;
+          idx.push(p, r, p + 1, r, r + 1, p + 1); // counter-clockwise seen from above
+        }
+        // skirts where the neighbouring block has another resolution, or may (another tile, several levels)
+        const edges: [number, boolean, (k: number) => number][] = [
+          [at(bi, bj - 1), bj === tj * bpt, (k) => k], [at(bi, bj + 1), bj === (tj + 1) * bpt - 1, (k) => m * R + k],
+          [at(bi - 1, bj), bi === ti * bpt, (k) => k * R], [at(bi + 1, bj), bi === (ti + 1) * bpt - 1, (k) => k * R + m],
+        ];
+        for (const [o, border, edge] of edges) {
+          if (o < 0) continue;
+          const other = border && levels > 1;
+          if (!other && lod[o] === L) continue;
+          const depth = SKIRT + err[self] + (other ? worst[o] : err[o]);
+          let prevTop = -1, prevBot = -1;
+          for (let k = 0; k <= m; k++) {
+            const top = base + edge(k), bot = pos.length / 3;
+            pos.push(pos[top * 3], pos[top * 3 + 1] - depth, pos[top * 3 + 2]); nrm.push(nrm[top * 3], nrm[top * 3 + 1], nrm[top * 3 + 2]); uv.push(uv[top * 2], uv[top * 2 + 1]);
+            if (k) idx.push(prevTop, prevBot, top, top, prevBot, bot, prevTop, top, prevBot, top, bot, prevBot); // both faces
+            prevTop = top; prevBot = bot;
+          }
         }
       }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      g.setIndex(idx);
+      g.computeBoundingSphere(); g.computeBoundingBox();
+      // the largest height error of the tile at this level (its blocks' errors), for tileLevel
+      let te = 0;
+      for (let bj = tj * bpt; bj < (tj + 1) * bpt; bj++) for (let bi = ti * bpt; bi < (ti + 1) * bpt; bi++) te = Math.max(te, err[bj * nb + bi]);
+      g.userData.lodErr = te;
+      tile.push(g);
     }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.setIndex(idx);
-    g.computeBoundingSphere();
-    tiles.push(g);
+    out.push(tile);
   }
-  return tiles;
+  return out;
+}
+
+/** The terrain's tiles at full detail (TERRAIN_TILES² of them). */
+export const terrainTiles = (map: MapDef, N = TERRAIN_N): THREE.BufferGeometry[] => terrainTileLevels(map, N).map((t) => t[0]);
+
+/** The level of detail to draw a tile from (its levels' lodErr) whose box is `d` m from the camera. */
+export function tileLevel(d: number, lv: readonly THREE.BufferGeometry[]): number {
+  const tol = (Math.max(d, 1) * TERRAIN_LOD_PX) / TERRAIN_PX_PER_RAD;
+  for (let k = lv.length - 1; k > 0; k--) if ((lv[k].userData.lodErr ?? Infinity) <= tol) return k;
+  return 0;
 }
 
 const GROUND_FS = /* glsl */ `

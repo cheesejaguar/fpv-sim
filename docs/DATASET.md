@@ -57,8 +57,9 @@ for digital, times the render scale.
 | 8 | `object` | the windsock, lights and similar props (map actors' masts, stations and detector heads too) |
 | 9 | `target` | map actors of type `target` (vehicles, people, boxes …: [MAP_FORMAT.md](MAP_FORMAT.md#paths-and-actors)) |
 
-Leaf-card trees are labelled by their cards: foliage masks are coarser than the leaves drawn in the
-picture. Light shafts and glows are not surfaces and are not labelled.
+Trees, grass tufts, flags and the crowd are labelled through their own shaders: the same wind sway,
+the same alpha-cut leaf and blade cards and the same near / far tree dissolve as the picture, so a
+foliage mask follows the leaves drawn. Light shafts and glows are not surfaces and are not labelled.
 
 ## Labels (frames.jsonl)
 

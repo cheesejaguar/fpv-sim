@@ -175,6 +175,23 @@ export const isRadio = (pad: { id: string }) => cached(radioCache, pad.id, (id) 
  *  mapping, or our WebHID driver), not a radio the browser happens to label "standard". */
 export const isStandard = (pad: { mapping: string; id: string }) => pad.mapping === 'standard' && !isRadio(pad);
 
+const finiteNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+function validAxis(b: unknown): b is AxisBind {
+  const a = b as AxisBind;
+  return !!a && typeof a === 'object' && (a.src === 'axis' || a.src === 'button' || a.src === 'none') && Number.isInteger(a.index) && a.index >= 0
+    && typeof a.invert === 'boolean' && finiteNum(a.min) && finiteNum(a.center) && finiteNum(a.max) && finiteNum(a.deadzone) && finiteNum(a.expo);
+}
+function validButton(b: unknown): boolean {
+  return b === null || (!!b && typeof b === 'object' && Number.isInteger((b as { index?: unknown }).index));
+}
+/** A stored profile has the shape readSticks needs (the four axes, the switches, the throttle mode). */
+export function validProfile(p: unknown): p is InputProfile {
+  const q = p as InputProfile;
+  return !!q && typeof q === 'object' && validAxis(q.roll) && validAxis(q.pitch) && validAxis(q.yaw) && validAxis(q.throttle)
+    && typeof q.throttleMode === 'string' && validButton(q.arm) && validButton(q.mode) && validButton(q.turtle) && validButton(q.beeper)
+    && (q.aux === undefined || Array.isArray(q.aux));
+}
+
 export function guessProfile(pad: Gamepad): InputProfile {
   const kind = controllerKind(pad);
   if (kind === 'dji') return djiRc3Profile(pad.id);
@@ -303,7 +320,9 @@ export function readSticks(pad: Gamepad, p: InputProfile, out: Sticks = { roll: 
   out.roll = shape(sv[0], p.roll, paired[0] === 1);
   out.pitch = shape(sv[1], p.pitch, paired[1] === 1);
   out.yaw = shape(sv[2], p.yaw, paired[2] === 1);
-  out.throttle = shape(sv[3], p.throttle, paired[3] === 1);
+  // a full-range throttle (bottom = 0 %, top = 100 %) has no centre: a deadzone there was a flat spot
+  // at 50 %, right around hover (radios and Betaflight have none)
+  out.throttle = shape(sv[3], p.throttle, paired[3] === 1 || p.throttleMode === 'full');
   return out;
 }
 
@@ -363,7 +382,10 @@ export class InputManager {
   capture = 0;
 
   constructor() {
-    try { const s = localStorage.getItem('fpv-input-profiles'); if (s) this.profiles = JSON.parse(s); } catch { /* none */ }
+    try {
+      const s = localStorage.getItem('fpv-input-profiles'), v: unknown = s ? JSON.parse(s) : null;
+      if (v && typeof v === 'object' && !Array.isArray(v)) this.profiles = v as Record<string, InputProfile>;
+    } catch { /* none */ }
     window.addEventListener('gamepadconnected', (e) => { const g = (e as GamepadEvent).gamepad; if (this.activeIndex < 0) this.activeIndex = g.index; });
     window.addEventListener('gamepaddisconnected', (e) => { if ((e as GamepadEvent).gamepad.index === this.activeIndex) this.activeIndex = -1; });
   }
@@ -383,7 +405,9 @@ export class InputManager {
   }
   profileFor(pad: Gamepad): InputProfile {
     let p = this.profiles[pad.id];
-    if (!p) { p = guessProfile(pad); this.profiles[pad.id] = p; this.save(); return p; }
+    // (a stored profile of another shape — older, newer, hand-edited — threw on every poll and
+    // broke the Controller tab, with no way back from the UI: it starts over from the guess)
+    if (!p || !validProfile(p)) { p = guessProfile(pad); this.profiles[pad.id] = p; this.save(); return p; }
     if (isStandard(pad)) {
       // profiles saved before `kind` existed: identify the family now, so button names (A / B / RB …)
       // show instead of raw indices
@@ -568,7 +592,10 @@ export class KeyboardInput {
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
       if (this.suspended) return;
       this.keys.add(e.code);
-      if (e.code === 'Space') { this.armed = !this.armed; e.preventDefault(); }
+      if (e.code === 'Space') e.preventDefault();
+      // toggles flip once per press: the OS key repeat left arming / turtle in a random state
+      if (e.repeat) return;
+      if (e.code === 'Space') this.armed = !this.armed;
       if (e.code === 'Digit1') this.modeIdx = 0; if (e.code === 'Digit2') this.modeIdx = 1; if (e.code === 'Digit3') this.modeIdx = 2;
       if (e.code === 'KeyT') this.turtle = !this.turtle;
     });

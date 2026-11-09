@@ -110,6 +110,8 @@ export interface AppCtx {
   replays: LapRecorder;
   /** the replay being watched, or null (the live session) */
   replay: ReplayView | null;
+  /** runs once when the replay on screen ends (the live session is back): a live change that came in meanwhile */
+  afterReplay?: () => void;
   logLines: string[];
   log(t: string): void;
   /** the map builder while it has the screen (src/editor/): it draws its own scene and camera */

@@ -101,12 +101,14 @@ describe.skipIf(!have)('headless environment (real Betaflight)', () => {
     env.core.placeAt({ x: c.x - 3 * nx, y: c.y - 3 * ny, z: c.z }, Math.atan2(ny, nx));
     env.core.quad.s.vel = { x: 8 * nx, y: 8 * ny, z: 0 };
     let res: StepResult;
-    let gate = false;
-    do { res = env.step({ throttle: 0.4 }); if (res.info.events.some((e) => e.type === 'gate')) gate = true; } while (!res.terminated && !res.truncated);
+    let gate = false, sum = 0;
+    do { res = env.step({ throttle: 0.4 }); sum += res.reward; if (res.info.events.some((e) => e.type === 'gate')) gate = true; } while (!res.terminated && !res.truncated);
     expect(gate).toBe(true);
     expect(res.info.metrics.passed).toBe(1);
     expect(res.info.metrics.total).toBe(env.core.map.gates.length + 1);
     expect(res.info.metrics.return).toBeGreaterThan(10);
+    // the gate's +10 reaches the step rewards an agent learns from, not only the episode's return
+    expect(sum).toBeCloseTo(res.info.metrics.return, 6);
   }, 120000);
 
   test('crash ends the episode', async () => {
@@ -116,11 +118,16 @@ describe.skipIf(!have)('headless environment (real Betaflight)', () => {
     do res = env.step({ throttle: 0 }); while (!res.terminated && !res.truncated);
     expect(res.info.reason).toBe('crash');
     expect(res.info.events.some((e) => e.type === 'impact')).toBe(true);
+    // the next episode starts clean: no impact carried over into its first observation
+    const r = await env.reset();
+    expect(r.obs.impact).toBe(0);
   }, 120000);
 
   test('invalid scenarios are refused with the reasons', async () => {
     const env = await createNodeEnv();
     await expect(env.reset({ scenario: { format: 'fpvsim-scenario', version: 1, map: { id: 'nowhere' }, task: { type: 'hover', radius: 2 } } })).rejects.toThrow(/map\.id.*\n.*task\.radius/s);
+    // a misspelt course would silently fly the default one
+    await expect(env.reset({ scenario: { format: 'fpvsim-scenario', version: 1, map: { id: 'practice', course: 'slalon' } } })).rejects.toThrow(/map\.course: map "practice" has no course "slalon"/);
   });
 });
 
@@ -131,3 +138,11 @@ test('probe directions: unit vectors spread over the sphere', () => {
   const mean = d.reduce((a, v) => ({ x: a.x + v.x / 64, y: a.y + v.y / 64, z: a.z + v.z / 64 }), { x: 0, y: 0, z: 0 });
   expect(Math.hypot(mean.x, mean.y, mean.z)).toBeLessThan(0.05);
 });
+
+test('the observation vector always has the four rpm slots its labels name (a two-motor plane pads)', () => {
+  const o = { pos: [0, 0, 0], vel: [0, 0, 0], quat: [1, 0, 0, 0], rates: [0, 0, 0], gyro: [0, 0, 0], acc: [0, 0, 0], motorRpm: [9000, 9100], battery: { cellV: 4 }, armed: false, agl: 1, goalBody: [0, 0, 0], probes: [] } as unknown as Parameters<typeof obsVector>[0];
+  const v = obsVector(o);
+  expect(v).toHaveLength(obsVectorLabels(0).length);
+  expect(v.slice(19, 23)).toEqual([0.9, 0.91, 0, 0]);
+});
+
