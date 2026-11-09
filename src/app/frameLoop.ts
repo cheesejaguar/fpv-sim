@@ -95,6 +95,21 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
   const motionAt = (t: number, q: THREE.Quaternion) => lensAt(motionT + t, motionHead, q);
   const drillMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 16), new THREE.MeshBasicMaterial({ color: 0x39b6ff, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
   const marker = losMarker();
+  // the practice point (practice.ts): an upright hoop across the heading it was kept with (fly through
+  // it that way), an arrow through it, and a faint beam down to the ground (see-through, no depth:
+  // not a surface for the dataset labels either)
+  const practiceMark = (() => {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x5ce1ff, transparent: true, opacity: 0.85, depthWrite: false });
+    const g = new THREE.Group(), ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.03, 8, 40), mat);
+    ring.rotation.y = Math.PI / 2; // (axis along local +x: the heading)
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.26, 12), mat);
+    arrow.rotation.z = -Math.PI / 2;
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 1, 6), new THREE.MeshBasicMaterial({ color: 0x5ce1ff, transparent: true, opacity: 0.3, depthWrite: false }));
+    beam.name = 'beam';
+    g.add(ring, arrow, beam);
+    g.visible = false;
+    return g;
+  })();
   const chaseCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 3000);
   // title-screen backdrop: a slow orbit around the quad sitting on the pad
   const orbitCam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 3000);
@@ -353,6 +368,19 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     ctx.blackbox.pump(sh, ctx.rcOverride ?? ctx.input.channels);
     ctx.replays.pump(sh, ctx.race.lapStart >= 0 ? ctx.race.lapStart - PRE_S : null, ctx.tel?.modeFlags ?? 0, now);
     if (drillMesh.parent !== sceneB.scene) sceneB.scene.add(drillMesh);
+    if (practiceMark.parent !== sceneB.scene) sceneB.scene.add(practiceMark);
+    const pp = ctx.practice.point;
+    practiceMark.visible = !!pp && !rp;
+    if (pp && !rp) {
+      // (a point kept on the ground: the hoop stands on it)
+      const g = ctx.world.groundHeight(pp.x, pp.y), cz = Math.max(pp.z, g + 0.45);
+      enuToThree(pp.x, pp.y, cz, practiceMark.position);
+      practiceMark.rotation.y = (pp.yawDeg * Math.PI) / 180;
+      const h = Math.max(0, cz - 0.43 - g), beam = practiceMark.getObjectByName('beam')!;
+      beam.scale.y = Math.max(1e-3, h); beam.position.y = -0.43 - h / 2; beam.visible = h > 0.2;
+      // through the goggles: not while the lens is inside it (just after flying back to it)
+      if (view.view === 'fpv' && lensPos.distanceTo(practiceMark.position) < 3) practiceMark.visible = false;
+    }
     // the hover box: the classic drill's, or a training drill's (its own size and height)
     const tgt = ctx.trainingTarget;
     drillMesh.visible = (ctx.drill.on || !!tgt) && !rp;

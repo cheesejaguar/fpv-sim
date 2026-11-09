@@ -91,6 +91,7 @@ const TIPS = [
   'Tiny whoops are the most forgiving way to learn: light, slow and nearly crash-proof.',
   'Watch the LQ on the OSD. When link quality drops, turn back before you fail-safe.',
   'Press C to cycle FPV, chase and line-of-sight cameras.',
+  'Working on a trick? Q (LT / L2) sets a practice point where it starts; E (RT / R2) flies you back into that exact moment.',
   'No controller? W / S is throttle, A / D yaw, the arrow keys pitch and roll, and Space arms.',
 ];
 

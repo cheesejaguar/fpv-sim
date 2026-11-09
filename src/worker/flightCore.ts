@@ -17,6 +17,7 @@ import { ActorSim, DetectEvent, LookContext, lightLevel, REF_SIZE_M } from '../s
 import { G0, isa } from '../sim/atmosphere';
 import { rotateInv, subSeed, V3 } from '../sim/math';
 import { QuadEnv, QuadSim } from '../sim/quad';
+import { capture, restore, Snapshot } from '../sim/saveState';
 import { RcLink } from '../sim/rcLink';
 import { WakeField } from '../sim/wake';
 import { Wind } from '../sim/wind';
@@ -88,6 +89,19 @@ export interface HandLaunch {
  * attitude while held (rad).
  */
 const THROW_MPS = 11, THROW_UP_MPS = 1.5, THROW_S = 0.4, HAND_PITCH = (8 * Math.PI) / 180, HAND_HEIGHT = 1.6;
+
+/**
+ * What a practice point keeps of the flight core besides the plant, its wake and Betaflight's memory:
+ * the sensor, link and timing state between them (so the firmware sees the same inputs again), the
+ * motor outputs, the hand launch and the gate the quad is on.
+ */
+const POINT_FIELDS = [
+  'motorCmd', 'erpm', 'rcBuf', 'escCmd', 'armed', 'nextGate', 'hand', 'fcGyro', 'fcAcc', 'beeperSeen', 'beaconSeen',
+  'linkAcc', 'wakeAcc', 'ringAcc', 'rcAcc', 'battAcc', 'baroAcc', 'gpsAcc', 'bblAcc', 'imuHold', 'imuFresh', 'baro', 'current', 'brownout',
+] as const;
+const NO_SHARED = new Set<object>();
+/** Longest a recall holds the arm switch as it was at the practice point (s; see rcPacket). */
+const ARM_HOLD_S = 1;
 
 /** A crash worth flagging: ~4 m/s into something, or anything that actually damaged the quad. */
 export const CRASH_MIN_MPS = 4;
@@ -265,6 +279,7 @@ export class FlightCore {
 
   /** Fly this map from now on (its collision world, wind, GPS origin and actors). */
   setMap(m: MapDef) {
+    this.point = null;
     this.map = m;
     this.apMissionSent = false;
     this.world = new PrimitiveWorld(m);
@@ -302,6 +317,7 @@ export class FlightCore {
    */
   buildQuad(keepBattery = false, keepState = false) {
     const { spec, settings } = this;
+    this.point = null; // (another quad, or the same at another physics rate)
     this.build = buildDrone(spec);
     const prev = this.quad as QuadSim | undefined;
     const quad = new QuadSim(this.build.params, settings.physicsHz, spec.batterySoc, settings.ambientC, this.seed === undefined ? undefined : this.sub(0x9a1d));
@@ -377,6 +393,7 @@ export class FlightCore {
   powerOnFirmware() {
     const bf = this.bf;
     if (!bf) return;
+    this.point = null; // (a rebooted firmware: its memory from before means nothing now)
     bf.setGyroRate(this.quad.imu.chip.sampleRateHz); // the chip's ODR, read at boot
     this.primeSensors();
     bf.init();
@@ -403,6 +420,13 @@ export class FlightCore {
     const rcBuf = this.rcBuf;
     this.hooks.sticks(rcBuf);
     for (let i = 0; i < 16; i++) if (!(rcBuf[i] >= 800 && rcBuf[i] <= 2200)) rcBuf[i] = 1500;
+    // just back at a practice point: the arm switch (AUX1) stays as it was there until the pilot's
+    // own stream agrees (it is sampled a little in the past, and the page puts a toggle arm back only
+    // as the jump happens: one stale packet disarmed the restored, flying quad), at most ARM_HOLD_S
+    if (this.simT < this.armHoldUntil) {
+      if ((rcBuf[4] > 1500) === (this.armHoldUs > 1500)) this.armHoldUntil = -Infinity;
+      else rcBuf[4] = this.armHoldUs;
+    }
     return true;
   }
 
@@ -536,6 +560,7 @@ export class FlightCore {
 
   /** Run CLI lines on the held plant (see runCliBatch); the host persists the EEPROM if they saved. */
   cliBatch(lines: string[]): string {
+    this.point = null; // (its configuration changes: a restored memory would undo them)
     return this.bf ? runCliBatch(this.bf, lines, (ms) => this.advanceFirmware(ms)) : '';
   }
 
@@ -544,6 +569,7 @@ export class FlightCore {
    * finished it (it saves the trims itself: the EEPROM goes dirty).
    */
   calibrateAccLevel(): boolean {
+    this.point = null;
     return !!this.bf && calibrateAccLevel(this.bf, this.settings.physicsHz, (dt) => this.heldStep(dt, true));
   }
 
@@ -668,6 +694,52 @@ export class FlightCore {
   }
 
   stopArduPilot() { this.ap?.terminate(); this.ap = null; }
+
+  // ---------- practice points ----------
+
+  /**
+   * A practice point, like a skateboarding game's marker: the flight exactly as it is now (the plant,
+   * its own prop wash, Betaflight's memory and the sensor and timing state between them) to come
+   * back to with recallPoint() and fly the same moment again, as many times as it takes. The world
+   * keeps going: time, wind, actors, the operational layer. Respawns keep it; another quad, map,
+   * firmware reboot or configuration change clears it. Betaflight builds only: ArduPilot runs in
+   * its own thread and cannot be rewound (it reboots after a jump).
+   */
+  private point: { quad: Snapshot; wake: Snapshot; bf: Uint8Array | null; core: Snapshot } | null = null;
+  /** after a recall: the arm channel held as it was at the point, until this sim time (rcPacket) */
+  private armHoldUntil = -Infinity; private armHoldUs = 1000;
+  get hasPoint(): boolean { return this.point !== null; }
+
+  /** Keep the flight as it is now as the practice point; null, or why it can't. */
+  markPoint(): string | null {
+    if (this.ap || this.apVehicle) return 'Practice points need a Betaflight build: ArduPilot can\'t follow a jump (it reboots after one)';
+    if (!this.quad) return 'no quad yet';
+    const o: Record<string, unknown> = {};
+    for (const k of POINT_FIELDS) o[k] = this[k];
+    this.point = {
+      quad: this.quad.saveState(), wake: capture(this.env.wake, NO_SHARED),
+      bf: this.bf && this.fwRunning ? this.bf.saveState() : null, core: capture(o, NO_SHARED),
+    };
+    return null;
+  }
+
+  /** Back to the practice point (false: there is none). */
+  recallPoint(): boolean {
+    const pt = this.point;
+    if (!pt) return false;
+    this.quad.loadState(pt.quad);
+    restore(this.env.wake, pt.wake, NO_SHARED);
+    restore(this, pt.core, NO_SHARED);
+    if (pt.bf && this.bf) this.bf.loadState(pt.bf);
+    // no gate crossing along the jump, no crash banner from the attempt before
+    this.lastPos = { ...this.quad.s.pos };
+    this.crashMsg = null; this.crashMsgUntil = 0; this.lastImpact = { speed: 0, t: -1 };
+    this.impactPeak = 0; this.impactLastT = -1; this.impactMsg = ''; this.damageMsg = '';
+    this.armHoldUs = this.rcBuf[4]; this.armHoldUntil = this.simT + ARM_HOLD_S;
+    return true;
+  }
+
+  clearPoint() { this.point = null; }
 
   /**
    * Hold the plant still where it is (level, at its heading) until unpin(): an ArduPilot build

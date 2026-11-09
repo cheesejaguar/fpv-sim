@@ -19,7 +19,7 @@ import { MapDef, withCourse, withSpawn } from '../maps/world';
 import { Spectrum } from '../sim/fft';
 import { APP_VERSION } from '../ui/menu/about';
 import { ACC_CAL_KEY, accBoardKey } from './accCal';
-import { BblRecorder } from './bbl';
+import { BblMark, BblRecorder } from './bbl';
 import { OverloadGovernor } from './fcHardware';
 import { FlightCore } from './flightCore';
 import { encodeRun, RunLog, RunRecorder, RUN_FORMAT, RUN_GPS_EPOCH_MS, RUN_VERSION } from './runLog';
@@ -76,6 +76,8 @@ const CLI_HOT_S = 2;
 let cliHot = 0, eepAcc = 0, eepAfterDisarm = false;
 const governor = new OverloadGovernor();
 const bbl = new BblRecorder();
+/** where the blackbox log was when the practice point was kept (rewound with the flight) */
+let bblMark: BblMark | null = null;
 /** the reproducible run being recorded, and the last one that ended */
 let run: RunRecorder | null = null;
 let lastRun: RunLog | null = null;
@@ -457,6 +459,7 @@ function sendTelemetry() {
     actorT0: core.actorT0,
     rc: { marginDb: core.rcLink.marginDb, interfMw: core.rcLink.interfMw, lq: core.rcLink.lq },
     ...(core.ops ? { ops: core.ops.status(core) } : {}),
+    practice: core.hasPoint,
   };
   if (ap) {
     const t = ap.hub.tel;
@@ -719,7 +722,8 @@ async function firmwareOp(m: ToWorker) {
       break;
     }
     case 'cli': {
-      if (core.bf && fwState === 2) { core.bf.serialWrite(0, enc.encode(m.text)); cliHot = CLI_HOT_S; } // replies come back through pumpSideChannels
+      // (a configuration typed into the CLI: a practice point's restored memory would undo it)
+      if (core.bf && fwState === 2) { core.bf.serialWrite(0, enc.encode(m.text)); cliHot = CLI_HOT_S; core.clearPoint(); } // replies come back through pumpSideChannels
       break;
     }
     case 'cliBatch': {
@@ -789,6 +793,20 @@ async function handle(m: ToWorker) {
       // (at: a debug / test hook, and the control API's teleport)
       core.applyReset(ev);
       if (m.fullBattery) post({ type: 'built', info: serializeInfo(core.build) });
+      break;
+    }
+    case 'practice': {
+      if (!core.quad) break;
+      if (m.op === 'mark') {
+        const why = core.markPoint();
+        if (!why) { run?.events.push({ k: core.steps, type: 'mark' }); bblMark = bbl.mark(); }
+        const s = core.quad.s, q = s.q;
+        post({ type: 'practice', op: 'mark', ok: !why, reason: why ?? undefined, pos: { ...s.pos }, yawDeg: (Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)) * 180) / Math.PI, armed: core.armed });
+      } else {
+        const ok = core.recallPoint();
+        if (ok) { run?.events.push({ k: core.steps, type: 'recall' }); if (bblMark) bbl.rewind(bblMark); }
+        post({ type: 'practice', op: 'recall', ok, reason: ok ? undefined : 'no practice point yet' });
+      }
       break;
     }
     case 'spectrum': {

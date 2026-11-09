@@ -3,6 +3,8 @@
 // standard .bbl that Blackbox Explorer / PIDtoolbox read. One log per armed session; several logs in
 // one file is the normal flash-dump layout.
 
+export interface BblMark { cur: Uint8Array[] | null; chunks: number; sessions: number; wasArmed: boolean; full: boolean }
+
 export class BblRecorder {
   private sessions: Uint8Array[][] = [];
   private cur: Uint8Array[] | null = null;
@@ -39,4 +41,22 @@ export class BblRecorder {
   }
 
   clear(): void { this.sessions = []; this.cur = null; this.bytes = 0; this.full = false; }
+
+  /** Where the log is now, to come back to with rewind() (a practice point). */
+  mark(): BblMark { return { cur: this.cur, chunks: this.cur?.length ?? 0, sessions: this.sessions.length, wasArmed: this.wasArmed, full: this.full }; }
+
+  /**
+   * Back to a mark(): what was logged since goes. Betaflight's memory goes back to that moment
+   * too (its logger's state, and the bytes still in its serial buffer), so the log carries on as a
+   * valid .bbl from there.
+   */
+  rewind(m: BblMark): void {
+    const at = m.cur ? this.sessions.indexOf(m.cur) : -1;
+    if (m.cur && at < 0) { this.cur = null; this.wasArmed = m.wasArmed; return; } // (that session was dropped for space meanwhile)
+    if (m.cur) { this.sessions.length = at + 1; m.cur.length = Math.min(m.cur.length, m.chunks); }
+    else this.sessions.length = Math.min(this.sessions.length, m.sessions);
+    this.cur = m.cur; this.wasArmed = m.wasArmed; this.full = m.full;
+    this.bytes = 0;
+    for (const s of this.sessions) for (const c of s) this.bytes += c.length;
+  }
 }

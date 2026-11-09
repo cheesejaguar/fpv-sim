@@ -12,7 +12,7 @@ import type { AppCtx } from './context';
 import type { SpectrumView, SticksView } from './instruments';
 import { raceInfo, updateDrill } from './race';
 
-const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['W S', 'Throttle'], ['A D', 'Yaw'], ['↑↓←→', 'Pitch / roll'], ['Space', 'Arm'], ['1-3', 'Mode'], ['T', 'Turtle'], ['R', 'Respawn'], ['B', 'Fresh battery'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum'], ['V', 'DVR']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
+const KB_HINTS: KeyHint[] = [['Esc', 'Menu'], ['W S', 'Throttle'], ['A D', 'Yaw'], ['↑↓←→', 'Pitch / roll'], ['Space', 'Arm'], ['1-3', 'Mode'], ['T', 'Turtle'], ['R', 'Respawn'], ['B', 'Fresh battery'], ['Q', 'Set point'], ['E', 'Back to point'], ['C', 'Camera'], ['H', 'Telemetry'], ['G', 'Drill'], ['F', 'Spectrum'], ['V', 'DVR']].map(([glyph, label]) => ({ glyph, cls: 'key', label }));
 // phones / tablets without a keyboard or controller: only the (tappable) menu chip makes sense
 const TOUCH_HINTS: KeyHint[] = [{ glyph: '☰', cls: 'key', label: 'Menu' }];
 const KB_GLYPHS: CoachGlyphs = { arm: 'Space', respawn: 'R', throttleUp: 'W', throttleDown: 'S', keyboard: true };
@@ -48,6 +48,8 @@ export class HudController {
   private lapTitle = el('b');
   private lapText = el('p');
   private lapNotice = el('div', { class: 'card notice status' }, this.lapTitle, this.lapText);
+  private practiceTitle = el('b'); private practiceText = el('p');
+  private practiceNotice = el('div', { class: 'card notice status' }, this.practiceTitle, this.practiceText);
   // a personal best that could go on the leaderboard: offered while disarmed, posted only on request
   private postTitle = el('b');
   private postText = el('p');
@@ -104,7 +106,7 @@ export class HudController {
     const sw = (b: { index: number; src?: string } | null) => (b && (b.src ?? 'button') === 'button' ? b.index : null);
     add(p.menu, 'Menu'); if (!out.length) out.push({ glyph: 'Esc', cls: 'key', label: 'Menu' });
     add(sw(p.arm), 'Arm'); add(sw(p.mode), 'Mode'); add(p.reset, 'Respawn'); add(acts.battery, 'Fresh battery');
-    add(sw(p.turtle), 'Turtle'); add(acts.camera, 'Camera'); add(acts.telemetry, 'Telemetry'); add(acts.drill, 'Drill'); add(acts.spectrum, 'Spectrum');
+    add(sw(p.turtle), 'Turtle'); add(acts.markPoint, 'Set point'); add(acts.recallPoint, 'Back to point'); add(acts.camera, 'Camera'); add(acts.telemetry, 'Telemetry'); add(acts.drill, 'Drill'); add(acts.spectrum, 'Spectrum');
     p.aux?.forEach((b, i) => { if (b?.src === 'button') add(b.index, `AUX${i + 5}`); });
     this.hintsMemo = { p, acts, kind: p.kind, hints: out };
     return out;
@@ -157,6 +159,15 @@ export class HudController {
     if (input.blocked) notices.push(this.radioNotice);
     else if (input.active && input.profileFor(input.active).needsSetup && !armed) notices.push(this.setupNotice);
     if (ctx.audio.blocked) notices.push(this.soundChip);
+    const pn = ctx.practice.note;
+    if (pn && now < pn.until) {
+      this.noticeText(this.practiceTitle, pn.title);
+      this.noticeText(this.practiceText, pn.text);
+      this.practiceText.hidden = !pn.text;
+      const cls = `card notice status${pn.warn ? ' warn' : ''}`;
+      if (this.practiceNotice.className !== cls) this.practiceNotice.className = cls;
+      notices.push(this.practiceNotice);
+    } else if (pn) ctx.practice.note = null;
     const lap = ctx.lb.noteNow(now);
     if (lap) {
       this.noticeText(this.lapTitle, lap.kind === 'pb' ? `NEW PERSONAL BEST · ${formatLap(lap.lapMs)}` : `LAP NOT COUNTED · ${formatLap(lap.lapMs)}`);

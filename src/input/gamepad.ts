@@ -41,9 +41,14 @@ export interface ButtonBind { index: number; mode: 'toggle' | 'hold' | 'cycle3' 
 export interface AuxBind { src: 'button' | 'axis'; index: number; invert?: boolean; mode: 'hold' | 'toggle' | 'switch3' | 'axis' }
 export const AUX_EXTRA = 8; // AUX5..AUX12
 
-export type SimAction = 'battery' | 'camera' | 'telemetry' | 'drill' | 'spectrum';
+export type SimAction = 'battery' | 'camera' | 'telemetry' | 'drill' | 'spectrum' | 'markPoint' | 'recallPoint';
 /** Buttons free in flight on every standard-mapping pad (Xbox / DualSense / Steam Input / WebHID). */
-export const STANDARD_ACTIONS: Record<SimAction, number> = { battery: 1, camera: 12, telemetry: 13, drill: 14, spectrum: 15 };
+export const STANDARD_ACTIONS: Record<SimAction, number> = { battery: 1, camera: 12, telemetry: 13, drill: 14, spectrum: 15, markPoint: 6, recallPoint: 7 };
+/** What each sim action does (the Controller tab's rebinding list). */
+export const SIM_ACTION_NAMES: Record<SimAction, string> = {
+  battery: 'Respawn with a fresh battery', camera: 'Camera: FPV / chase / line of sight', telemetry: 'Telemetry overlay', drill: 'Hover drill',
+  spectrum: 'Noise spectrum', markPoint: 'Set practice point', recallPoint: 'Back to practice point',
+};
 
 export type ControllerKind = 'xbox' | 'playstation' | 'steam' | 'dji' | 'generic';
 
@@ -347,6 +352,7 @@ interface ActionTable {
   std: boolean; arm: InputProfile['arm']; mode: InputProfile['mode']; turtle: InputProfile['turtle']; beeper: InputProfile['beeper'];
   aux: InputProfile['aux']; auxLen: number; reset: InputProfile['reset']; menu: InputProfile['menu']; actions: InputProfile['actions'];
   needsSetup: InputProfile['needsSetup']; out: Partial<Record<SimAction, number>>; list: [SimAction, number][];
+  sticks: AxisBind[];
 }
 
 export class InputManager {
@@ -553,8 +559,10 @@ export class InputManager {
     const std = isStandard(pad) || p.kind === 'steam' || p.kind === 'xbox' || p.kind === 'playstation';
     const c = this.actions.get(p);
     if (c && c.std === std && c.arm === p.arm && c.mode === p.mode && c.turtle === p.turtle && c.beeper === p.beeper && c.aux === p.aux
-      && c.auxLen === (p.aux?.length ?? 0) && c.reset === p.reset && c.menu === p.menu && c.actions === p.actions && c.needsSetup === p.needsSetup) return c;
-    const binds: ({ index: number; src?: string } | null | undefined)[] = [p.arm, p.mode, p.turtle, p.beeper, ...(p.aux ?? [])];
+      && c.auxLen === (p.aux?.length ?? 0) && c.reset === p.reset && c.menu === p.menu && c.actions === p.actions && c.needsSetup === p.needsSetup
+      && c.sticks[0] === p.roll && c.sticks[1] === p.pitch && c.sticks[2] === p.yaw && c.sticks[3] === p.throttle) return c;
+    // (a stick on a button, e.g. the right-trigger throttle, takes that button too)
+    const binds: ({ index: number; src?: string } | null | undefined)[] = [p.arm, p.mode, p.turtle, p.beeper, ...(p.aux ?? []), p.roll, p.pitch, p.yaw, p.throttle];
     const taken = new Set(binds.filter((b) => b && (b.src ?? 'button') === 'button').map((b) => b!.index).concat([p.reset, p.menu].filter((x): x is number => x != null)));
     const out: Partial<Record<SimAction, number>> = {};
     for (const a of Object.keys(STANDARD_ACTIONS) as SimAction[]) {
@@ -563,7 +571,7 @@ export class InputManager {
     }
     const t: ActionTable = {
       std, arm: p.arm, mode: p.mode, turtle: p.turtle, beeper: p.beeper, aux: p.aux, auxLen: p.aux?.length ?? 0, reset: p.reset, menu: p.menu,
-      actions: p.actions, needsSetup: p.needsSetup, out, list: Object.entries(out) as [SimAction, number][],
+      actions: p.actions, needsSetup: p.needsSetup, out, list: Object.entries(out) as [SimAction, number][], sticks: [p.roll, p.pitch, p.yaw, p.throttle],
     };
     this.actions.set(p, t);
     return t;
@@ -579,6 +587,8 @@ export class InputManager {
   }
 
   disarm() { this.armed = false; this.keyboard.armed = false; }
+  /** Arm or disarm a toggle arm control (a practice point puts it back as it was); a switch held on a radio stays where it is. */
+  setArmed(on: boolean) { this.armed = on; this.keyboard.armed = on; this.turtle = false; this.keyboard.turtle = false; }
 }
 
 /** Keyboard fallback (for testing without a controller): not a substitute for sticks. */

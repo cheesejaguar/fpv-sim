@@ -13,7 +13,10 @@ export const RUN_VERSION = 1;
 /** The run's GPS clock starts here (UTC ms): GPS time never comes from the wall clock in a run. */
 export const RUN_GPS_EPOCH_MS = Date.UTC(2026, 0, 1);
 
-export type RunEvent = { k: number; type: 'reset'; repair: boolean; fullBattery: boolean; at?: V3 & { yawDeg: number } };
+export type RunEvent =
+  | { k: number; type: 'reset'; repair: boolean; fullBattery: boolean; at?: V3 & { yawDeg: number } }
+  /** practice point kept / flown back to (FlightCore.markPoint / recallPoint) */
+  | { k: number; type: 'mark' | 'recall' };
 
 export interface RunLog {
   format: typeof RUN_FORMAT; version: typeof RUN_VERSION;

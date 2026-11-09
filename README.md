@@ -104,6 +104,7 @@ Default mapping (Mode 2). The in-flight hint card shows your own controller's bu
 | Beeper (AUX4, hold) | Y | △ | — |
 | Respawn | A | ✕ | R |
 | Respawn with a fresh battery | B | ○ | B |
+| Set practice point / fly back to it | LT / RT | L2 / R2 | Q / E |
 | Camera: FPV / chase / line of sight | D-pad ↑ | D-pad ↑ | C |
 | Telemetry overlay (off by default) | D-pad ↓ | D-pad ↓ | H |
 | Hover drill | D-pad ← | D-pad ← | G |
@@ -111,6 +112,18 @@ Default mapping (Mode 2). The in-flight hint card shows your own controller's bu
 | Pause menu | Menu / Start | Options | Esc |
 
 The keyboard is a fallback for a first try, not a substitute for sticks.
+
+**Practice points.** Like a skateboarding game's marker: press *set* where a trick or a line
+starts, and *back* flies you straight into that exact moment again (the same place, attitude, speed
+and spin, armed as you were), as often as it takes. It is a save state of the whole flight,
+Betaflight's own state included, so the flight controller's attitude estimate, filters and PID loop
+pick up where they were (Angle mode levels to the right horizon at once). A hoop marks the point,
+standing across the heading you had (fly through it that way). Going back abandons the lap in progress, as a respawn does,
+and rewinds the blackbox log with the flight, so it stays a valid `.bbl`. Respawns keep the point;
+another quad, another map, a firmware reboot or a configuration change clears it. Wind, other
+pilots and map actors carry on. Not for ArduPilot builds (ArduPilot can't follow a jump without
+rebooting). Rebind both in Settings → Controller → In-flight actions (a radio can put them on a
+switch).
 
 **Arming coach.** While the quad is disarmed, a card explains why Betaflight refuses to arm, using
 the same flag the OSD shows (for example `THROTTLE`: "The throttle isn't all the way down. Pull

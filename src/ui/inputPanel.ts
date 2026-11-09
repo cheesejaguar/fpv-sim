@@ -3,7 +3,7 @@
 // per-channel axis assignment, inversion, calibration, deadzones, button/switch bindings for AUX1-12,
 // radio passthrough and rumble. While the wizard, Detect or calibration listens to the pad, menu
 // navigation is locked (nav.ts) so sweeping sticks or flipping switches can't move focus or leave.
-import { AUX_EXTRA, AuxBind, AxisBind, ButtonBind, buttonName, controllerKind, genericJoystickProfile, InputManager, InputProfile, isStandard, PRESET_PROFILES, squareSticks, standardProfile, ThrottleMode } from '../input/gamepad';
+import { AUX_EXTRA, AuxBind, AxisBind, ButtonBind, buttonName, controllerKind, genericJoystickProfile, InputManager, InputProfile, isStandard, PRESET_PROFILES, SIM_ACTION_NAMES, SimAction, squareSticks, standardProfile, ThrottleMode } from '../input/gamepad';
 import { ControlBase, controlBase, detectControl, RadioWizard, WIZARD_STEPS } from '../input/radioWizard';
 import { webHidSupported } from '../input/steamHid';
 import { checkbox, el, onUnmount, section, select, slider } from './dom';
@@ -320,6 +320,11 @@ export function inputPanel(im: InputManager): HTMLElement {
             sel('menu', 'Menu button', [{ value: '-1', label: 'none' }, ...pad.buttons.map((_, i) => ({ value: String(i), label: buttonName(kind, i) }))], String(p.menu ?? -1), (v) => { p.menu = +v < 0 ? null : +v; save(); }),
             help('The flight mode starts in Acro and each press of the mode button steps acro → horizon → angle (self-levelling).'),
           ),
+          section('In-flight actions', ...(Object.keys(SIM_ACTION_NAMES) as SimAction[]).map((a) =>
+            sel(`act-${a}`, SIM_ACTION_NAMES[a], [{ value: '-1', label: 'none' }, ...pad.buttons.map((_, i) => ({ value: String(i), label: buttonName(kind, i) }))], String(im.actionButtons(pad, p)[a] ?? -1),
+              // (a new object: the action table is cached per actions object)
+              (v) => { p.actions = { ...p.actions, [a]: +v < 0 ? null : +v }; save(); })),
+            help('Standard controllers start with B for a fresh battery, the D-pad for camera, telemetry, hover drill and spectrum, and LT / RT to set and fly back to a practice point. A button another control already uses does nothing here.')),
           section('AUX 5–12 (CH9–CH16)', ...Array.from({ length: AUX_EXTRA }, (_, i) => auxRow(i)), auxHelp),
           section('RC channels sent to Betaflight', chans),
         ),

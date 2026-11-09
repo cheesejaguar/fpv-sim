@@ -280,6 +280,8 @@ export type ToWorker =
   | { type: 'reset'; repair?: boolean; fullBattery?: boolean; at?: { x: number; y: number; z: number; yawDeg: number } }
   | { type: 'cli'; text: string }
   | { type: 'cliBatch'; lines: string[]; id: number }
+  /** practice point: keep the flight as it is now (mark), or go back to it (recall); answered by { type: 'practice' } */
+  | { type: 'practice'; op: 'mark' | 'recall' }
   | { type: 'factoryReset' }
   | { type: 'spectrum'; on: boolean }
   /** Betaflight's own blackbox log (.bbl, one log per armed session) recorded so far */
@@ -358,6 +360,8 @@ export interface Telemetry {
   ops?: OpsStatus;
   /** ArduPilot instead of Betaflight */
   ap?: ApTelemetryOut;
+  /** a practice point is kept (a new quad, map, firmware reboot or configuration change clears it) */
+  practice?: boolean;
 }
 
 export type FromWorker =
@@ -391,7 +395,9 @@ export type FromWorker =
   /** MAVLink bytes from ArduPilot's pass-through port (SERIAL1) */
   | { type: 'mavlink'; data: Uint8Array }
   /** the answer to an { type: 'ap' } request */
-  | { type: 'apResult'; id: number; ok: boolean; message: string };
+  | { type: 'apResult'; id: number; ok: boolean; message: string }
+  /** a practice point was kept (pos: where, ENU m; yawDeg: heading, armed then) or recalled; ok false: why not */
+  | { type: 'practice'; op: 'mark' | 'recall'; ok: boolean; reason?: string; pos?: { x: number; y: number; z: number }; yawDeg?: number; armed?: boolean };
 
 /**
  * Gyro noise spectra computed in the worker (the 1 kHz state ring is too slow for this).

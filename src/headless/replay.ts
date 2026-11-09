@@ -52,7 +52,12 @@ export async function replayRun(run: RunLog, firmware: () => Promise<Betaflight>
   const dt = 1 / run.settings.physicsHz;
   let e = 0;
   for (let k = 0; k < run.steps && !diverged; k++) {
-    while (e < run.events.length && run.events[e].k === k) core.applyReset(run.events[e++]);
+    while (e < run.events.length && run.events[e].k === k) {
+      const ev = run.events[e++];
+      if (ev.type === 'reset') core.applyReset(ev);
+      else if (ev.type === 'mark') core.markPoint();
+      else core.recallPoint();
+    }
     core.physicsStep(dt);
     o.step?.(core, k);
   }

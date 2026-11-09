@@ -89,7 +89,10 @@ function flight(t: number, rc: Float32Array) {
   rc[0] = t > 6 && t < 6.3 ? 1700 : 1500;
 }
 
-/** A reproducible run: started at 1 s, armed at 4.5 s (boot grace after the run's FC reboot), a climb and turns, a respawn, stopped at 8 s. */
+/**
+ * A reproducible run: started at 1 s, armed at 4.5 s (boot grace after the run's FC reboot), a climb
+ * and turns with a practice point kept at 6.4 s and flown back to at 7.0 s, a respawn, stopped at 8 s.
+ */
 let phase = 0;
 function runFlight(t: number, rc: Float32Array): ToWorker | void {
   if (phase === 0 && t > 1) { phase = 1; return { type: 'runStart', seed: 4242 }; }
@@ -98,8 +101,10 @@ function runFlight(t: number, rc: Float32Array): ToWorker | void {
   rc[2] = t < 5.8 ? 1000 : t < 6.8 ? 1600 : 1420;
   rc[0] = 1500 + 200 * Math.sin(t * 7);
   rc[3] = 1500 + 100 * Math.sin(t * 3);
-  if (phase === 1 && t > 7.6) { phase = 2; return { type: 'reset', repair: true, fullBattery: true }; }
-  if (phase === 2 && t > 8.2) { phase = 3; return { type: 'runStop', id: 1 }; }
+  if (phase === 1 && t > 6.4) { phase = 2; return { type: 'practice', op: 'mark' }; }
+  if (phase === 2 && t > 7.0) { phase = 3; return { type: 'practice', op: 'recall' }; }
+  if (phase === 3 && t > 7.6) { phase = 4; return { type: 'reset', repair: true, fullBattery: true }; }
+  if (phase === 4 && t > 8.2) { phase = 5; return { type: 'runStop', id: 1 }; }
 }
 
 describe.skipIf(!have)('simulation worker in Node (fake clock)', () => {
@@ -110,10 +115,11 @@ describe.skipIf(!have)('simulation worker in Node (fake clock)', () => {
     expect(runMsg.reason).toBe('stopped');
     const run = await decodeRun(new Uint8Array(runMsg.data));
     expect(run.seed).toBe(4242);
-    expect(run.events).toHaveLength(1);
+    expect(run.events.map((e) => e.type)).toEqual(['mark', 'recall', 'reset']);
+    expect(live.msgs.filter((m) => m.type === 'practice').map((m) => (m as { ok: boolean }).ok)).toEqual([true, true]);
     expect(run.packetSteps.length).toBeGreaterThan(1000);
     // the worker's state ring between runStart and runStop
-    const from = live.marks[0], to = live.marks[live.marks.length - 1]; // (runStart, reset, runStop)
+    const from = live.marks[0], to = live.marks[live.marks.length - 1]; // (runStart, mark, recall, reset, runStop)
     const liveRecs = live.recs.slice(from, to);
     installNodeHost();
     const rec: number[][] = [];
@@ -132,6 +138,10 @@ describe.skipIf(!have)('simulation worker in Node (fake clock)', () => {
     expect(firstDiff).toBe(-1);
     // it really flew: armed, climbed, and the respawn put it back on the pad
     expect(liveRecs.some((r) => r[R.armed] > 0.5)).toBe(true);
+    // the recall jumped back to where the point was kept, still armed and flying
+    const atMark = liveRecs[live.marks[1] - from - 1], afterRecall = liveRecs[live.marks[2] - from];
+    expect(Math.hypot(afterRecall[R.px] - atMark[R.px], afterRecall[R.py] - atMark[R.py], afterRecall[R.pz] - atMark[R.pz])).toBeLessThan(0.05);
+    expect(afterRecall[R.armed]).toBe(1);
     expect(Math.max(...liveRecs.map((r) => r[R.pz]))).toBeGreaterThan(0.5);
   }, 300000);
 
