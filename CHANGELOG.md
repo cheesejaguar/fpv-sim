@@ -6,6 +6,13 @@ build (`VITE_APP_VERSION` / `VITE_APP_COMMIT`), and reads "dev" on a local dev s
 
 ## Unreleased
 
+### Apple Vision Pro app (docs/VISION_PRO.md)
+- `visionos/`: a native visionOS app that runs the simulator offline. The window is the simulator
+  (served from inside the app bundle); "Fly immersive" draws the flight natively in RealityKit, in
+  stereo: FPV through the lens, line of sight from the pilot's spot, or the course as a tabletop model.
+- The page exports its scene, state and OSD to a native host (`src/visionos/`) and takes the game
+  controller from it. In a browser none of that runs.
+
 ### Fixed-wing planes and ArduPilot in the browser (docs/FIXED_WING.md, docs/ARDUPILOT.md)
 - Five FPV planes as presets: HEEWING T1 Ranger, AtomRC Penguin, SonicModell AR Wing Pro, ZOHD
   Talon GT Rebel, Volantex Ranger 2000. Each has the power system it ships with, and any of them

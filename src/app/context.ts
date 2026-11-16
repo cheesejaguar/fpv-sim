@@ -117,6 +117,8 @@ export interface AppCtx {
   afterReplay?: () => void;
   logLines: string[];
   log(t: string): void;
+  /** a native host app (src/visionos/nativeHost.ts); active while it draws the world instead of the page */
+  native?: { active: boolean } | null;
   /** the map builder while it has the screen (src/editor/): it draws its own scene and camera */
   editor?: { frame(now: number): void; onMenu(): void } | null;
 }

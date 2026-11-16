@@ -488,6 +488,12 @@ const userMaps = installUserMaps({ ctx, applySim: (s) => applySim(s), applyRoomM
 // ---------------------------------------------------------------------------------------------
 startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, dimmed: () => gameMenu.dimmed, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
 initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
+// inside the Apple Vision Pro app (visionos/): scene, state and OSD go to its native renderer
+// (its code is fetched only there: a browser never loads it)
+if ((window as unknown as { webkit?: { messageHandlers?: { fpvNative?: unknown } }; __fpvNativeMock?: unknown }).webkit?.messageHandlers?.fpvNative || (window as unknown as { __fpvNativeMock?: unknown }).__fpvNativeMock) {
+  void import('./visionos/nativeHost').then((m) => { ctx.native = m.installNativeHost(ctx, { respawn: () => sendReset(), toggleMenu: () => (ctx.editor ? ctx.editor.onMenu() : gameMenu.toggle()) }); },
+    (e) => ctx.log(`The native bridge failed to load: ${(e as Error)?.message ?? e}`));
+}
 
 // invite links: ?room=CODE joins that room on load
 {

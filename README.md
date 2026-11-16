@@ -12,6 +12,9 @@ are the real ArduPilot compiled to WebAssembly, with Lua scripts in the builder,
 the map builder and MAVLink to Python, pymavlink and ground stations ([docs/FIXED_WING.md](docs/FIXED_WING.md),
 [docs/ARDUPILOT.md](docs/ARDUPILOT.md)).
 
+There is a native **Apple Vision Pro** app too: the same simulator offline, with the flight drawn in
+RealityKit around you ([docs/VISION_PRO.md](docs/VISION_PRO.md)).
+
 Live: https://fpv-sim-gamma.vercel.app · Source: https://github.com/cheesejaguar/fpv-sim ·
 Changes: [CHANGELOG.md](CHANGELOG.md)
 
