@@ -5,7 +5,11 @@
 //  - the project's public relay
 export const PUBLIC_RELAY = 'wss://fpv-sim-rooms.newsanjose.workers.dev';
 
+/** Inside the offline native app (visionos/): there is no relay to reach (rooms, leaderboard, user maps). */
+const offlineHost = () => typeof window !== 'undefined' && !!(window as unknown as { webkit?: { messageHandlers?: { fpvNative?: unknown } } }).webkit?.messageHandlers?.fpvNative;
+
 export function multiplayerUrl(): string | null {
+  if (offlineHost()) return null;
   try { const o = localStorage.getItem('fpv-mp-url'); if (o) return o; } catch { /* ignore */ }
   const env = (import.meta as any).env?.VITE_MP_URL as string | undefined;
   if (env) return env;

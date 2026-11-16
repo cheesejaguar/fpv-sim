@@ -1,0 +1,6 @@
+WebBundle/*
+!WebBundle/.gitkeep
+xcuserdata/
+*.xcuserstate
+build/
+DerivedData/

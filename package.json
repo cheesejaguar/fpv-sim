@@ -24,7 +24,8 @@
     "resim": "node scripts/resim.mjs",
     "sitl": "node scripts/fpv-sitl.mjs",
     "campaign": "node scripts/fpv-campaign.mjs",
-    "twin": "node scripts/fpv-twin.mjs"
+    "twin": "node scripts/fpv-twin.mjs",
+    "visionos": "bash visionos/build-web.sh"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",
