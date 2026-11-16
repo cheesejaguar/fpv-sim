@@ -35,20 +35,25 @@ final class LocalServer: @unchecked Sendable {
         let l = try NWListener(using: params)
         l.newConnectionHandler = { [weak self] c in self?.accept(c) }
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
-            var done = false
+            let once = Once() // (the handler runs on the server queue only)
             l.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
-                    if !done { done = true; self?.listener = l; cont.resume(returning: l.port?.rawValue ?? port) }
+                    if once.first() { self?.listener = l; cont.resume(returning: l.port?.rawValue ?? port) }
                 case .failed(let e):
-                    if !done { done = true; l.cancel(); cont.resume(throwing: e) }
+                    if once.first() { l.cancel(); cont.resume(throwing: e) }
                 case .cancelled:
-                    if !done { done = true; cont.resume(throwing: CancellationError()) }
+                    if once.first() { cont.resume(throwing: CancellationError()) }
                 default: break
                 }
             }
             l.start(queue: self.queue)
         }
+    }
+
+    private final class Once: @unchecked Sendable {
+        private var done = false
+        func first() -> Bool { if done { return false }; done = true; return true }
     }
 
     // MARK: connections

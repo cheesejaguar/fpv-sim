@@ -196,9 +196,12 @@ final class WorldRenderer {
             }
         }
         // the sky's own light on everything in the world
-        if let skyImage, let env = try? await Compat.environment(skyImage) {
-            worldRoot.components.set(ImageBasedLightComponent(source: .single(env), intensityExponent: w.night ? -1.5 : 0.4))
-            worldRoot.components.set(ImageBasedLightReceiverComponent(imageBasedLight: worldRoot))
+        if let skyImage {
+            let env = try? await Compat.environment(skyImage)
+            if let env {
+                worldRoot.components.set(ImageBasedLightComponent(source: .single(env), intensityExponent: w.night ? -1.5 : 0.4))
+                worldRoot.components.set(ImageBasedLightReceiverComponent(imageBasedLight: worldRoot))
+            }
         }
         // the sun (the moon at night); it points from `sunDir` towards the ground
         let dir = simd_normalize(vec3(w.sunDir, SIMD3(0.3, 0.8, 0.5)))
