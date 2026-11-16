@@ -43,6 +43,7 @@ import { EASY_SPEC, GameMenu, GameMode } from './ui/menu/gameMenu';
 import { inviteLink, loadPilot, multiplayerPanel } from './ui/multiplayerPanel';
 import { settingsPanel, ViewSettings } from './ui/settingsPanel';
 import { createShared, newestTime, R, REC, sampleRing, SimSettings } from './worker/shared';
+import { installNativeHost } from './visionos/nativeHost';
 
 // debugging handle window.__fpv (installed at the end): in dev builds, with ?debug in the URL, or
 // after localStorage.setItem('fpv-debug', '1'). Read now: joining an invite link rewrites the URL.
@@ -488,6 +489,8 @@ const userMaps = installUserMaps({ ctx, applySim: (s) => applySim(s), applyRoomM
 // ---------------------------------------------------------------------------------------------
 startFrameLoop(ctx, { backdrop: () => gameMenu.backdrop, dimmed: () => gameMenu.dimmed, afterFrame: () => { hudCtl.update(); shots.afterFrame(); } });
 initDvr(ctx); // V records the goggle feed (picture + sound) to a .webm
+// inside the Apple Vision Pro app (visionos/): scene, state and OSD go to its native renderer
+ctx.native = installNativeHost(ctx, { respawn: () => sendReset(), toggleMenu: () => (ctx.editor ? ctx.editor.onMenu() : gameMenu.toggle()) });
 
 // invite links: ?room=CODE joins that room on load
 {

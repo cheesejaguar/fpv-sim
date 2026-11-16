@@ -204,6 +204,9 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
     const { view, build, link, fpv, osd, mp } = ctx, sceneB = ctx.scene, drone = ctx.drone;
     const dtFrame = Math.min(0.1, Math.max(0, (now - lastNow) / 1000)); lastNow = now;
     const backdrop = deps.backdrop();
+    // a native host (the visionOS app's immersive space, src/visionos/) draws the world itself: the
+    // state, link, OSD, audio and HUD below still run, the WebGL passes don't
+    const ext = !!ctx.native?.active;
     rec = rp ? replayRec : ctx.rec; stateAt = rp ? replayState : ringState;
     // a replay opened / closed, or playback jumped: the camera's frames start over
     if (!!rp !== wasReplay || (rp && rp.seq !== lastSeq)) { wasReplay = !!rp; lastSeq = rp?.seq ?? -1; lastCap = -Infinity; presentDue = true; }
@@ -251,7 +254,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         aimSun(p);
         renderer.shadowMap.needsUpdate = shadowsDue(now);
         renderer.setRenderTarget(null);
-        renderer.render(sceneB.scene, orbitCam);
+        if (!ext) renderer.render(sceneB.scene, orbitCam);
       }
     } else if (mode === 'fpv') {
       // (frames only move forward: per-frame jitter must never re-capture an older pose)
@@ -282,12 +285,14 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
           fpv.setVibration(mountVibration(rpmNow, rp ? undefined : ctx.tel?.rotorDamage, build.info.hoverRpm, vib), tCap);
           // shadow map at <= 30 Hz, rendered while the whole quad is still visible (the capture
           // hides it for the world pass, so its own shadow would be missing otherwise)
-          if (shadowsDue(now)) fpv.renderShadows(sceneB.scene);
-          // hide only the camera itself: whoop ducts, props and a 5"'s props at high uptilt are in view
-          for (const o of drone.fpvHidden) o.visible = false;
-          fpv.capture(sceneB.scene, lensPos, lensQ, dtw, drone.root);
-          for (const o of drone.fpvHidden) o.visible = true;
-          captured = true;
+          if (!ext) {
+            if (shadowsDue(now)) fpv.renderShadows(sceneB.scene);
+            // hide only the camera itself: whoop ducts, props and a 5"'s props at high uptilt are in view
+            for (const o of drone.fpvHidden) o.visible = false;
+            fpv.capture(sceneB.scene, lensPos, lensQ, dtw, drone.root);
+            for (const o of drone.fpvHidden) o.visible = true;
+            captured = true;
+          }
         }
         // link budget at capture time
         const up = tmpV.set(0, 1, 0).applyQuaternion(drone.root.quaternion);
@@ -312,7 +317,8 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
       if (gogOn !== lastGog) { presentDue = true; lastGog = gogOn; }
       // the picture only changes with a camera frame (link artefacts, noise and fields step at that
       // rate too), the OSD or the overlay: on a 144 Hz display most refreshes have nothing to draw
-      if (tick || osdChanged || gogChanged || presentDue) {
+      if (ext) presentDue = true; // (drawn again as soon as the page has the picture back)
+      else if (tick || osdChanged || gogChanged || presentDue) {
         fpv.present(osd.texture, (osd.cols * 12) / (osd.rows * 18) * (v.kind === 'analog' ? 0.9 : 1), now / 1000, link.state, view.osd && osd.hasContent, gogOn ? gog : null);
         presentDue = false;
       }
@@ -361,7 +367,7 @@ export function startFrameLoop(ctx: AppCtx, deps: FrameLoopDeps) {
         aimSun(p, chaseCam.quaternion);
         renderer.shadowMap.needsUpdate = shadowsDue(now);
         renderer.setRenderTarget(null);
-        renderer.render(sceneB.scene, chaseCam);
+        if (!ext) renderer.render(sceneB.scene, chaseCam);
         marker.visible = false;
       }
     }
